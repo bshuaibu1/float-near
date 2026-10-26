@@ -19,10 +19,24 @@
 
 import { createServer } from "node:http";
 import { toBaseUnits, fromBaseUnits } from "@near-vault/mcp/amounts";
-import { newRequestId, requireAgentKey, viewFunction } from "@near-vault/mcp";
+import { newRequestId, requireAgentKey, viewAccessKeys, viewFunction } from "@near-vault/mcp";
 import { sendRequestPayment } from "@near-vault/mcp/sign";
+import {
+  planFreezeNode,
+  planSetCooldown,
+  planSetNodeCaps,
+  planSetRecipients,
+  toCliCommand,
+} from "@near-vault/mcp/payloads";
 
-import { getDashboard, getSpendHistory, paymentFromOutcome, type AdapterConfig } from "./handlers.js";
+import {
+  getAgentKeys,
+  getDashboard,
+  getSpendHistory,
+  getVaultInfo,
+  paymentFromOutcome,
+  type AdapterConfig,
+} from "./handlers.js";
 import type { VaultNode } from "./map.js";
 
 const env = {
@@ -73,6 +87,82 @@ const server = createServer(async (req, res) => {
       const limit = Math.min(Number(url.searchParams.get("limit") ?? "25"), 50);
       const offset = Number(url.searchParams.get("offset") ?? "0");
       return send(200, await getSpendHistory(view, cfg, limit, offset));
+    }
+
+    // Where this vault lives. The UI reads the chain from here rather than
+    // hardcoding it, so it cannot link a testnet vault to a mainnet explorer.
+    if (url.pathname === "/v1/vault-info") {
+      return send(
+        200,
+        await getVaultInfo(view, cfg, (contractId, method, args) =>
+          viewFunction<string | null>(env.rpcUrl, contractId, method, args ?? {}),
+        ),
+      );
+    }
+
+    // Agent accounts WITH their access keys read from the chain. The key
+    // restriction is the product's central claim, so the page that states it
+    // reads the real permission instead of a constant.
+    if (url.pathname === "/v1/agent-keys") {
+      return send(200, await getAgentKeys(view, (id) => viewAccessKeys(env.rpcUrl, id), cfg));
+    }
+
+    /**
+     * An UNSIGNED owner payload for a policy change, plus the exact CLI command.
+     *
+     * Deliberately not a write endpoint. Owner methods change who can spend the
+     * treasury, so this server never signs them — it only ever holds an agent
+     * key that can call `request_payment`. The dashboard therefore shows the
+     * owner what to run rather than claiming to have saved anything, which is
+     * also why the old Solana-era "Save policy" button could never have worked
+     * here: it POSTed to /v1/agents/:id/policy, which does not exist.
+     */
+    if (url.pathname === "/v1/owner-plan" && req.method === "POST") {
+      const body = await new Promise<string>((ok) => {
+        let s = "";
+        req.on("data", (d) => (s += d));
+        req.on("end", () => ok(s));
+      });
+      const b = JSON.parse(body || "{}") as {
+        action: "caps" | "cooldown" | "recipients" | "freeze";
+        nodeId: number;
+        dailyCap?: string;
+        perTxCap?: string;
+        cooldownSec?: number;
+        recipients?: string[] | null;
+        frozen?: boolean;
+      };
+
+      const net = await view<{ network: string }>("get_config", {});
+      let payload;
+      switch (b.action) {
+        case "caps":
+          // HUMAN units, with decimals — `planSetNodeCaps` scales them itself
+          // via limitsToArgs. Calling toBaseUnits here too would scale twice
+          // and turn a 100 USDC cap into 100 million USDC.
+          payload = planSetNodeCaps(env.vault, b.nodeId, [
+            {
+              token: env.token,
+              dailyCap: b.dailyCap ?? "0",
+              perTxCap: b.perTxCap ?? "0",
+              decimals: env.decimals,
+            },
+          ]);
+          break;
+        case "cooldown":
+          payload = planSetCooldown(env.vault, b.nodeId, b.cooldownSec ?? 0);
+          break;
+        case "recipients":
+          payload = planSetRecipients(env.vault, b.nodeId, b.recipients ?? null);
+          break;
+        case "freeze":
+          payload = planFreezeNode(env.vault, b.nodeId, b.frozen ?? false);
+          break;
+        default:
+          return send(400, { error: `unknown action: ${String(b.action)}` });
+      }
+
+      return send(200, { payload, cli: toCliCommand(payload, net.network) });
     }
 
     if (url.pathname === "/v1/settings") {

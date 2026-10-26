@@ -38,14 +38,15 @@ function AuthGate({ children }: { children: ReactNode }) {
             className="mt-8 text-[30px] font-semibold leading-tight"
             style={{ color: "#111111" }}
           >
-            Sign in to access your dashboard
+            Connect to the vault
           </h1>
           <p
             className="mx-auto mt-3 max-w-sm text-[14px] leading-6"
             style={{ color: "#787774" }}
           >
-            Use the Connect menu in the top right to choose Google, Apple, or
-            Phantom.
+            This dashboard reads a NEAR vault contract. Use Connect in the top
+            right to retry — no signature is needed, and nothing here can move
+            funds.
           </p>
           {error ? (
             <p

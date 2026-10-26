@@ -11,11 +11,11 @@ import { clearFloatOwnerSession, getFloatOwnerSession } from "@/lib/float-sessio
 // APIs are natively x402. Not linked until that work is complete.
 const tabs = [
   { label: "Overview", href: "/" },
-  { label: "Agents", href: "/agents" },
+  { label: "Budget Tree", href: "/agents" },
   { label: "Policies", href: "/policies" },
   { label: "Activity", href: "/activity" },
   { label: "Fund", href: "/fund" },
-  { label: "Float Keys", href: "/api-keys" },
+  { label: "Agent Keys", href: "/api-keys" },
   { label: "Docs", href: "https://docs.usefloat.xyz/", external: true },
   { label: "Settings", href: "/settings" },
 ];
@@ -236,19 +236,15 @@ export function TopNav() {
                     </p>
                   </div>
                   <div style={{ borderTop: "1px solid #F0F0EE" }} />
+                  {/* ONE action, because there is only one.
+                      The NEAR provider's login() does not open a popup and
+                      does not ask for a signature — nothing this dashboard
+                      does requires one. It re-reads the vault. Offering
+                      "Google / Apple / Phantom" was three labels for that same
+                      call, and Phantom is a Solana wallet besides. */}
                   <ConnectMenuItem
-                    icon={<GoogleIcon />}
-                    label="Continue with Google"
-                    onClick={() => handleConnect("google")}
-                  />
-                  <ConnectMenuItem
-                    icon={<AppleLogoIcon />}
-                    label="Continue with Apple"
-                    onClick={() => handleConnect("apple")}
-                  />
-                  <ConnectMenuItem
-                    icon={<PhantomIcon />}
-                    label="Continue with Phantom"
+                    icon={<NearIcon />}
+                    label="Connect to the vault"
                     onClick={() => handleConnect("wallet")}
                   />
                 </div>
@@ -307,13 +303,14 @@ function AppleLogoIcon() {
   );
 }
 
-function PhantomIcon() {
+function NearIcon() {
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src="/Phantom-Icon_Transparent_Black.svg"
-      alt=""
-      className="h-4 w-4"
-    />
+    <span
+      className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[8px] font-bold"
+      style={{ background: "#111111", color: "#fff" }}
+      aria-hidden
+    >
+      N
+    </span>
   );
 }

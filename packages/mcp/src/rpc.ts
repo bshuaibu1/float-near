@@ -79,6 +79,55 @@ export async function viewFunction<T = unknown>(
   return decodeViewResult<T>(json.result ?? ({} as RawViewResponse));
 }
 
+/** One access key as NEAR reports it. */
+export interface AccessKeyInfo {
+  public_key: string;
+  access_key: {
+    nonce: number;
+    permission:
+      | "FullAccess"
+      | {
+          FunctionCall: {
+            allowance: string | null;
+            receiver_id: string;
+            method_names: string[];
+          };
+        };
+  };
+}
+
+/**
+ * Every access key on an account, read from the chain.
+ *
+ * This exists so the UI can state the agent key restriction as an OBSERVATION
+ * rather than a claim. "Restricted to request_payment" rendered from a
+ * hardcoded string would stay on screen even if the key were actually
+ * full-access — and that is the one thing a reader of that page most needs to
+ * be true.
+ */
+export async function viewAccessKeys(
+  rpcUrl: string,
+  accountId: string,
+): Promise<AccessKeyInfo[]> {
+  const r = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "near-vault-mcp",
+      method: "query",
+      params: { request_type: "view_access_key_list", finality: "final", account_id: accountId },
+    }),
+  });
+  if (!r.ok) throw new Error(`RPC ${rpcUrl} returned HTTP ${r.status}`);
+  const json = (await r.json()) as {
+    result?: { keys?: AccessKeyInfo[] };
+    error?: { message?: string };
+  };
+  if (json.error) throw new Error(`access key list failed: ${json.error.message ?? "unknown"}`);
+  return json.result?.keys ?? [];
+}
+
 export interface AgentCreds {
   agentId: string;
   agentKey: string;

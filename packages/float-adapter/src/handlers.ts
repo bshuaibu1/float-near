@@ -76,6 +76,199 @@ async function loadTreeAndUsage(
   return { tree, budgets, labels };
 }
 
+/** Where this vault lives, so the UI never has to hardcode a chain. */
+export interface VaultInfo {
+  vaultId: string;
+  tokenId: string;
+  tokenDecimals: number;
+  network: string;
+  /** NEAR Explorer base for the network the vault is actually on. */
+  explorerBase: string;
+  owner: string;
+  paused: boolean;
+  clockMode: string;
+  strictAllocation: boolean;
+  /**
+   * The vault's ACTUAL NEP-141 balance, base units.
+   *
+   * Deliberately separate from `treasury.amount` on /v1/dashboard, which is the
+   * root node's remaining DAILY BUDGET. They are different quantities and the
+   * funding page needs this one: fund 10,000 USDC against a 100/day root cap
+   * and the budget figure still reads 40, which would look like the deposit
+   * never arrived. Null when the token contract cannot be read.
+   */
+  vaultTokenBalance: string | null;
+  /** Null means the cross-chain rail is CLOSED. */
+  baseRail: {
+    mpcContract: string;
+    usdcAddress: string;
+    chainId: number;
+    derivationPath: string;
+    domainId: number;
+    maxTxFeeWei: string;
+  } | null;
+}
+
+/**
+ * `near` / `testnet` / anything else. Derived from the network the contract
+ * reports rather than from an env var, so a UI pointed at testnet cannot link
+ * to a mainnet explorer and show "not found".
+ */
+export function explorerBaseFor(network: string): string {
+  return network === "mainnet" || network === "near"
+    ? "https://nearblocks.io"
+    : "https://testnet.nearblocks.io";
+}
+
+/** `get_base_config` as the contract returns it. */
+interface RawBaseConfig {
+  mpc_contract: string;
+  usdc_address: string;
+  chain_id: number;
+  derivation_path: string;
+  domain_id: number;
+  max_tx_fee_wei: string;
+}
+
+/** A view against an arbitrary contract — the token, not the vault. */
+export type ViewOnFn = (
+  contractId: string,
+  method: string,
+  args?: unknown,
+) => Promise<string | null>;
+
+export async function getVaultInfo(
+  view: ViewFn,
+  cfg: AdapterConfig,
+  viewOn: ViewOnFn,
+): Promise<VaultInfo> {
+  const [c, b] = await Promise.all([
+    view<{
+      owner: string;
+      vault_id: string;
+      network: string;
+      paused: boolean;
+      clock_mode: string;
+      strict_allocation: boolean;
+    }>("get_config", {}),
+    // A vault deployed before the Base rail existed has no such method.
+    // Reporting the rail as closed is the honest reading of that: nothing can
+    // be signed on it either way.
+    view<RawBaseConfig | null>("get_base_config", {}).catch(() => null),
+  ]);
+
+  // Read off the TOKEN contract, not the vault — so it is the real balance and
+  // not an echo of the vault's own bookkeeping. Null rather than "0" on
+  // failure: zero would read as "the deposit is not here", which is a
+  // different claim from "we could not look".
+  const vaultTokenBalance = await viewOn(cfg.token, "ft_balance_of", {
+    account_id: c.vault_id,
+  }).catch(() => null);
+
+  return {
+    vaultId: c.vault_id,
+    tokenId: cfg.token,
+    tokenDecimals: cfg.decimals,
+    network: c.network,
+    explorerBase: explorerBaseFor(c.network),
+    owner: c.owner,
+    paused: c.paused,
+    clockMode: c.clock_mode,
+    strictAllocation: c.strict_allocation,
+    vaultTokenBalance,
+    baseRail: b
+      ? {
+          mpcContract: b.mpc_contract,
+          usdcAddress: b.usdc_address,
+          chainId: b.chain_id,
+          derivationPath: b.derivation_path,
+          domainId: b.domain_id,
+          maxTxFeeWei: b.max_tx_fee_wei,
+        }
+      : null,
+  };
+}
+
+export interface AgentKeyView {
+  accountId: string;
+  nodeId: number;
+  label: string;
+  frozen: boolean;
+  keys: {
+    publicKey: string;
+    /** True only if the key really is a function-call key. */
+    restricted: boolean;
+    receiverId: string | null;
+    methodNames: string[];
+    allowanceYocto: string | null;
+  }[];
+  /** Set when the key list could not be read, so the UI can say so. */
+  error?: string;
+}
+
+export type KeyFn = (accountId: string) => Promise<
+  {
+    public_key: string;
+    access_key: {
+      permission:
+        | "FullAccess"
+        | { FunctionCall: { allowance: string | null; receiver_id: string; method_names: string[] } };
+    };
+  }[]
+>;
+
+/**
+ * The bound agent accounts, with their access keys read FROM THE CHAIN.
+ *
+ * The restriction is the product's central security claim, so the page that
+ * states it must not state it from a constant. A hardcoded "restricted to
+ * request_payment" would keep rendering happily if someone added a full-access
+ * key to an agent account — exactly the regression a reader of that page is
+ * trying to rule out. `restricted` here is computed from the permission NEAR
+ * reports, and a FullAccess key makes it false.
+ */
+export async function getAgentKeys(
+  view: ViewFn,
+  keys: KeyFn,
+  _cfg: AdapterConfig,
+): Promise<AgentKeyView[]> {
+  const tree = await view<VaultNode[]>("get_tree", {});
+  const bound = tree.filter((n) => n.account);
+
+  return Promise.all(
+    bound.map(async (n): Promise<AgentKeyView> => {
+      const base = {
+        accountId: n.account as string,
+        nodeId: n.id,
+        label: n.label,
+        frozen: n.frozen,
+      };
+      try {
+        const list = await keys(n.account as string);
+        return {
+          ...base,
+          keys: list.map((k) => {
+            const p = k.access_key.permission;
+            const fc = typeof p === "object" && "FunctionCall" in p ? p.FunctionCall : null;
+            return {
+              publicKey: k.public_key,
+              restricted: fc !== null,
+              receiverId: fc?.receiver_id ?? null,
+              methodNames: fc?.method_names ?? [],
+              allowanceYocto: fc?.allowance ?? null,
+            };
+          }),
+        };
+      } catch (e) {
+        // An unreadable key list is reported, never silently rendered as "no
+        // keys" — that would read as "nothing is authorised here", the
+        // opposite of unknown.
+        return { ...base, keys: [], error: e instanceof Error ? e.message : String(e) };
+      }
+    }),
+  );
+}
+
 export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
   const { tree, budgets, labels } = await loadTreeAndUsage(view, cfg);
 

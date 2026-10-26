@@ -41,6 +41,8 @@ type Period = "24h" | "7d" | "30d";
 
 type ApiAgent = {
   agentId: string;
+  /** The tree label with its depth prefix, e.g. "   └─ r1". */
+  displayName?: string | null;
   walletAddress: string;
   createdAt: string;
   lifetimeSpent?: string;
@@ -77,13 +79,17 @@ function resolveVenue(venue: string, modelName?: string): string {
   return venue;
 }
 
-function resolveRail(rail: string, venue: string): string {
+/**
+ * The rail as the contract recorded it.
+ *
+ * The Solana-era version guessed a rail from the VENUE string. Here the
+ * adapter reads it off the stored request's `route`, so the value is already
+ * authoritative. `policy` is the rail for a BLOCKED attempt and reads as
+ * "blocked", which is what it means to someone looking at the row.
+ */
+function resolveRail(rail: string): string {
   const normalized = rail.toLowerCase();
-  if (/^Float (generate|speech):/i.test(venue)) return "float";
-  if (/^twitter\//i.test(venue)) return "float";
-  if (normalized === "x402-solana") return "x402";
-  if (normalized === "float-internal") return "float";
-  return normalized;
+  return normalized === "policy" ? "blocked" : normalized;
 }
 type Treasury = { walletAddress: string; amount: string; currency: string; decimals: number; };
 type DashboardData = { treasury: Treasury | null; agents: ApiAgent[]; transactionStats?: TransactionStats; recentActivity: ActivityItem[]; };
@@ -215,7 +221,12 @@ export default function Overview() {
       {/* Balance + Daily Budget */}
       <div className="grid grid-cols-12 gap-3 mb-6">
         <div className={`col-span-12 md:col-span-8 ${card}`} style={border}>
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-4" style={{ color:"#787774" }}>USDC Balance</p>
+          {/* This figure is root's REMAINING DAILY BUDGET, not the vault's
+              token balance — /v1/dashboard computes it as
+              daily_cap - executed - pending for the root node. Labelling it
+              "USDC Balance" made a 100/day cap look like the whole treasury.
+              The real balance is on the Fund page. */}
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-4" style={{ color:"#787774" }}>Root budget remaining today</p>
           <div className="flex items-baseline gap-2 mb-1">
             <span className="text-[36px] font-semibold tracking-tight leading-none" style={{ color:"#111111" }}>
               {loading ? "—" : balance.toLocaleString([], { minimumFractionDigits:2, maximumFractionDigits:2 })}
@@ -223,7 +234,7 @@ export default function Overview() {
             <span className="text-sm font-medium" style={{ color:"#787774" }}>USDC</span>
           </div>
           <p className="text-[12px] mb-6" style={{ color:"#787774" }}>
-            {treasury ? `Treasury · ${treasury.walletAddress.slice(0,6)}···${treasury.walletAddress.slice(-4)}` : "Connect account to load balance"}
+            {treasury ? `Vault · ${treasury.walletAddress}` : "Vault adapter unreachable"}
           </p>
           <div className="flex items-end gap-[2px] h-10 group/chart">
             {bars.map((b, i) => {
@@ -274,13 +285,13 @@ export default function Overview() {
                   </svg>
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium" style={{ color:"#111111" }}>Fund Treasury</p>
-                  <p className="text-[11px]" style={{ color:"#787774" }}>Add USDC to your balance</p>
+                  <p className="text-[13px] font-medium" style={{ color:"#111111" }}>Fund the vault</p>
+                  <p className="text-[11px]" style={{ color:"#787774" }}>Send NEP-141 USDC to the contract</p>
                 </div>
                 <ArrowRight size={12} className="ml-auto shrink-0" style={{ color:"#EAEAEA" }} />
               </Link>
 
-              <Link href="/agents/deploy"
+              <Link href="/api-keys"
                 className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-150 hover:bg-[#FBFBFA]"
                 style={{ border:"1px solid #EAEAEA" }}
               >
@@ -291,8 +302,8 @@ export default function Overview() {
                   </svg>
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium" style={{ color:"#111111" }}>Deploy Agent</p>
-                  <p className="text-[11px]" style={{ color:"#787774" }}>Provision a new agent wallet</p>
+                  <p className="text-[13px] font-medium" style={{ color:"#111111" }}>Agent keys</p>
+                  <p className="text-[11px]" style={{ color:"#787774" }}>Restricted keys, read from the chain</p>
                 </div>
                 <ArrowRight size={12} className="ml-auto shrink-0" style={{ color:"#EAEAEA" }} />
               </Link>
@@ -365,7 +376,13 @@ export default function Overview() {
                       <AgentAvatar seed={a.agentId} size={24} animated />
                       <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white" style={{ background:"#346538" }}/>
                     </div>
-                    <span className="text-[13px] font-medium truncate" style={{ color:"#111111" }}>{a.agentId}</span>
+                    {/* displayName, not agentId: the adapter puts the tree
+                        label here with its depth prefix ("root", "└─ research",
+                        "   └─ r1"). agentId is `node-<id>` for a team node,
+                        which rendered as "node-1" and hid the hierarchy. */}
+                    <span className="text-[13px] font-medium truncate" style={{ color:"#111111" }}>
+                      {a.displayName ?? a.agentId}
+                    </span>
                   </div>
                   <span className="text-[11px] font-mono" style={{ color:"#787774" }}>{a.walletAddress.slice(0,6)}···</span>
                   <span
@@ -424,7 +441,7 @@ export default function Overview() {
                   </div>
                   <span className="text-[13px] font-medium truncate" style={{ color:"#111111" }}>{resolveVenue(r.venue, r.modelName)}</span>
                   <span className="text-[12px] font-mono text-right tabular-nums" style={{ color:"#111111" }}>{r.amount} <span style={{ color:"#787774" }}>USDC</span></span>
-                  <span className="text-[11px] uppercase tracking-wider text-center font-medium" style={{ color:"#787774" }}>{resolveRail(r.rail, r.venue)}</span>
+                  <span className="text-[11px] uppercase tracking-wider text-center font-medium" style={{ color:"#787774" }}>{resolveRail(r.rail)}</span>
                   <div className="flex justify-end">
                     <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
                       style={approved ? { background:"#EDF3EC", color:"#346538" } : { background:"#FDEBEC", color:"#9F2F2D" }}

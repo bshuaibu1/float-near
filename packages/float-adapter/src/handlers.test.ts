@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  explorerBaseFor,
+  getAgentKeys,
+  getVaultInfo,
   getDashboard,
   getSpendHistory,
   paymentFromOutcome,
@@ -233,5 +236,171 @@ describe("dashboard RPC concurrency", () => {
 
     await getDashboard(view, cfg());
     expect(peak).toBe(2);
+  });
+});
+
+describe("getVaultInfo", () => {
+  // The Fund page reads the chain and the explorer from here. A wrong value is
+  // not a crash — it is a page that confidently links somewhere useless.
+  const cfgView = {
+    owner: "alice.testnet",
+    vault_id: "v3.testnet",
+    network: "testnet",
+    paused: false,
+    clock_mode: "production",
+    strict_allocation: false,
+  };
+
+  function view(over: Record<string, unknown> = {}): ViewFn {
+    const table: Record<string, unknown> = {
+      get_config: cfgView,
+      get_base_config: {
+        mpc_contract: "v1.signer-prod.testnet",
+        usdc_address: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+        chain_id: 84532,
+        derivation_path: "base-1",
+        domain_id: 0,
+        max_tx_fee_wei: "10000000000000000",
+      },
+      ...over,
+    };
+    return async <T>(m: string) => table[m] as T;
+  }
+
+  it("reports the vault's REAL token balance, not its budget", async () => {
+    // These are different quantities and the funding page needs this one: fund
+    // 10,000 against a 100/day cap and the budget figure still reads 40, which
+    // looks like the deposit never arrived.
+    const info = await getVaultInfo(view(), cfg(), async () => "100000000000");
+    expect(info.vaultTokenBalance).toBe("100000000000");
+  });
+
+  it("reads the balance off the TOKEN contract, for the VAULT account", async () => {
+    // Asking the vault about its own balance would be an echo of its
+    // bookkeeping; the token contract is the authority.
+    const calls: { contract: string; method: string; args: unknown }[] = [];
+    await getVaultInfo(view(), cfg(), async (contract, method, args) => {
+      calls.push({ contract, method, args });
+      return "7";
+    });
+    expect(calls).toEqual([
+      { contract: TOK, method: "ft_balance_of", args: { account_id: "v3.testnet" } },
+    ]);
+  });
+
+  it("reports null, not zero, when the balance cannot be read", async () => {
+    // Zero reads as "the deposit is not here", which is a different claim from
+    // "we could not look".
+    const info = await getVaultInfo(view(), cfg(), async () => {
+      throw new Error("token contract unreachable");
+    });
+    expect(info.vaultTokenBalance).toBeNull();
+  });
+
+  it("reports the base rail as CLOSED on a vault that predates it", async () => {
+    // An older deployment has no get_base_config method at all. Nothing can be
+    // signed on that rail either way, so closed is the honest reading.
+    const v: ViewFn = async <T>(m: string) => {
+      if (m === "get_base_config") throw new Error("MethodNotFound");
+      return cfgView as T;
+    };
+    const info = await getVaultInfo(v, cfg(), async () => "0");
+    expect(info.baseRail).toBeNull();
+  });
+
+  it("maps the base rail into camelCase for the UI", async () => {
+    const info = await getVaultInfo(view(), cfg(), async () => "0");
+    expect(info.baseRail).toEqual({
+      mpcContract: "v1.signer-prod.testnet",
+      usdcAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      chainId: 84532,
+      derivationPath: "base-1",
+      domainId: 0,
+      maxTxFeeWei: "10000000000000000",
+    });
+  });
+});
+
+describe("explorerBaseFor", () => {
+  it("points a testnet vault at the TESTNET explorer", () => {
+    // A testnet vault linked to the mainnet explorer shows "not found", which
+    // reads as "this contract does not exist".
+    expect(explorerBaseFor("testnet")).toContain("testnet.nearblocks.io");
+    expect(explorerBaseFor("sandbox")).toContain("testnet.nearblocks.io");
+  });
+
+  it("points mainnet at the mainnet explorer", () => {
+    expect(explorerBaseFor("mainnet")).toBe("https://nearblocks.io");
+    expect(explorerBaseFor("near")).toBe("https://nearblocks.io");
+  });
+});
+
+describe("getAgentKeys", () => {
+  const tree: VaultNode[] = [
+    { ...TREE[0] },
+    { ...TREE[1] },
+    { ...TREE[2], account: "r1.v.testnet" },
+  ];
+  const view: ViewFn = async <T>() => tree as T;
+
+  it("lists only nodes with a bound account", async () => {
+    const rows = await getAgentKeys(view, async () => [], cfg());
+    expect(rows.map((r) => r.accountId)).toEqual(["r1.v.testnet"]);
+  });
+
+  it("reports a function-call key as RESTRICTED, with its real method list", async () => {
+    const rows = await getAgentKeys(
+      view,
+      async () => [
+        {
+          public_key: "ed25519:abc",
+          access_key: {
+            permission: {
+              FunctionCall: {
+                allowance: "500000000000000000000000",
+                receiver_id: "v.testnet",
+                method_names: ["request_payment"],
+              },
+            },
+          },
+        },
+      ],
+      cfg(),
+    );
+    expect(rows[0]!.keys[0]).toEqual({
+      publicKey: "ed25519:abc",
+      restricted: true,
+      receiverId: "v.testnet",
+      methodNames: ["request_payment"],
+      allowanceYocto: "500000000000000000000000",
+    });
+  });
+
+  it("reports a FULL-ACCESS key as unrestricted", async () => {
+    // THE point of reading this from the chain. A page that rendered
+    // "restricted to request_payment" from a constant would keep saying so
+    // while an agent account had a full-access key on it — which is exactly
+    // the regression a reader of that page is trying to rule out.
+    const rows = await getAgentKeys(
+      view,
+      async () => [{ public_key: "ed25519:zzz", access_key: { permission: "FullAccess" } }],
+      cfg(),
+    );
+    expect(rows[0]!.keys[0]!.restricted).toBe(false);
+    expect(rows[0]!.keys[0]!.methodNames).toEqual([]);
+  });
+
+  it("surfaces an unreadable key list instead of rendering it as no keys", async () => {
+    // An empty list reads as "nothing is authorised here", the opposite of
+    // unknown.
+    const rows = await getAgentKeys(
+      view,
+      async () => {
+        throw new Error("RPC down");
+      },
+      cfg(),
+    );
+    expect(rows[0]!.keys).toEqual([]);
+    expect(rows[0]!.error).toContain("RPC down");
   });
 });

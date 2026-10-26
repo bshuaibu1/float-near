@@ -60,13 +60,23 @@ function resolveVenue(venue: string): string {
   return venue;
 }
 
-function resolveRail(rail: string, venue: string): string {
+/**
+ * The rail, as the contract's own record reports it.
+ *
+ * The Solana-era version guessed a rail from the VENUE string — "Float
+ * generate:" meant the float rail, "x402-solana" was folded into "x402". None
+ * of that applies here: the adapter reads the rail off the stored request's
+ * `route` field, so the value is already authoritative and guessing could only
+ * contradict it.
+ *
+ * `policy` is the adapter's rail for a BLOCKED attempt (those are never stored
+ * on-chain, so there is no route to read). It is displayed as "blocked"
+ * because that is what it means to someone reading the table — a payment the
+ * vault refused, not a third payment rail.
+ */
+function resolveRail(rail: string): string {
   const normalized = rail.toLowerCase();
-  if (/^Float (generate|speech):/i.test(venue)) return "float";
-  if (/^twitter\//i.test(venue)) return "float";
-  if (normalized === "x402-solana") return "x402";
-  if (normalized === "float-internal") return "float";
-  return normalized;
+  return normalized === "policy" ? "blocked" : normalized;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +101,7 @@ type Payment = {
   blockMessage?: string | null;
 };
 
-type RailFilter = "all" | "float" | "x402" | "mpp" | "solana" | "swap" | "policy";
+type RailFilter = "all" | "near" | "base" | "blocked";
 type StatusFilter = "all" | "success" | "failed" | "blocked";
 
 const border = { border: "1px solid #EAEAEA" };
@@ -248,7 +258,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
                 Rail
               </p>
               <p className="text-[12px] font-mono uppercase" style={{ color: "#111111" }}>
-                {resolveRail(item.rail, item.venue)}
+                {resolveRail(item.rail)}
               </p>
             </div>
           </div>
@@ -280,32 +290,23 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
             </div>
           )}
 
-          {/* Tx Signature */}
-          {item.txSignature && (
-            <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
-                Tx Signature
-              </p>
-              <a
-                href={`https://solscan.io/tx/${item.txSignature}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] font-mono break-all inline-flex items-center gap-1.5"
-                style={{ color: "#346538" }}
-              >
-                {item.txSignature.slice(0, 24)}…{item.txSignature.slice(-8)}
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-                  <path
-                    d="M1.5 8.5l7-7M8.5 1.5H2.5M8.5 1.5v6"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </a>
-            </div>
-          )}
+          {/* Request id — the contract's own key for this payment.
+              Replaces a "Tx Signature" block that linked to Solscan and could
+              never render: the adapter always sets txSignature to null, because
+              the vault indexes payments by request id, not by tx hash. */}
+          <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
+            <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+              Request ID
+            </p>
+            <p className="text-[11px] font-mono break-all" style={{ color: "#111111" }}>
+              {item.id}
+            </p>
+            <p className="text-[10px] mt-1.5" style={{ color: "#787774" }}>
+              {isBlocked(item.status)
+                ? "Blocked attempts are not stored on-chain — this row is held in the adapter's memory."
+                : "Stored on-chain. Look it up with get_request on the vault."}
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -332,6 +333,21 @@ export default function Activity() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const agentMenuRef = useRef<HTMLDivElement>(null);
+
+  // Which chain this vault is on, read from the adapter rather than hardcoded,
+  // so a testnet vault cannot link to a mainnet explorer.
+  const [explorerBase, setExplorerBase] = useState<string>("");
+  const [vaultId, setVaultId] = useState<string>("");
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { explorerBase?: string; vaultId?: string } | null) => {
+        if (!d) return;
+        setExplorerBase(d.explorerBase ?? "");
+        setVaultId(d.vaultId ?? "");
+      })
+      .catch(() => {});
+  }, []);
 
   // Close agent menu on outside click
   useEffect(() => {
@@ -392,7 +408,7 @@ export default function Activity() {
   // Client-side filter
   const rows = payments.filter(p => {
     if (agentFilter !== "all" && p.agentId !== agentFilter) return false;
-    if (railFilter !== "all" && resolveRail(p.rail, p.venue) !== railFilter) return false;
+    if (railFilter !== "all" && resolveRail(p.rail) !== railFilter) return false;
     if (statusFilter === "success" && !isSuccess(p.status)) return false;
     if (statusFilter === "failed" && (isSuccess(p.status) || isBlocked(p.status))) return false;
     if (statusFilter === "blocked" && !isBlocked(p.status)) return false;
@@ -506,7 +522,7 @@ export default function Activity() {
           {/* Rail + Status pills */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
-              {(["all", "float", "x402", "solana", "mpp", "swap", "policy"] as RailFilter[]).map(v => (
+              {(["all", "near", "base", "blocked"] as RailFilter[]).map(v => (
                 <button
                   key={v}
                   onClick={() => setRailFilter(v)}
@@ -515,7 +531,7 @@ export default function Activity() {
                     ? { background: "#111111", color: "#fff" }
                     : { color: "#787774" }}
                 >
-                  {v === "policy" ? "blocked" : v}
+                  {v}
                 </button>
               ))}
             </div>
@@ -638,7 +654,7 @@ export default function Activity() {
                     className="text-[10px] uppercase tracking-wider text-center font-medium"
                     style={{ color: isBlocked(p.status) ? "#9A5F1A" : "#787774" }}
                   >
-                    {resolveRail(p.rail, p.venue)}
+                    {resolveRail(p.rail)}
                   </span>
 
                   {/* Status badge */}
@@ -657,17 +673,21 @@ export default function Activity() {
                     </span>
                   </div>
 
-                  {/* Solscan link — inline, doesn't open modal */}
+                  {/* Explorer link — inline, doesn't open modal.
+                      Points at the VAULT account, not a tx hash: the vault
+                      stores payments by request id and the adapter has no hash
+                      to link. The old Solscan anchor was unreachable for the
+                      same reason. */}
                   <div className="flex justify-end">
-                    {p.txSignature ? (
+                    {explorerBase ? (
                       <a
-                        href={`https://solscan.io/tx/${p.txSignature}`}
+                        href={`${explorerBase}/address/${vaultId}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
                         className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-[#F0F0EE]"
                         style={{ color: "#787774" }}
-                        title="View on Solscan"
+                        title="View the vault on NEAR Explorer"
                       >
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                           <path
