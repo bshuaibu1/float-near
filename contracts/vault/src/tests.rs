@@ -236,7 +236,7 @@ fn i3_parent_daily_binds_while_child_still_has_headroom() {
 
     // Exhaust research(500) with ONE r1 payment, so r2 is untouched.
     testing_env!(ctx(r1(), ZERO, 0).build());
-    assert_dispatched(v.request_payment("p1".into(), tok(), usdc(500), payee(), "".into()));
+    assert_dispatched(v.request_payment("p1".into(), tok(), usdc(500), payee(), "".into(), None));
 
     // CLAUSE ISOLATION: r2 has spent nothing. Its own daily_cap (300) and
     // per_tx_cap (300) both admit a 50 payment, it is not frozen, has no
@@ -255,7 +255,7 @@ fn i3_parent_daily_binds_while_child_still_has_headroom() {
 
     testing_env!(ctx(r2(), ZERO, 1).build());
     assert_blocked(
-        v.request_payment("p3".into(), tok(), usdc(50), payee(), "".into()),
+        v.request_payment("p3".into(), tok(), usdc(50), payee(), "".into(), None),
         ReasonCode::ParentDailyBudget, // NOT DailyBudget: the level matters
     );
 }
@@ -268,11 +268,11 @@ fn i1_reallocation_reopens_a_blocked_child() {
     let mut v = t.v;
 
     testing_env!(ctx(r1(), ZERO, 0).build());
-    assert_dispatched(v.request_payment("p1".into(), tok(), usdc(500), payee(), "".into()));
+    assert_dispatched(v.request_payment("p1".into(), tok(), usdc(500), payee(), "".into(), None));
 
     testing_env!(ctx(r2(), ZERO, 1).build());
     assert_blocked(
-        v.request_payment("p3".into(), tok(), usdc(50), payee(), "".into()),
+        v.request_payment("p3".into(), tok(), usdc(50), payee(), "".into(), None),
         ReasonCode::ParentDailyBudget,
     );
 
@@ -284,7 +284,7 @@ fn i1_reallocation_reopens_a_blocked_child() {
     v.set_node_caps(t.research, limit(550, 550));
 
     testing_env!(ctx(r2(), ZERO, 3).build());
-    assert_dispatched(v.request_payment("p4".into(), tok(), usdc(50), payee(), "".into()));
+    assert_dispatched(v.request_payment("p4".into(), tok(), usdc(50), payee(), "".into(), None));
 
     // Reallocation moves headroom BETWEEN siblings; it must not change how
     // much the parent has committed in total. A bookkeeping slip in
@@ -339,10 +339,10 @@ fn i5_per_tx_boundary_exact_then_one_over() {
     v.bind_agent(a, r1());
 
     testing_env!(ctx(r1(), ZERO, 0).build());
-    assert_dispatched(v.request_payment("ok".into(), tok(), usdc(100), payee(), "".into()));
+    assert_dispatched(v.request_payment("ok".into(), tok(), usdc(100), payee(), "".into(), None));
     testing_env!(ctx(r1(), ZERO, 1).build());
     assert_blocked(
-        v.request_payment("no".into(), tok(), usdc(101), payee(), "".into()),
+        v.request_payment("no".into(), tok(), usdc(101), payee(), "".into(), None),
         ReasonCode::PerTxLimit,
     );
 }
@@ -359,7 +359,7 @@ fn i5_ancestor_per_tx_binds_with_its_own_reason_code() {
 
     testing_env!(ctx(r1(), ZERO, 0).build());
     assert_blocked(
-        v.request_payment("x".into(), tok(), usdc(100), payee(), "".into()),
+        v.request_payment("x".into(), tok(), usdc(100), payee(), "".into(), None),
         ReasonCode::ParentPerTxLimit,
     );
 }
@@ -380,16 +380,16 @@ fn i4_cooldown_blocks_one_second_early_and_passes_at_the_boundary() {
     v.bind_agent(a, r1());
 
     testing_env!(ctx(r1(), ZERO, 1_000 * NS_PER_SEC).build());
-    assert_dispatched(v.request_payment("c1".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("c1".into(), tok(), usdc(1), payee(), "".into(), None));
 
     testing_env!(ctx(r1(), ZERO, 1_059 * NS_PER_SEC).build());
     assert_blocked(
-        v.request_payment("c2".into(), tok(), usdc(1), payee(), "".into()),
+        v.request_payment("c2".into(), tok(), usdc(1), payee(), "".into(), None),
         ReasonCode::Cooldown,
     );
 
     testing_env!(ctx(r1(), ZERO, 1_060 * NS_PER_SEC).build());
-    assert_dispatched(v.request_payment("c3".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("c3".into(), tok(), usdc(1), payee(), "".into(), None));
 }
 
 /// A zero cooldown must not block back-to-back payments in the same block.
@@ -398,9 +398,9 @@ fn i4_zero_cooldown_permits_two_payments_at_the_same_timestamp() {
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(r1(), ZERO, 500).build());
-    assert_dispatched(v.request_payment("z1".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("z1".into(), tok(), usdc(1), payee(), "".into(), None));
     testing_env!(ctx(r1(), ZERO, 500).build());
-    assert_dispatched(v.request_payment("z2".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("z2".into(), tok(), usdc(1), payee(), "".into(), None));
 }
 
 // =====================================================================
@@ -412,10 +412,10 @@ fn i7_leaf_inherits_the_nearest_ancestor_allowlist() {
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(r1(), ZERO, 0).build());
-    assert_dispatched(v.request_payment("a".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("a".into(), tok(), usdc(1), payee(), "".into(), None));
     testing_env!(ctx(r1(), ZERO, 1).build());
     assert_blocked(
-        v.request_payment("b".into(), tok(), usdc(1), stranger(), "".into()),
+        v.request_payment("b".into(), tok(), usdc(1), stranger(), "".into(), None),
         ReasonCode::RecipientNotAllowed,
     );
 }
@@ -430,17 +430,17 @@ fn i7_child_allowlist_overrides_rather_than_unions() {
     v.set_recipients(t.n_r1, Some(vec![stranger()]));
 
     testing_env!(ctx(r1(), ZERO, 1).build());
-    assert_dispatched(v.request_payment("c".into(), tok(), usdc(1), stranger(), "".into()));
+    assert_dispatched(v.request_payment("c".into(), tok(), usdc(1), stranger(), "".into(), None));
     testing_env!(ctx(r1(), ZERO, 2).build());
     assert_blocked(
-        v.request_payment("d".into(), tok(), usdc(1), payee(), "".into()),
+        v.request_payment("d".into(), tok(), usdc(1), payee(), "".into(), None),
         ReasonCode::RecipientNotAllowed,
     );
 
     // The sibling still inherits root's list, so the override is scoped to the
     // node it was set on and did not mutate the ancestor.
     testing_env!(ctx(r2(), ZERO, 3).build());
-    assert_dispatched(v.request_payment("e".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("e".into(), tok(), usdc(1), payee(), "".into(), None));
 }
 
 // =====================================================================
@@ -460,7 +460,7 @@ fn freeze_on_an_ancestor_blocks_the_leaf_without_propagating() {
 
     testing_env!(ctx(r1(), ZERO, 1).build());
     assert_blocked(
-        v.request_payment("f".into(), tok(), usdc(1), payee(), "".into()),
+        v.request_payment("f".into(), tok(), usdc(1), payee(), "".into(), None),
         ReasonCode::NodeFrozen,
     );
 
@@ -469,12 +469,12 @@ fn freeze_on_an_ancestor_blocks_the_leaf_without_propagating() {
     let o1 = v.add_node(Some(t.ops), "o1".into(), limit(100, 100), 0, None);
     v.bind_agent(o1, stranger());
     testing_env!(ctx(stranger(), ZERO, 3).build());
-    assert_dispatched(v.request_payment("g".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("g".into(), tok(), usdc(1), payee(), "".into(), None));
 
     testing_env!(ctx(owner(), YOCTO, 4).build());
     v.freeze_node(t.research, false);
     testing_env!(ctx(r1(), ZERO, 5).build());
-    assert_dispatched(v.request_payment("h".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("h".into(), tok(), usdc(1), payee(), "".into(), None));
 }
 
 #[test]
@@ -503,7 +503,7 @@ fn an_unbound_account_cannot_request_a_payment() {
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(stranger(), ZERO, 0).build());
-    let _ = v.request_payment("z".into(), tok(), usdc(1), payee(), "".into());
+    let _ = v.request_payment("z".into(), tok(), usdc(1), payee(), "".into(), None);
 }
 
 /// Owner methods take exactly 1 yoctoNEAR, which is what makes them
@@ -542,7 +542,7 @@ fn purge_settled_never_removes_an_in_flight_request() {
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(r1(), ZERO, 0).build());
-    assert_dispatched(v.request_payment("p1".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("p1".into(), tok(), usdc(1), payee(), "".into(), None));
 
     // In the unit tier the callback never runs, so this request is parked in
     // TRANSFER_PENDING — exactly the state purge must refuse to touch.
@@ -766,6 +766,7 @@ fn list_requests_returns_newest_first() {
             usdc(1),
             payee(),
             "".into(),
+            None,
         ));
     }
     let ids: Vec<String> = v.list_requests(None, None).into_iter().map(|r| r.request_id).collect();
@@ -784,6 +785,7 @@ fn list_requests_honours_from_index_and_limit() {
             usdc(1),
             payee(),
             "".into(),
+            None,
         ));
     }
     let page: Vec<String> = v
@@ -809,6 +811,7 @@ fn list_requests_clamps_an_oversized_limit() {
             usdc(1),
             payee(),
             "".into(),
+            None,
         ));
     }
     assert_eq!(v.list_requests(None, Some(u32::MAX)).len(), 3);
@@ -820,7 +823,7 @@ fn list_requests_past_the_end_is_empty_not_a_panic() {
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(r1(), ZERO, 0).build());
-    assert_dispatched(v.request_payment("q0".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("q0".into(), tok(), usdc(1), payee(), "".into(), None));
     assert_eq!(v.list_requests(Some(99), Some(10)).len(), 0);
 }
 
@@ -831,7 +834,7 @@ fn list_requests_carries_the_reason_code_and_charged_chain() {
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(r1(), ZERO, 0).build());
-    assert_dispatched(v.request_payment("q0".into(), tok(), usdc(1), payee(), "".into()));
+    assert_dispatched(v.request_payment("q0".into(), tok(), usdc(1), payee(), "".into(), None));
 
     let r = &v.list_requests(None, None)[0];
     assert_eq!(r.reason_code, ReasonCode::TransferPending);

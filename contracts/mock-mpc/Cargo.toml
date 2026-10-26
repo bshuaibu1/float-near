@@ -1,0 +1,14 @@
+[package]
+name = "mock-mpc"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = "=5.29.1"
+
+# As with mock-ft: profiles in non-root manifests are ignored by cargo, so
+# overflow-checks lives in the workspace root. The instrument is held to the
+# same standard as the thing it measures.

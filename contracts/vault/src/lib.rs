@@ -10,6 +10,8 @@
 
 pub mod types;
 
+mod evm;
+
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +32,10 @@ pub const MIN_GAS_FOR_DISPATCH: Gas = Gas::from_tgas(50);
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 /// `ft_transfer` returns nothing; anything longer is an unexpected token.
 const MAX_PROMISE_RESULT_LEN: usize = 256;
+/// An MPC signature response is a small struct (big_r, s, recovery_id); this
+/// bounds what the signature callback will copy, for the same out-of-gas
+/// reason as MAX_PROMISE_RESULT_LEN.
+const MAX_MPC_RESULT_LEN: usize = 1024;
 
 pub const PRODUCTION_DAY_NS: u64 = 86_400 * NS_PER_SEC;
 
@@ -50,11 +56,37 @@ pub const MIN_AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_millinear(500);
 /// agent's authority, so it is a single const rather than a parameter.
 pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
 pub const GAS_FOR_CREATE_CALLBACK: Gas = Gas::from_tgas(10);
+
+/// MPC signing is expensive — it fans out across the signer network. Measured
+/// requirement is well above a normal cross-contract call, and an under-funded
+/// sign call that runs out of gas never returns to the callback, which would
+/// leave the reservation held.
+pub const GAS_FOR_MPC_SIGN: Gas = Gas::from_tgas(200);
+pub const GAS_FOR_SIGNATURE_CALLBACK: Gas = Gas::from_tgas(10);
+/// The Base rail needs the sign gas plus its callback, so it demands more
+/// prepaid gas than the NEAR rail. Checked BEFORE anything is charged.
+pub const MIN_GAS_FOR_BASE_DISPATCH: Gas = Gas::from_tgas(230);
 /// Upper bound on a single purge sweep, so one call cannot exhaust gas
 /// part-way and leave an unpredictable amount of work done.
 pub const MAX_PURGE_LIMIT: u32 = 100;
 pub const MAX_SUB_LABEL_LEN: usize = 32;
 pub const MAX_ACCOUNT_ID_LEN: usize = 64;
+
+/// The `sign` entry point of the Chain Signatures MPC contract.
+#[ext_contract(ext_mpc)]
+#[allow(dead_code)]
+trait MpcSigner {
+    fn sign(&mut self, request: SignRequest) -> near_sdk::Promise;
+}
+
+/// What `v1.signer` expects. `payload` is the 32-byte hash — and the whole
+/// design hinges on the vault computing that hash itself.
+#[near(serializers = [json])]
+pub struct SignRequest {
+    pub payload: [u8; 32],
+    pub path: String,
+    pub key_version: u32,
+}
 
 #[ext_contract(ext_ft)]
 #[allow(dead_code)]
@@ -82,6 +114,10 @@ pub struct Vault {
     /// false = overcommit: children contend for a shared parent pool.
     ///         This is the case that races, and the case under test.
     strict_allocation: bool,
+    /// `None` means the Base rail is CLOSED. Default on a fresh deploy, so the
+    /// vault cannot sign a cross-chain transaction until the owner opens the
+    /// rail and names the token contract it is allowed to call.
+    base_config: Option<BaseConfig>,
 
     nodes: LookupMap<NodeId, Node>,
     /// Bounded by MAX_NODES so `get_tree` stays a single view call.
@@ -129,6 +165,7 @@ impl Vault {
             network,
             paused: false,
             strict_allocation,
+            base_config: None,
             nodes: LookupMap::new(StorageKey::Nodes),
             node_order: Vec::new(),
             account_to_node: LookupMap::new(StorageKey::AccountToNode),
@@ -504,10 +541,41 @@ impl Vault {
         self.strict_allocation = strict;
     }
 
+    /// Opens (or re-points) the Base rail. Owner only.
+    ///
+    /// `usdc_address` is validated here rather than at signing time: it is the
+    /// `to` of every transaction this rail will ever sign, so a malformed value
+    /// would be a vault that signs garbage. Rejecting it at configuration time
+    /// means the hot path cannot fail on it.
+    #[payable]
+    pub fn set_base_config(&mut self, config: Option<BaseConfig>) {
+        self.assert_owner();
+        if let Some(c) = &config {
+            if evm::parse_evm_address(&c.usdc_address).is_none() {
+                fail(ReasonCode::InvalidEvmAddress, "usdc_address must be lowercase 0x + 40 hex");
+            }
+            if c.derivation_path.is_empty() || c.derivation_path.len() > 64 {
+                fail(ReasonCode::InvalidEvmAddress, "derivation_path must be 1..=64 chars");
+            }
+        }
+        self.base_config = config;
+    }
+
+    pub fn get_base_config(&self) -> Option<BaseConfig> {
+        self.base_config.clone()
+    }
+
     // ------------------------------------------------------- agent methods
 
     /// NOT `#[payable]`: a function-call key cannot attach a deposit, so this
     /// must stay deposit-free to be callable by a restricted agent key.
+    ///
+    /// `route` absent means the NEAR rail, so every existing caller — and every
+    /// agent key already pinned to `["request_payment"]` — is untouched. A
+    /// second method would have forced re-issuing every agent key; routing both
+    /// rails through this one method also means they share a single
+    /// hierarchical check, which is why the cross-chain path cannot step around
+    /// the budget tree or the payee allowlist.
     pub fn request_payment(
         &mut self,
         request_id: String,
@@ -515,15 +583,24 @@ impl Vault {
         amount: U128,
         recipient: AccountId,
         memo: String,
+        route: Option<Route>,
     ) -> PromiseOrValue<PaymentOutcome> {
+        let route = route.unwrap_or_default();
         let caller = env::predecessor_account_id();
         let node_id = *self
             .account_to_node
             .get(&caller)
             .unwrap_or_else(|| fail(ReasonCode::NotAgent, "caller is not bound to a node"));
 
-        if env::prepaid_gas() < MIN_GAS_FOR_DISPATCH {
-            fail(ReasonCode::InsufficientGas, "attach at least 50 Tgas");
+        let gas_floor = match route {
+            Route::NearDirect => MIN_GAS_FOR_DISPATCH,
+            Route::BaseUsdc { .. } => MIN_GAS_FOR_BASE_DISPATCH,
+        };
+        if env::prepaid_gas() < gas_floor {
+            // Checked before anything is charged. An under-funded dispatch that
+            // ran out of gas mid-flight would never reach the callback, and the
+            // reservation would stay held at every level of the chain.
+            fail(ReasonCode::InsufficientGas, "not enough prepaid gas for this rail");
         }
 
         let node = self.get_node(node_id);
@@ -552,9 +629,29 @@ impl Vault {
                 return blocked(&request_id, node_id, ReasonCode::NodeFrozen);
             }
         }
+        // The payee allowlist runs FIRST and runs for both rails. A Base
+        // destination is carried in this same `recipient` field as a lowercase
+        // `0x…` string, which is a valid NEAR account id, so the cross-chain
+        // rail inherits the allowlist with no new field and no second code
+        // path that could drift from it.
         if !self.effective_recipients(&chain).iter().any(|r| r == &recipient) {
             return blocked(&request_id, node_id, ReasonCode::RecipientNotAllowed);
         }
+
+        // Rail-specific shape checks, AFTER the allowlist so an address that
+        // is merely not allowed never reports as malformed.
+        let base_target = match &route {
+            Route::NearDirect => None,
+            Route::BaseUsdc { .. } => {
+                let Some(cfg) = self.base_config.clone() else {
+                    return blocked(&request_id, node_id, ReasonCode::BaseRailClosed);
+                };
+                match evm::parse_evm_address(recipient.as_str()) {
+                    Some(addr) => Some((cfg, addr)),
+                    None => return blocked(&request_id, node_id, ReasonCode::InvalidEvmAddress),
+                }
+            }
+        };
 
         let now = env::block_timestamp();
         let last = self.last_paid_ns.get(&node_id).copied().unwrap_or(0);
@@ -623,6 +720,7 @@ impl Vault {
                 amount,
                 recipient: recipient.clone(),
                 memo,
+                route: route.clone(),
                 reserved_chain: chain,
                 reserved_day: day,
                 status: Status::TransferPending,
@@ -633,40 +731,98 @@ impl Vault {
         );
 
         // ---- Only now does anything leave the contract.
-        PromiseOrValue::Promise(
-            ext_ft::ext(token)
-                .with_attached_deposit(ONE_YOCTO)
-                .with_static_gas(GAS_FOR_FT_TRANSFER)
-                .ft_transfer(recipient, amount, Some(format!("vault:{request_id}")))
-                .then(
-                    Self::ext(env::current_account_id())
-                        .with_static_gas(GAS_FOR_TRANSFER_CALLBACK)
-                        .on_transfer_result(request_id),
-                ),
-        )
+        //
+        // Both arms resolve through `resolve_reservation`, so the reservation
+        // taken above is released or consumed exactly once either way.
+        match route {
+            Route::NearDirect => PromiseOrValue::Promise(
+                ext_ft::ext(token)
+                    .with_attached_deposit(ONE_YOCTO)
+                    .with_static_gas(GAS_FOR_FT_TRANSFER)
+                    .ft_transfer(recipient, amount, Some(format!("vault:{request_id}")))
+                    .then(
+                        Self::ext(env::current_account_id())
+                            .with_static_gas(GAS_FOR_TRANSFER_CALLBACK)
+                            .on_transfer_result(request_id),
+                    ),
+            ),
+
+            Route::BaseUsdc { nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit } => {
+                // `base_target` was resolved during validation, so both the
+                // config and the parsed address are already known good.
+                let (cfg, payee) = base_target.expect("validated above");
+
+                // THE POINT OF THIS WHOLE BRANCH.
+                //
+                // The contract does not accept a payload to sign. It builds
+                // the ERC-20 calldata and the EIP-1559 transaction from
+                // `payee` and `amount` — the exact values it just checked
+                // against every level of the budget tree and the allowlist —
+                // and signs the hash of its OWN construction.
+                //
+                // Accepting an opaque hash would make all of that decorative:
+                // a compromised agent would pass the hash of a transfer to its
+                // own address, or of `approve(attacker, MAX)`, and the budget
+                // check and the allowlist would both pass while the signature
+                // authorized something else entirely. `to`, `value` and `data`
+                // are therefore never caller-supplied.
+                let fields = evm::Eip1559Fields {
+                    chain_id: cfg.chain_id,
+                    nonce: nonce.0,
+                    max_priority_fee_per_gas: max_priority_fee_per_gas.0,
+                    max_fee_per_gas: max_fee_per_gas.0,
+                    gas_limit: gas_limit.0,
+                    // `to` is the TOKEN contract from owner-set config, not the
+                    // payee — for an ERC-20 transfer the payee lives in the
+                    // calldata. A caller cannot redirect this.
+                    to: evm::parse_evm_address(&cfg.usdc_address)
+                        .expect("validated in set_base_config"),
+                    data: evm::erc20_transfer_calldata(payee, amount.0),
+                };
+
+                PromiseOrValue::Promise(
+                    ext_mpc::ext(cfg.mpc_contract)
+                        .with_static_gas(GAS_FOR_MPC_SIGN)
+                        .sign(SignRequest {
+                            payload: evm::eip1559_sighash(&fields),
+                            path: cfg.derivation_path,
+                            key_version: cfg.key_version,
+                        })
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .with_static_gas(GAS_FOR_SIGNATURE_CALLBACK)
+                                .on_signature_result(request_id),
+                        ),
+                )
+            }
+        }
     }
 
-    /// Releases the reservation on exactly the keys that were charged, and on
-    /// the day it was charged to — `req.reserved_day`, never `today()`. A
-    /// callback landing after midnight would otherwise decrement a zeroed
-    /// ledger.
-    #[private]
-    pub fn on_transfer_result(&mut self, request_id: String) -> PaymentOutcome {
-        // `promise_result_checked` and not `promise_result`: a token whose
-        // ft_transfer returned a large payload would otherwise be copied into
-        // the callback and could exhaust its static gas. An out-of-gas
-        // callback never releases the reservation, which permanently consumes
-        // the budget at every level of the chain — the same blast radius as
-        // deleting the release itself. `ft_transfer` returns nothing, so
-        // anything longer than this bound is an unexpected token contract.
-        let succeeded = env::promise_results_count() == 1
-            && env::promise_result_checked(0, MAX_PROMISE_RESULT_LEN).is_ok();
+    /// Resolves a payment that was dispatched to a rail.
+    ///
+    /// THE invariant lives here, and it lives here ONCE. Both rails — the
+    /// NEP-141 transfer and the Chain Signatures request — resolve through
+    /// this function, which is what makes I6 rail-agnostic rather than
+    /// duplicated: "every `pending` increment has exactly one matching
+    /// decrement, on the same keys and the same day" holds for the cross-chain
+    /// path for the same reason it holds for the NEAR path, because it is
+    /// literally the same code. A second copy would be free to drift.
+    ///
+    /// `reserved_day`, never `today()`: a callback landing after midnight
+    /// would otherwise decrement a zeroed ledger.
+    fn resolve_reservation(
+        &mut self,
+        request_id: &str,
+        succeeded: bool,
+        ok_code: ReasonCode,
+        fail_code: ReasonCode,
+    ) -> PaymentOutcome {
         let now = env::block_timestamp();
 
         let (chain, token, amount, day) = {
             let r = self
                 .requests
-                .get(&request_id)
+                .get(request_id)
                 .unwrap_or_else(|| fail(ReasonCode::UnknownNode, "unknown request"));
             // Idempotency gate: a reservation is released or consumed once.
             if r.status != Status::TransferPending {
@@ -698,17 +854,50 @@ impl Vault {
 
         let r = self
             .requests
-            .get_mut(&request_id)
+            .get_mut(request_id)
             .unwrap_or_else(|| fail(ReasonCode::UnknownNode, "unknown request"));
-        if succeeded {
-            r.status = Status::Settled;
-            r.reason_code = ReasonCode::Settled;
-        } else {
-            r.status = Status::TransferFailed;
-            r.reason_code = ReasonCode::TransferFailed;
-        }
+        r.status = if succeeded { Status::Settled } else { Status::TransferFailed };
+        r.reason_code = if succeeded { ok_code } else { fail_code };
         r.updated_at_ns = U64(now);
         outcome(r)
+    }
+
+    /// NEP-141 rail. A successful promise means value MOVED.
+    #[private]
+    pub fn on_transfer_result(&mut self, request_id: String) -> PaymentOutcome {
+        // `promise_result_checked` and not `promise_result`: a token whose
+        // ft_transfer returned a large payload would otherwise be copied into
+        // the callback and could exhaust its static gas. An out-of-gas
+        // callback never releases the reservation, which permanently consumes
+        // the budget at every level of the chain.
+        let succeeded = env::promise_results_count() == 1
+            && env::promise_result_checked(0, MAX_PROMISE_RESULT_LEN).is_ok();
+        self.resolve_reservation(
+            &request_id,
+            succeeded,
+            ReasonCode::Settled,
+            ReasonCode::TransferFailed,
+        )
+    }
+
+    /// Chain Signatures rail. A successful promise means the MPC network
+    /// returned a SIGNATURE over the Base transaction.
+    ///
+    /// Read that precisely: this proves the vault obtained authority to move
+    /// the funds on Base. It does NOT prove the transaction was relayed or
+    /// included. Relaying is off-chain and the contract cannot observe it, so
+    /// `Signed` is deliberately a distinct reason code from `Settled` — a
+    /// reader of the ledger can tell which guarantee they have.
+    #[private]
+    pub fn on_signature_result(&mut self, request_id: String) -> PaymentOutcome {
+        let succeeded = env::promise_results_count() == 1
+            && env::promise_result_checked(0, MAX_MPC_RESULT_LEN).is_ok();
+        self.resolve_reservation(
+            &request_id,
+            succeeded,
+            ReasonCode::Signed,
+            ReasonCode::SignatureFailed,
+        )
     }
 
     // ---------------------------------------------------------------- views

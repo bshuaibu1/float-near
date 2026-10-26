@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nodeToApiAgent, requestToPayment, blockedToPayment, treeToApiAgents } from "./map.js";
+import { nodeToApiAgent, requestToPayment, blockedToPayment, treeToApiAgents, railOf } from "./map.js";
 import type { VaultNode, VaultRequest } from "./map.js";
 
 // The Float dashboard renders unchanged against these shapes. Every field it
@@ -266,5 +266,30 @@ describe("blockedToPayment", () => {
       // A fallback that just echoes the code is not an explanation.
       expect(m, `${code} fell through to the generic message`).not.toBe(code);
     }
+  });
+});
+
+describe("railOf", () => {
+  // A cross-chain payment shown as a NEAR one is the UI asserting something
+  // false about where the money went — the same failure mode as the "Open
+  // x402" badge, which also passed every test.
+  it("reports base for a Base-routed payment", () => {
+    const p = requestToPayment(
+      req({ route: { base_usdc: { nonce: "0" } } }),
+      { 2: "r1" },
+      D,
+    );
+    expect(p.rail).toBe("base");
+  });
+
+  it("reports near for the NEAR rail", () => {
+    expect(requestToPayment(req({ route: "near_direct" }), {}, D).rail).toBe("near");
+  });
+
+  it("reports near for a request stored before the Base rail existed", () => {
+    // Pre-existing rows have no route field at all. Defaulting to "base" would
+    // retroactively mislabel every historical NEAR payment.
+    expect(railOf(undefined)).toBe("near");
+    expect(railOf(null)).toBe("near");
   });
 });

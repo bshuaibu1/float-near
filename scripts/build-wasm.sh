@@ -39,6 +39,7 @@ build() { # <crate-dir> <output-name> [extra cargo-near args...]
 
 build contracts/vault   vault_test_clock --features test-clock
 build contracts/mock-ft mock_ft
+build contracts/mock-mpc mock_mpc
 
 echo
 ls -l "$OUT"

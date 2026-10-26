@@ -68,10 +68,19 @@ pub struct PaymentRequestView {
     pub reason_code: String,
 }
 
+/// A real Base USDC address, used so the test exercises the same 20-byte shape
+/// production would. Nothing is sent to it — the signature is never relayed.
+pub const BASE_USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+/// An arbitrary lowercase EVM payee.
+pub const EVM_PAYEE: &str = "0x4200000000000000000000000000000000000006";
+/// A SECOND payee, so a test can vary who is paid and not just how much.
+pub const EVM_PAYEE_2: &str = "0x1111111111111111111111111111111111111111";
+
 pub struct Env {
     pub worker: Worker<Sandbox>,
     pub vault: Contract,
     pub ft: Contract,
+    pub mpc: Contract,
     pub owner: Account,
     pub payee: Account,
     pub agents: Vec<Account>,
@@ -97,8 +106,10 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
     let worker = near_workspaces::sandbox().await?;
     let vault = worker.dev_deploy(&wasm("vault_test_clock.wasm")?).await?;
     let ft = worker.dev_deploy(&wasm("mock_ft.wasm")?).await?;
+    let mpc = worker.dev_deploy(&wasm("mock_mpc.wasm")?).await?;
 
     ft.call("new").transact().await?.into_result()?;
+    mpc.call("new").transact().await?.into_result()?;
 
     let owner = worker.dev_create_account().await?;
     let payee = worker.dev_create_account().await?;
@@ -171,7 +182,7 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
         accounts.push(a);
     }
 
-    Ok(Env { worker, vault, ft, owner, payee, agents: accounts })
+    Ok(Env { worker, vault, ft, mpc, owner, payee, agents: accounts })
 }
 
 pub async fn add_node(
@@ -302,4 +313,101 @@ pub async fn purge(e: &Env, before_day: u64, limit: u32) -> Result<u32> {
         .await?
         .into_result()?
         .json()?)
+}
+
+// ------------------------------------------------------- Base / Chain Signatures
+
+/// Opens the Base rail. Left CLOSED by `setup`, so a test that forgets this
+/// gets `BASE_RAIL_CLOSED` rather than an accidental pass.
+pub async fn open_base_rail(e: &Env) -> Result<()> {
+    e.owner
+        .call(e.vault.id(), "set_base_config")
+        .args_json(json!({
+            "config": {
+                "mpc_contract": e.mpc.id(),
+                "usdc_address": BASE_USDC,
+                "chain_id": 84532,
+                "derivation_path": "base-1",
+                "key_version": 0,
+            }
+        }))
+        .deposit(ONE_YOCTO)
+        .transact()
+        .await?
+        .into_result()?;
+    Ok(())
+}
+
+/// Allowlists an EVM destination on a node.
+///
+/// Note what this demonstrates: the cross-chain destination goes through the
+/// SAME `set_recipients` and the SAME allowlist as a NEAR payee. There is no
+/// separate cross-chain allowlist to forget to check.
+pub async fn allow_recipients(e: &Env, node: u32, who: Vec<String>) -> Result<()> {
+    e.owner
+        .call(e.vault.id(), "set_recipients")
+        .args_json(json!({ "node_id": node, "recipients": who }))
+        .deposit(ONE_YOCTO)
+        .transact()
+        .await?
+        .into_result()?;
+    Ok(())
+}
+
+pub async fn pay_base(
+    agent: &Account,
+    e: &Env,
+    request_id: &str,
+    amount: u128,
+    recipient: &str,
+) -> Result<near_workspaces::result::ExecutionFinalResult> {
+    Ok(agent
+        .call(e.vault.id(), "request_payment")
+        .args_json(json!({
+            "request_id": request_id,
+            "token": e.ft.id(),
+            "amount": amount.to_string(),
+            "recipient": recipient,
+            "memo": "",
+            "route": { "base_usdc": {
+                "nonce": "0",
+                "max_priority_fee_per_gas": "1000000",
+                "max_fee_per_gas": "20000000",
+                "gas_limit": "100000",
+            }},
+        }))
+        .max_gas()
+        .transact()
+        .await?)
+}
+
+pub async fn sign_count(e: &Env) -> Result<u32> {
+    Ok(e.mpc.view("sign_count").await?.json()?)
+}
+
+/// The exact bytes the vault asked to have signed.
+pub async fn payload_hex(e: &Env, index: u32) -> Result<Option<String>> {
+    Ok(e.mpc
+        .view("payload_hex")
+        .args_json(json!({ "index": index }))
+        .await?
+        .json()?)
+}
+
+pub async fn signed_path(e: &Env, index: u32) -> Result<Option<String>> {
+    Ok(e.mpc
+        .view("path_at")
+        .args_json(json!({ "index": index }))
+        .await?
+        .json()?)
+}
+
+pub async fn set_fail_signing(e: &Env, fail: bool) -> Result<()> {
+    e.mpc
+        .call("set_fail_signing")
+        .args_json(json!({ "fail": fail }))
+        .transact()
+        .await?
+        .into_result()?;
+    Ok(())
 }

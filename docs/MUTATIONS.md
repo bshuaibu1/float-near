@@ -249,3 +249,42 @@ schedule a promise and the callback never executes there.
 | # | Edit | Why it survives |
 | --- | --- | --- |
 | M5 | merge the two passes into one check-and-charge loop | A panic reverts the whole receipt on NEAR, so a combined loop is safe *today*. The split exists to remove the dependency on that property. A surviving mutation here is a documented design note, not a test to fudge. |
+
+## Chain Signatures rail (`contracts/integration-tests/tests/chain_signatures.rs`)
+
+| # | Edit | Predicted | Actual |
+| --- | --- | --- | --- |
+| M23 | build the ERC-20 calldata with a hardcoded destination instead of the authorized payee | **predicted SURVIVE** | **SURVIVED.** 17/17 green while the vault signed a transfer to `0x…dead` no matter who was authorized. |
+| M24 | build the calldata with a fixed amount instead of the authorized amount | `the_signed_payload_changes_with_the_authorized_amount` | as predicted |
+| M14 (re-run) | collapse the ledger's node dimension to a single pool | the whole hierarchy suite | **7 tests across 3 binaries**, now including `base_route_signs_and_converts_pending_to_executed` |
+| M9 (re-run) | drop the `pending.checked_sub` release in the shared `resolve_reservation` | the reservation tests | 5 sandbox tests, confirming the extracted resolver still carries the invariant for BOTH rails |
+
+### M23 is the one worth reading
+
+It is the worst bug this rail can have — the budget tree passes, the payee
+allowlist passes, and the signature pays an attacker — and the suite could not
+see it. Every test used a single payee, so `..._changes_with_the_authorized_amount`
+varied the wrong axis and the hardcoded destination never showed up.
+
+The missing test (`the_signed_payload_changes_with_the_authorized_payee`) was
+written while M23 was still applied and confirmed red before the mutation was
+reverted. Without that step it would have been 8 greens recorded as "M23
+survives, probably fine".
+
+This is also the argument for building the transaction on-chain at all. Had the
+contract accepted a caller-supplied payload hash, M23 would not have been a
+mutation — it would have been the feature.
+
+### What the Chain Signatures tests do NOT establish
+
+The signer is a mock. These tests prove the vault asks for a signature over a
+transaction it built from the values it authorized, and that a refusal releases
+the reservation. They do not prove the signature is cryptographically valid,
+that the transaction is well-formed to a Base node, or that it would be
+accepted on-chain. That needs a real `v1.signer` and a real relay, and until
+then `SIGNED` is deliberately a different status from `SETTLED`.
+
+The RLP encoder is pinned against the canonical RLP spec vectors in
+`contracts/vault/src/evm.rs` (`dog`, `""`, `[]`, `["cat","dog"]`, the 55/56-byte
+boundary, and integer-zero-as-empty-string) rather than against itself — an
+encoder that is self-consistently wrong would otherwise look correct.

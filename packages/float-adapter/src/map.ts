@@ -41,6 +41,8 @@ export interface VaultRequest {
   memo: string;
   reserved_chain: number[];
   reserved_day: number;
+  /** Absent on requests stored before the Base rail existed. */
+  route?: "near_direct" | { base_usdc: unknown } | null;
   status: string;
   reason_code: string;
   created_at_ns: string;
@@ -208,6 +210,20 @@ function nsToIso(ns: string): string {
   return new Date(Number(BigInt(ns) / 1_000_000n)).toISOString();
 }
 
+/**
+ * Which rail the dashboard shows.
+ *
+ * NOT hardcoded to "near": a cross-chain payment rendered as a NEAR one is the
+ * same class of bug as the "Open x402" badge — the UI stating something false
+ * about where the money went, while every test passes. An unrecognised or
+ * absent route reports "near", because requests stored before the Base rail
+ * existed have no route field and were all NEAR.
+ */
+export function railOf(route: VaultRequest["route"]): string {
+  if (route && typeof route === "object" && "base_usdc" in route) return "base";
+  return "near";
+}
+
 const STATUS: Record<string, string> = {
   SETTLED: "success",
   TRANSFER_FAILED: "failed",
@@ -230,7 +246,7 @@ export function requestToPayment(
     // What the agent paid FOR, which is what the memo carries. The recipient
     // is already its own column, so echoing it adds nothing.
     venue: r.memo || r.recipient,
-    rail: "near",
+    rail: railOf(r.route),
     status: STATUS[r.status] ?? r.status.toLowerCase(),
     txSignature: null,
     createdAt: nsToIso(r.created_at_ns),

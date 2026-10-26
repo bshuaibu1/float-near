@@ -92,14 +92,86 @@ pub struct BudgetView {
     pub available: U128,
 }
 
+/// Which rail settles a payment.
+///
+/// - `NearDirect`: the NEP-141 transfer callback proves SETTLEMENT.
+/// - `BaseUsdc`: the Chain Signatures callback proves the vault obtained a
+///   SIGNATURE over a Base transaction it BUILT ITSELF. It does NOT prove that
+///   transaction landed on Base — relaying is off-chain and unobserved.
+///
+/// Both rails run the SAME hierarchical check and the SAME reservation
+/// lifecycle, so the cross-chain path cannot be used to step around the budget
+/// tree or the payee allowlist.
+///
+/// The `BaseUsdc` fields are fee and ordering parameters ONLY. Everything that
+/// determines WHERE value goes — the token contract, the payee, the amount —
+/// is derived by the contract from what it already authorized, never taken
+/// from the caller. A caller who lies about `max_fee_per_gas` wastes its own
+/// gas; it cannot move the payment.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Route {
+    NearDirect,
+    BaseUsdc {
+        nonce: U64,
+        max_priority_fee_per_gas: U128,
+        max_fee_per_gas: U128,
+        gas_limit: U64,
+    },
+}
+
+impl Default for Route {
+    fn default() -> Self {
+        Self::NearDirect
+    }
+}
+
+impl Route {
+    /// The `rail` label the dashboard shows. A cross-chain payment must not
+    /// render as a NEAR one.
+    pub fn rail(&self) -> &'static str {
+        match self {
+            Route::NearDirect => "near",
+            Route::BaseUsdc { .. } => "base",
+        }
+    }
+}
+
+/// Owner-set parameters for the Base rail.
+///
+/// `None` on the vault means the rail is CLOSED, which is the default: a
+/// freshly deployed vault cannot sign a cross-chain anything until the owner
+/// explicitly opens it and names the token contract.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BaseConfig {
+    /// The MPC signer, e.g. `v1.signer-prod.testnet`.
+    pub mpc_contract: AccountId,
+    /// The ERC-20 USDC contract on Base, lowercase `0x` + 40 hex.
+    pub usdc_address: String,
+    /// 8453 mainnet, 84532 Sepolia. Signed over, so a signature for one chain
+    /// is not valid on the other.
+    pub chain_id: u64,
+    /// MPC derivation path. Fixes which Base address the vault controls.
+    pub derivation_path: String,
+    pub key_version: u32,
+}
+
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Status {
     /// Only ever returned, never stored.
     Blocked,
+    /// Reservation held, awaiting the rail's resolution. Rail-agnostic: a
+    /// pending NEP-141 transfer and a pending MPC signature are the same state
+    /// as far as the ledger is concerned.
     TransferPending,
+    /// The reservation was consumed: pending -> executed.
     Settled,
+    /// The reservation was released back. The reason code says which rail
+    /// failed and how.
     TransferFailed,
 }
 
@@ -130,6 +202,12 @@ pub enum ReasonCode {
     TransferPending,
     Settled,
     TransferFailed,
+    // chain-signature rail
+    BaseRailClosed,
+    SignatureRequested,
+    Signed,
+    SignatureFailed,
+    InvalidEvmAddress,
     // configuration / authorization
     NotOwner,
     InitNotSelf,
@@ -164,6 +242,11 @@ impl ReasonCode {
             TransferPending => "TRANSFER_PENDING",
             Settled => "SETTLED",
             TransferFailed => "TRANSFER_FAILED",
+            BaseRailClosed => "BASE_RAIL_CLOSED",
+            SignatureRequested => "SIGNATURE_REQUESTED",
+            Signed => "SIGNED",
+            SignatureFailed => "SIGNATURE_FAILED",
+            InvalidEvmAddress => "INVALID_EVM_ADDRESS",
             NotOwner => "NOT_OWNER",
             InitNotSelf => "INIT_NOT_SELF",
             InvalidConfig => "INVALID_CONFIG",
@@ -188,6 +271,8 @@ pub struct PaymentRequest {
     pub amount: U128,
     pub recipient: AccountId,
     pub memo: String,
+    /// Which rail is settling this. See `Route` for the guarantee difference.
+    pub route: Route,
     /// The exact ledgers that were charged. The release must mirror this.
     pub reserved_chain: Vec<NodeId>,
     /// The UTC day the reservation was charged to. The callback uses THIS,
