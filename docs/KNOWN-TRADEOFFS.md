@@ -162,19 +162,57 @@ A swept request also becomes terminal and therefore purgeable. Before the sweep
 existed, `purge_settled` could never reclaim a stuck request's storage, because
 it takes only terminal requests.
 
-## 5. What the contract does NOT prove about Base
+## 5. What the contract proves about Base, and what it does not
 
 A successful `sign` promise proves the vault obtained a signature over a
-transaction it built itself. It does **not** prove:
+transaction it built itself. It does **not** prove that the transaction was
+relayed, included, or that USDC moved. Relaying is off-chain and the contract
+cannot observe it. This is why `SIGNED` is a distinct reason code from
+`SETTLED`, and why the dashboard shows `signed` rather than `success` for that
+rail.
 
-- that the signature is valid for Base,
-- that the transaction is well-formed to a Base node,
-- that it was relayed, or included, or that USDC moved.
+### Operator-facilitated delivery — DEMONSTRATED on testnet 2026-10-26
 
-Relaying is off-chain and the contract cannot observe it. This is why `SIGNED`
-is a deliberately distinct reason code from `SETTLED`, and why the dashboard
-reports the rail as `base` rather than `near`. Nothing in this repo has been
-relayed to Base.
+The full loop has now been run end to end:
+
+```
+request      relay-1793046018, authorized on NEAR, reason_code SIGNED
+Base tx      0x7b44c3757569c2e410045be1c188f6d64b2eb595bdf2c6b8a7ca7de1d4f91d8a
+receipt      status SUCCESS, block 50643542, gas used 44843
+Transfer     5.00 USDC  0x2beff9b5...c759 -> 0x4200...0006
+operator     20.00 -> 15.00 USDC   (measured, predicted before the send)
+payee        12.10 -> 17.10 USDC   (+5.00 exactly)
+NEAR budgets unchanged by the delivery
+```
+
+The user funded NEAR only. They never funded the vault's derived Base address.
+
+**This leg is CUSTODIAL.** The operator holds the Base float, pays the gas, and
+could decline to deliver — delivery is a promise backed by the operator, not by
+the chain. Describe it as operator-facilitated. It is not trustless and must
+not be presented as such.
+
+What keeps it honest is the authorization gate: the relayer rebuilds the
+transaction from the request the CONTRACT stored and refuses to move anything
+unless the MPC signature over that rebuild recovers to the vault's derived
+address. So the operator can fail to pay, but cannot be directed to pay someone
+the vault did not authorize. Tested in both directions — a mismatched signature
+recovers to a different address and is refused.
+
+### Vault-signed delivery — still UNPROVEN
+
+`--mode vault` broadcasts the MPC-signed transaction itself, which needs no
+operator and is not custodial. It has NOT been demonstrated: the vault's
+derived address `0x75e2bc908d3eaf42c680404d7770b6b0ec0e7333` holds no ETH and
+no USDC.
+
+It also has a live limitation. The nonce is part of the SIGNED payload, and the
+caller supplies it. With a hardcoded 0 only the first such transaction can ever
+land; the rest are rejected as nonce-too-low **after their NEAR reservation has
+already been consumed**. Even reading the real nonce first does not fix the
+concurrent case, because two payments would be signed for the same nonce.
+Operator mode has no such problem — it reads its own nonce at send time, after
+authorization.
 
 ## 6. A config error no test could catch: chain id vs token address
 
