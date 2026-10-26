@@ -1,0 +1,16 @@
+# This repo is written on Windows but BUILT AND TESTED on Linux (WSL, and any
+# CI runner — near-workspaces ships no Windows sandbox). Mixed line endings
+# showed up as a 617-insertion/315-deletion diff on a purely additive change,
+# and a CRLF shebang in scripts/ fails under bash with "bad interpreter".
+#
+# Normalise everything to LF in the repository.
+* text=auto eol=lf
+
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+
+*.wasm  binary

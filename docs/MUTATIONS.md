@@ -21,7 +21,7 @@ Protocol for every row:
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline: **10 unit + 8 sandbox = 18 passed, 0 failed, 0 warnings.**
+Baseline: **29 unit + 8 sandbox = 37 passed, 0 failed, 0 warnings.**
 
 The sandbox tier must run under Linux or WSL: `near-workspaces` ships a
 sandbox node only for linux-x86_64, linux-aarch64 and darwin-arm64. Build the
@@ -177,6 +177,29 @@ key that cannot transact at all. The allowance is now an owner-chosen parameter
 with a measured floor (`MIN_AGENT_KEY_ALLOWANCE`), and the agent's own calls in
 the tests are gas-bounded rather than `max_gas`.
 
+
+### M6 / M7 / M12 / M13 — the remaining unit-tier guards
+
+Run as a batch by a driver that compares the exact SET of failing test names
+against the prediction, not just the count. A matching count with different
+names would mean the prediction was wrong and something else broke.
+
+| # | Edit | Predicted red | Actual |
+| --- | --- | --- | --- |
+| M6 | cooldown `now < last + cd` → `<=` | `i4_cooldown_blocks_one_second_early_and_passes_at_the_boundary` | ✅ exact set match |
+| M7 | per-tx `amount > per_tx_cap` → `>=` | `i5_per_tx_boundary_exact_then_one_over`, `i3_parent_daily_binds_while_child_still_has_headroom`, `i1_reallocation_reopens_a_blocked_child` | ✅ exact set match |
+| M12 | freeze check `&chain` → `&[node_id]` | `freeze_on_an_ancestor_blocks_the_leaf_without_propagating` | ✅ exact set match |
+| M13 | `effective_recipients` returns inherited ∪ own | `i7_child_allowlist_overrides_rather_than_unions` | ✅ exact set match |
+
+M7 was predicted at **three** tests rather than one, because the shared `tree()`
+fixture gives `r1` a per-tx cap of 500 and two existing tests pay exactly 500.
+Predicting one and seeing three would have looked like an unexplained extra
+failure; predicting the set made it a match.
+
+M6's zero-cooldown sibling (`i4_zero_cooldown_permits_two_payments_at_the_same_timestamp`)
+is correctly unaffected, because the `cooldown_sec > 0` guard short-circuits
+before the comparator.
+
 ---
 
 ## Queued (the tests exist; the mutation has not been run yet)
@@ -198,8 +221,6 @@ schedule a promise and the callback never executes there.
 | M21 | plain `cargo build --target wasm32-unknown-unknown` instead of `cargo near build` | `reason_code_panics_reach_the_receipt_outcome`. **This one already fired for real:** the tier was initially built the plain way, every panic arrived as `WebAssembly trap: unreachable`, and the contract's stable reason codes were silently gone. |
 | M22 | `TEST_DAY_NS` as the default day length in `setup()` | `concurrency_parent_cap_is_exact_*` (via the one-day-bucket assertion). **Also fired for real:** a 100 ms day made `current_day()` a moving target and would have let 16 concurrent payments draw on two separate daily budgets. |
 | M10 | remove the `status != TransferPending` idempotency gate | forced-failure test (figures double) |
-| M12 | freeze check `&chain` → leaf only | freeze-subtree test |
-| M13 | `effective_recipients` returns inherited ∪ own | allowlist-override test |
 | M17 | mock's `ft_transfer` returns instead of panicking when armed | forced-failure test (differential control) |
 | M18 | drop the receiver-registration check in the mock | `unregistered_recipient_releases_the_reservation` |
 

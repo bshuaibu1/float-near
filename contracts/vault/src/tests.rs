@@ -36,8 +36,7 @@ fn owner() -> AccountId {
 fn payee() -> AccountId {
     accounts(1) // bob — allowlisted on root
 }
-/// carol — never allowlisted. Consumed by the I7 allowlist tests (day 10).
-#[allow(dead_code)]
+/// carol — never on root's allowlist.
 fn stranger() -> AccountId {
     accounts(2)
 }
@@ -83,12 +82,9 @@ fn new_vault(strict: bool) -> Vault {
 /// the default fixture rather than needing a dedicated setup.
 struct Tree {
     v: Vault,
-    /// `root` and `n_r1` are consumed by the freeze and I5-chain tests (day 10).
-    #[allow(dead_code)]
     root: NodeId,
     research: NodeId,
     ops: NodeId,
-    #[allow(dead_code)]
     n_r1: NodeId,
     n_r2: NodeId,
 }
@@ -280,14 +276,25 @@ fn i1_reallocation_reopens_a_blocked_child() {
         ReasonCode::ParentDailyBudget,
     );
 
-    // Free 50 under root, then grow research by the same 50. Root's children
-    // sum stays at 800 <= 1000, so the root total never moves.
+    let committed_before = v.get_node(t.root).child_sum_for(&tok());
+
+    // Free 50 under root, then grow research by the same 50.
     testing_env!(ctx(owner(), YOCTO, 2).build());
     v.set_node_caps(t.ops, limit(250, 250));
     v.set_node_caps(t.research, limit(550, 550));
 
     testing_env!(ctx(r2(), ZERO, 3).build());
     assert_dispatched(v.request_payment("p4".into(), tok(), usdc(50), payee(), "".into()));
+
+    // Reallocation moves headroom BETWEEN siblings; it must not change how
+    // much the parent has committed in total. A bookkeeping slip in
+    // `bump_child_sum` would drift this.
+    assert_eq!(
+        v.get_node(t.root).child_sum_for(&tok()),
+        committed_before,
+        "root's committed total changed during a sibling reallocation"
+    );
+    assert_eq!(v.get_node(t.root).child_sum_for(&tok()), usdc(800).0);
 }
 
 // =====================================================================
@@ -312,4 +319,299 @@ fn production_build_reports_production_clock_and_a_real_day() {
     assert_eq!(v.clock_mode(), "production");
     assert_eq!(v.day_len_ns(), PRODUCTION_DAY_NS);
     assert_eq!(PRODUCTION_DAY_NS, 86_400_000_000_000);
+}
+
+// =====================================================================
+// I5 — per-transaction caps
+//
+// CLAUSE ISOLATION throughout: daily_cap is 1_000_000 so the daily clause
+// cannot fire, no node is frozen, no cooldown is set, and the recipient is
+// allowlisted. Only per_tx_cap can reject.
+// =====================================================================
+
+#[test]
+fn i5_per_tx_boundary_exact_then_one_over() {
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let root =
+        v.add_node(None, "root".into(), limit(1_000_000, 1_000_000), 0, Some(vec![payee()]));
+    let a = v.add_node(Some(root), "a".into(), limit(1_000_000, 100), 0, None);
+    v.bind_agent(a, r1());
+
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("ok".into(), tok(), usdc(100), payee(), "".into()));
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("no".into(), tok(), usdc(101), payee(), "".into()),
+        ReasonCode::PerTxLimit,
+    );
+}
+
+/// Within the AGENT's per-tx cap but over an ANCESTOR's. The distinct reason
+/// code is the point: `PerTxLimit` here would mean the chain was never walked.
+#[test]
+fn i5_ancestor_per_tx_binds_with_its_own_reason_code() {
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let root = v.add_node(None, "root".into(), limit(1_000_000, 50), 0, Some(vec![payee()]));
+    let a = v.add_node(Some(root), "a".into(), limit(1_000_000, 500), 0, None);
+    v.bind_agent(a, r1());
+
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment("x".into(), tok(), usdc(100), payee(), "".into()),
+        ReasonCode::ParentPerTxLimit,
+    );
+}
+
+// =====================================================================
+// I4 — cooldown
+// =====================================================================
+
+/// 2-row table on the comparator: at EXACTLY the cooldown it must pass.
+/// CLAUSE ISOLATION: caps are 1_000_000, so only cooldown can fire.
+#[test]
+fn i4_cooldown_blocks_one_second_early_and_passes_at_the_boundary() {
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let root =
+        v.add_node(None, "root".into(), limit(1_000_000, 1_000_000), 0, Some(vec![payee()]));
+    let a = v.add_node(Some(root), "a".into(), limit(1_000_000, 1_000_000), 60, None);
+    v.bind_agent(a, r1());
+
+    testing_env!(ctx(r1(), ZERO, 1_000 * NS_PER_SEC).build());
+    assert_dispatched(v.request_payment("c1".into(), tok(), usdc(1), payee(), "".into()));
+
+    testing_env!(ctx(r1(), ZERO, 1_059 * NS_PER_SEC).build());
+    assert_blocked(
+        v.request_payment("c2".into(), tok(), usdc(1), payee(), "".into()),
+        ReasonCode::Cooldown,
+    );
+
+    testing_env!(ctx(r1(), ZERO, 1_060 * NS_PER_SEC).build());
+    assert_dispatched(v.request_payment("c3".into(), tok(), usdc(1), payee(), "".into()));
+}
+
+/// A zero cooldown must not block back-to-back payments in the same block.
+#[test]
+fn i4_zero_cooldown_permits_two_payments_at_the_same_timestamp() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 500).build());
+    assert_dispatched(v.request_payment("z1".into(), tok(), usdc(1), payee(), "".into()));
+    testing_env!(ctx(r1(), ZERO, 500).build());
+    assert_dispatched(v.request_payment("z2".into(), tok(), usdc(1), payee(), "".into()));
+}
+
+// =====================================================================
+// I7 — allowlist
+// =====================================================================
+
+#[test]
+fn i7_leaf_inherits_the_nearest_ancestor_allowlist() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("a".into(), tok(), usdc(1), payee(), "".into()));
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("b".into(), tok(), usdc(1), stranger(), "".into()),
+        ReasonCode::RecipientNotAllowed,
+    );
+}
+
+/// A child list REPLACES the inherited one; it does not union with it. Pins a
+/// real design decision — without this, either behaviour passes.
+#[test]
+fn i7_child_allowlist_overrides_rather_than_unions() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_recipients(t.n_r1, Some(vec![stranger()]));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_dispatched(v.request_payment("c".into(), tok(), usdc(1), stranger(), "".into()));
+    testing_env!(ctx(r1(), ZERO, 2).build());
+    assert_blocked(
+        v.request_payment("d".into(), tok(), usdc(1), payee(), "".into()),
+        ReasonCode::RecipientNotAllowed,
+    );
+
+    // The sibling still inherits root's list, so the override is scoped to the
+    // node it was set on and did not mutate the ancestor.
+    testing_env!(ctx(r2(), ZERO, 3).build());
+    assert_dispatched(v.request_payment("e".into(), tok(), usdc(1), payee(), "".into()));
+}
+
+// =====================================================================
+// Freeze, depth, authorization
+// =====================================================================
+
+/// Freeze is enforced by walking the ancestor chain on the hot path, NOT by
+/// propagating a flag to children. The `!frozen` assertion is what
+/// distinguishes those two implementations.
+#[test]
+fn freeze_on_an_ancestor_blocks_the_leaf_without_propagating() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.freeze_node(t.research, true);
+    assert!(!v.get_node(t.n_r1).frozen, "freeze must NOT be written into children");
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("f".into(), tok(), usdc(1), payee(), "".into()),
+        ReasonCode::NodeFrozen,
+    );
+
+    // A node outside the frozen subtree is unaffected.
+    testing_env!(ctx(owner(), YOCTO, 2).build());
+    let o1 = v.add_node(Some(t.ops), "o1".into(), limit(100, 100), 0, None);
+    v.bind_agent(o1, stranger());
+    testing_env!(ctx(stranger(), ZERO, 3).build());
+    assert_dispatched(v.request_payment("g".into(), tok(), usdc(1), payee(), "".into()));
+
+    testing_env!(ctx(owner(), YOCTO, 4).build());
+    v.freeze_node(t.research, false);
+    testing_env!(ctx(r1(), ZERO, 5).build());
+    assert_dispatched(v.request_payment("h".into(), tok(), usdc(1), payee(), "".into()));
+}
+
+#[test]
+#[should_panic(expected = "MAX_DEPTH")]
+fn depth_beyond_max_is_rejected() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    // root -> research -> r1 already occupies all MAX_DEPTH levels.
+    v.add_node(Some(t.n_r1), "too-deep".into(), limit(10, 10), 0, None);
+}
+
+#[test]
+fn depth_exactly_at_max_is_allowed() {
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let root = v.add_node(None, "root".into(), limit(100, 100), 0, Some(vec![payee()]));
+    let team = v.add_node(Some(root), "team".into(), limit(100, 100), 0, None);
+    let leaf = v.add_node(Some(team), "leaf".into(), limit(100, 100), 0, None);
+    assert_eq!(v.get_node(leaf).path, vec![root, team], "leaf path is root-first");
+}
+
+#[test]
+#[should_panic(expected = "NOT_AGENT")]
+fn an_unbound_account_cannot_request_a_payment() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    let _ = v.request_payment("z".into(), tok(), usdc(1), payee(), "".into());
+}
+
+/// Owner methods take exactly 1 yoctoNEAR, which is what makes them
+/// unreachable from an agent function-call key (such a key cannot attach any
+/// deposit). Pinned behaviourally in the sandbox tier and structurally here.
+#[test]
+#[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
+fn owner_methods_reject_a_zero_deposit() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), ZERO, 0).build());
+    v.set_node_caps(t.ops, limit(10, 10));
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn a_non_owner_cannot_call_an_owner_method() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(stranger(), YOCTO, 0).build());
+    v.freeze_node(t.ops, true);
+}
+
+// =====================================================================
+// create_agent_account validation
+//
+// The happy path needs a real account to exist, so it is proven behaviourally
+// in the sandbox tier. These pin the rejections, which are cheap panics.
+// =====================================================================
+
+fn a_public_key() -> near_sdk::PublicKey {
+    "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp".parse().unwrap()
+}
+
+fn funded(allowance: NearToken) -> NearToken {
+    allowance.saturating_add(AGENT_ACCOUNT_STORAGE)
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn create_agent_account_rejects_a_non_owner() {
+    let t = tree();
+    let mut v = t.v;
+    let a = NearToken::from_near(2);
+    testing_env!(ctx(stranger(), funded(a), 0).build());
+    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
+}
+
+/// One yoctoNEAR under the floor. The floor exists because a smaller allowance
+/// cannot cover prepaid gas, producing a key that is dead on arrival.
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn create_agent_account_rejects_an_allowance_below_the_usable_floor() {
+    let t = tree();
+    let mut v = t.v;
+    let a = MIN_AGENT_KEY_ALLOWANCE.saturating_sub(NearToken::from_yoctonear(1));
+    testing_env!(ctx(owner(), funded(MIN_AGENT_KEY_ALLOWANCE), 0).build());
+    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
+}
+
+#[test]
+fn create_agent_account_accepts_exactly_the_floor() {
+    let t = tree();
+    let mut v = t.v;
+    let a = MIN_AGENT_KEY_ALLOWANCE;
+    testing_env!(ctx(owner(), funded(a), 0).build());
+    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
+}
+
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn create_agent_account_rejects_a_deposit_that_does_not_cover_storage() {
+    let t = tree();
+    let mut v = t.v;
+    let a = NearToken::from_near(2);
+    testing_env!(ctx(owner(), funded(a).saturating_sub(NearToken::from_yoctonear(1)), 0).build());
+    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
+}
+
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn create_agent_account_rejects_an_uppercase_sub_label() {
+    let t = tree();
+    let mut v = t.v;
+    let a = NearToken::from_near(2);
+    testing_env!(ctx(owner(), funded(a), 0).build());
+    let _ = v.create_agent_account(t.ops, "Agent".into(), a_public_key(), a);
+}
+
+/// A dot would let the caller aim the new account outside this vault's
+/// subtree, which is the whole reason the id is derived rather than accepted.
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn create_agent_account_rejects_a_dotted_sub_label() {
+    let t = tree();
+    let mut v = t.v;
+    let a = NearToken::from_near(2);
+    testing_env!(ctx(owner(), funded(a), 0).build());
+    let _ = v.create_agent_account(t.ops, "a.b".into(), a_public_key(), a);
+}
+
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn create_agent_account_rejects_a_node_that_already_has_an_account() {
+    let t = tree();
+    let mut v = t.v;
+    let a = NearToken::from_near(2);
+    testing_env!(ctx(owner(), funded(a), 0).build());
+    // n_r1 is already bound to r1() by the fixture.
+    let _ = v.create_agent_account(t.n_r1, "dup".into(), a_public_key(), a);
 }
