@@ -18,6 +18,7 @@
  */
 
 import { createServer } from "node:http";
+import { readFileSync, existsSync } from "node:fs";
 import { toBaseUnits, fromBaseUnits } from "@near-vault/mcp/amounts";
 import { newRequestId, requireAgentKey, viewAccessKeys, viewFunction } from "@near-vault/mcp";
 import { sendRequestPayment } from "@near-vault/mcp/sign";
@@ -49,6 +50,10 @@ const env = {
   agentId: process.env.NEAR_VAULT_AGENT_ID,
   agentKey: process.env.NEAR_VAULT_AGENT_KEY,
   port: Number(process.env.PORT ?? "8787"),
+  // Where the relayer records Base deliveries. Read fresh on each request so a
+  // delivery that lands while this server is running appears without a
+  // restart — the file is small and this is a dashboard, not a hot path.
+  relayLedger: process.env.RELAY_LEDGER ?? ".demo/relay-ledger.json",
 };
 
 if (!env.vault || !env.token) {
@@ -79,6 +84,18 @@ const server = createServer(async (req, res) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   };
+
+  // A missing or malformed ledger yields NO deliveries, never a crash and
+  // never an invented one: the worst it can do is under-report delivery, which
+  // is the safe direction for a claim the chain cannot back.
+  cfg.deliveries = (() => {
+    try {
+      if (!existsSync(env.relayLedger)) return {};
+      return JSON.parse(readFileSync(env.relayLedger, "utf8"));
+    } catch {
+      return {};
+    }
+  })();
 
   try {
     if (url.pathname === "/v1/dashboard") {

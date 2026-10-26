@@ -22,9 +22,28 @@ import {
 
 export type ViewFn = <T>(method: string, args?: unknown) => Promise<T>;
 
+/** What the relayer recorded about a Base delivery. */
+export interface DeliveryRecord {
+  mode: "vault" | "operator";
+  baseTxHash: string;
+  payee: string;
+  amount: string;
+  at: string;
+}
+
 export interface AdapterConfig {
   token: string;
   decimals: number;
+  /**
+   * Base deliveries, keyed by request id, as the relayer recorded them.
+   *
+   * OFF-CHAIN ON PURPOSE. The NEAR budget already moved when the vault signed;
+   * delivery on Base is something an operator observed, not something the
+   * contract can attest. Keeping it in a separate map means a missing or lying
+   * ledger can only ever UNDERSTATE delivery — it can never invent budget or
+   * contradict the chain.
+   */
+  deliveries?: Record<string, DeliveryRecord>;
   /** Bounded, in-memory. See `recordBlocked`. */
   blockedRing: Payment[];
   maxBlocked: number;
@@ -278,7 +297,9 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
     view<{ paused: boolean; owner: string; vault_id: string }>("get_config", {}),
   ]);
   const agents: ApiAgent[] = treeToApiAgents(tree, budgets, cfg.decimals, lifetimeByNode(requests));
-  const onchain = requests.map((r) => requestToPayment(r, labels, cfg.decimals));
+  const onchain = requests.map((r) =>
+    requestToPayment(r, labels, cfg.decimals, cfg.deliveries?.[r.request_id]),
+  );
   const recent = [...cfg.blockedRing, ...onchain]
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     .slice(0, 20);
@@ -336,7 +357,9 @@ export async function getSpendHistory(
     from_index: offset,
     limit,
   });
-  const onchain = requests.map((r) => requestToPayment(r, labels, cfg.decimals));
+  const onchain = requests.map((r) =>
+    requestToPayment(r, labels, cfg.decimals, cfg.deliveries?.[r.request_id]),
+  );
 
   // Blocked rows only belong on the FIRST page: they live in memory, not in
   // the contract's paged list, so splicing them into later pages would

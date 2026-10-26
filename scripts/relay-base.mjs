@@ -1,44 +1,56 @@
 #!/usr/bin/env node
 /**
- * Relays a Base transaction the vault has already signed.
+ * Delivers a Base payment the NEAR vault has already authorized.
  *
- * THIS SCRIPT IS OUTSIDE THE TRUST MODEL, deliberately and completely. It
- * holds no key, signs nothing, and cannot cause a payment. Everything that
- * decides WHERE value goes was fixed on NEAR before this runs: the vault built
- * the ERC-20 calldata and the EIP-1559 transaction from the amount and payee
- * it had already checked against every level of the budget tree, and the MPC
- * network signed that. A relayer can broadcast that transaction or fail to —
- * nothing else. If this script is wrong, hostile, or absent, the worst outcome
- * is that a payment does not land; no payment that the vault refused can be
- * made to happen here.
+ * TWO MODES, ONE AUTHORIZATION GATE.
  *
- * It reconstructs the unsigned transaction from the request the CONTRACT
- * stored, not from anything the caller supplies, then proves the
- * reconstruction is byte-identical to what was signed by recovering the sender
- * and checking it against the vault's MPC-derived address. A single byte of
- * disagreement in the RLP yields a different sender, so that check is a real
- * proof rather than a formality.
+ *   --mode vault     broadcast the transaction the MPC signed. Needs the
+ *                    vault's own derived Base address funded with ETH + USDC.
+ *                    Non-custodial: nobody but the MPC can move those funds.
+ *
+ *   --mode operator  send USDC from an OPERATOR address and pay the Base gas,
+ *                    so the user funds NEAR only. CUSTODIAL ON THE BASE LEG —
+ *                    the operator holds that float and could in principle not
+ *                    deliver. Say so plainly anywhere this is described.
+ *
+ * What makes operator mode safe is the gate they share. Before either mode
+ * moves anything, the script rebuilds the exact transaction from the request
+ * THE CONTRACT STORED, and checks that the MPC signature over that rebuild
+ * recovers to the vault's derived address. That proves the vault authorized
+ * this payee for this amount. Without that check, operator mode would mean
+ * "whoever can call the adapter can spend the operator's money".
+ *
+ * THIS SCRIPT IS OUTSIDE THE TRUST MODEL for the NEAR side. It cannot cause a
+ * payment the vault refused, cannot change a budget, and holds no NEAR key.
+ * The budget tree on NEAR remains the only source of truth for what may be
+ * spent; delivery on Base is an off-chain fact recorded off-chain.
  *
  * Usage:
- *   node scripts/relay-base.mjs <near-tx-hash> <signer-account-id> [--broadcast]
- *
- * Without --broadcast it stops after verification and prints the raw
- * transaction. Nothing is sent.
+ *   node scripts/relay-base.mjs <near-tx-hash> <signer-account-id> [options]
+ *     --mode vault|operator   default: vault
+ *     --send                  actually move funds. Without it, verify only.
+ *   env:
+ *     RELAY_REQUEST_ID        required — the vault indexes by request id
+ *     OPERATOR_PRIVATE_KEY    required for --mode operator (hex, 32 bytes)
+ *     RELAY_LEDGER            default .demo/relay-ledger.json
  */
 
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { keccak_256 } from "@noble/hashes/sha3";
 
 const NEAR_RPC = process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com";
 const BASE_RPC = process.env.BASE_RPC_URL ?? "https://base-sepolia-rpc.publicnode.com";
 const VAULT = process.env.NEAR_VAULT_CONTRACT ?? "v3.floatvault-12329.testnet";
+const SIGNER = process.env.MPC_CONTRACT ?? "v1.signer-prod.testnet";
+const LEDGER = process.env.RELAY_LEDGER ?? ".demo/relay-ledger.json";
 
 // ---------------------------------------------------------------- utilities
 
 const hex = (b) => Buffer.from(b).toString("hex");
 const fromHex = (s) => Buffer.from(s.replace(/^0x/, ""), "hex");
 
-/** base58, for NEAR's `secp256k1:<base58>` public keys. */
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function b58decode(s) {
   let n = 0n;
@@ -52,9 +64,9 @@ function b58decode(s) {
   return Buffer.from(h, "hex");
 }
 
-// RLP, mirroring contracts/vault/src/evm.rs exactly. The Rust side is pinned
-// against the canonical spec vectors; this must agree with it byte for byte or
-// the recovered sender will not match.
+// RLP, mirroring contracts/vault/src/evm.rs. The Rust side is pinned against
+// the canonical spec vectors; this must agree byte for byte or the recovered
+// sender will not match — which is exactly how the gate below detects drift.
 function beMinimal(n) {
   if (n === 0n) return Buffer.alloc(0);
   let h = n.toString(16);
@@ -77,6 +89,17 @@ function rlpList(items) {
 
 const addressOf = (uncompressed64) => "0x" + hex(keccak_256(uncompressed64).slice(-20));
 
+/** ERC-20 transfer(to, amount) calldata. */
+function transferCalldata(payee, amount) {
+  return Buffer.concat([
+    Buffer.from("a9059cbb", "hex"),
+    Buffer.alloc(12),
+    payee,
+    Buffer.alloc(16),
+    Buffer.from(amount.toString(16).padStart(32, "0"), "hex"),
+  ]);
+}
+
 async function rpc(url, body) {
   const r = await fetch(url, {
     method: "POST",
@@ -86,6 +109,11 @@ async function rpc(url, body) {
   if (!r.ok) throw new Error(`${url} returned HTTP ${r.status}`);
   return r.json();
 }
+const baseCall = async (method, params) => {
+  const d = await rpc(BASE_RPC, { method, params });
+  if (d.error) throw new Error(`${method}: ${JSON.stringify(d.error)}`);
+  return d.result;
+};
 
 async function nearView(account, method, args) {
   const d = await rpc(NEAR_RPC, {
@@ -104,142 +132,283 @@ async function nearView(account, method, args) {
 }
 
 /**
- * Pull the MPC signature out of the NEAR transaction.
+ * The MPC signature, from the NEAR transaction's receipts.
  *
- * The signature is NOT stored on-chain by the vault — the callback only checks
- * whether the promise succeeded. It exists only in the receipt outcome of the
- * `sign` call, so the relayer reads it from the transaction itself.
+ * It is NOT stored on-chain — the vault's callback only checks whether the
+ * promise succeeded, so the signature exists only in the receipt outcome.
  */
 async function signatureFromTx(txHash, senderId) {
-  const d = await rpc(NEAR_RPC, {
-    method: "EXPERIMENTAL_tx_status",
-    params: [txHash, senderId],
-  });
+  const d = await rpc(NEAR_RPC, { method: "EXPERIMENTAL_tx_status", params: [txHash, senderId] });
   if (d.error) throw new Error(`tx_status: ${JSON.stringify(d.error).slice(0, 300)}`);
-  const outcomes = d.result?.receipts_outcome ?? [];
-  for (const o of outcomes) {
+  for (const o of d.result?.receipts_outcome ?? []) {
     const sv = o.outcome?.status?.SuccessValue;
     if (!sv) continue;
-    let parsed;
     try {
-      parsed = JSON.parse(Buffer.from(sv, "base64").toString("utf8"));
+      const parsed = JSON.parse(Buffer.from(sv, "base64").toString("utf8"));
+      if (parsed?.big_r && parsed?.s) return parsed;
     } catch {
-      continue;
+      /* not the signature receipt */
     }
-    if (parsed && parsed.big_r && parsed.s) return parsed;
   }
   throw new Error(
-    "no MPC signature found in this transaction's receipts. Was it a Base-routed " +
-      "payment that reached the signer? A BLOCKED payment never calls sign.",
+    "no MPC signature in this transaction's receipts. A BLOCKED payment never " +
+      "reaches the signer, which is the point — there is nothing to deliver.",
   );
+}
+
+// ------------------------------------------------- the authorization gate
+
+/**
+ * Proves the vault authorized this exact payee and amount.
+ *
+ * Everything here comes from the CONTRACT's stored request, never from the
+ * caller. Returns the verified facts both modes rely on.
+ */
+async function verifyAuthorization(requestId, txHash, senderId) {
+  const cfg = await nearView(VAULT, "get_base_config", {});
+  if (!cfg) throw new Error("the Base rail is closed on this vault");
+
+  const req = await nearView(VAULT, "get_request", { request_id: requestId });
+  if (!req) throw new Error(`no stored request ${requestId}`);
+  if (req.reason_code !== "SIGNED") {
+    throw new Error(
+      `request ${requestId} is ${req.reason_code}, not SIGNED. Nothing was authorized.`,
+    );
+  }
+  const route = req.route?.base_usdc;
+  if (!route) throw new Error(`request ${requestId} was not routed over Base`);
+
+  const sig = await signatureFromTx(txHash, senderId);
+
+  const to = fromHex(cfg.usdc_address);
+  const payee = fromHex(req.recipient);
+  const amount = BigInt(req.amount);
+  const data = transferCalldata(payee, amount);
+
+  const fields = [
+    rlpUint(BigInt(cfg.chain_id)),
+    rlpUint(BigInt(route.nonce)),
+    rlpUint(BigInt(route.max_priority_fee_per_gas)),
+    rlpUint(BigInt(route.max_fee_per_gas)),
+    rlpUint(BigInt(route.gas_limit)),
+    rlpBytes(to),
+    rlpUint(0n),
+    rlpBytes(data),
+    rlpList([]),
+  ];
+  const unsigned = Buffer.concat([Buffer.from([0x02]), rlpList(fields)]);
+  const sighash = keccak_256(unsigned);
+
+  const r = BigInt("0x" + sig.big_r.affine_point.slice(2));
+  const s = BigInt("0x" + sig.s.scalar);
+  const recovered = new secp256k1.Signature(r, s)
+    .addRecoveryBit(sig.recovery_id)
+    .recoverPublicKey(sighash)
+    .toRawBytes(false)
+    .slice(1);
+  const recoveredAddr = addressOf(recovered);
+
+  const derivedPk = await nearView(SIGNER, "derived_public_key", {
+    path: cfg.derivation_path,
+    predecessor: VAULT,
+    domain_id: cfg.domain_id,
+  });
+  const vaultAddr = addressOf(b58decode(derivedPk.split(":")[1]));
+
+  if (recoveredAddr !== vaultAddr) {
+    throw new Error(
+      `AUTHORIZATION MISMATCH. Rebuilt transaction recovers to ${recoveredAddr}, ` +
+        `but the vault's address is ${vaultAddr}. Refusing to move anything.`,
+    );
+  }
+
+  const rawSigned =
+    "0x" +
+    hex(
+      Buffer.concat([
+        Buffer.from([0x02]),
+        rlpList([...fields, rlpUint(BigInt(sig.recovery_id)), rlpUint(r), rlpUint(s)]),
+      ]),
+    );
+
+  return { cfg, req, route, payee, amount, usdc: to, sighash, vaultAddr, rawSigned };
+}
+
+// -------------------------------------------------------------- the ledger
+
+/**
+ * Delivery is an OFF-CHAIN fact and is recorded off-chain. The NEAR budget
+ * already moved when the vault signed; nothing here may change it.
+ *
+ * It also makes delivery idempotent: paying the same request twice would spend
+ * the operator's float for one authorization.
+ */
+function readLedger() {
+  if (!existsSync(LEDGER)) return {};
+  try {
+    return JSON.parse(readFileSync(LEDGER, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function writeLedger(l) {
+  mkdirSync(dirname(LEDGER), { recursive: true });
+  writeFileSync(LEDGER, JSON.stringify(l, null, 2) + "\n");
+}
+
+// ---------------------------------------------------------- operator mode
+
+function operatorKey() {
+  const k = process.env.OPERATOR_PRIVATE_KEY;
+  if (!k) {
+    throw new Error(
+      "OPERATOR_PRIVATE_KEY is not set. Operator mode sends USDC from an address " +
+        "you control and pays the Base gas, so the user funds NEAR only. That leg " +
+        "is CUSTODIAL — describe it as operator-facilitated, never as trustless.",
+    );
+  }
+  return fromHex(k);
+}
+
+/** Builds, signs and (optionally) sends a transfer from the operator. */
+async function operatorSend({ usdc, payee, amount, chainId, send }) {
+  const priv = operatorKey();
+  const pub = secp256k1.getPublicKey(priv, false).slice(1);
+  const from = addressOf(pub);
+  console.log("operator address :", from);
+
+  // Preflight, so an underfunded operator fails with a sentence rather than a
+  // chain error after the fact.
+  const [balHex, ethHex, nonceHex, feeHex] = await Promise.all([
+    baseCall("eth_call", [
+      { to: "0x" + hex(usdc), data: "0x70a08231" + "0".repeat(24) + from.slice(2) },
+      "latest",
+    ]),
+    baseCall("eth_getBalance", [from, "latest"]),
+    baseCall("eth_getTransactionCount", [from, "latest"]),
+    baseCall("eth_gasPrice", []),
+  ]);
+  const usdcBal = BigInt(balHex === "0x" ? "0x0" : balHex);
+  const ethBal = BigInt(ethHex);
+  const nonce = BigInt(nonceHex);
+  const gasPrice = BigInt(feeHex);
+  const gasLimit = 120000n;
+  const maxFee = gasPrice * 2n;
+  const gasCost = gasLimit * maxFee;
+
+  console.log(`operator USDC    : ${usdcBal} (need ${amount})`);
+  console.log(`operator ETH     : ${ethBal} wei (need ~${gasCost} for gas)`);
+
+  if (usdcBal < amount) {
+    throw new Error(
+      `operator USDC balance ${usdcBal} is below the ${amount} this payment needs. ` +
+        `Top up ${from} on Base. The NEAR reservation has ALREADY been consumed — ` +
+        `the vault signed — so this payment is authorized but undelivered.`,
+    );
+  }
+  if (ethBal < gasCost) {
+    throw new Error(
+      `operator ETH balance ${ethBal} wei cannot cover ~${gasCost} wei of gas. ` +
+        `Top up ${from} on Base.`,
+    );
+  }
+
+  const data = transferCalldata(payee, amount);
+  const fields = [
+    rlpUint(BigInt(chainId)),
+    rlpUint(nonce),
+    rlpUint(gasPrice),
+    rlpUint(maxFee),
+    rlpUint(gasLimit),
+    rlpBytes(usdc),
+    rlpUint(0n),
+    rlpBytes(data),
+    rlpList([]),
+  ];
+  const sighash = keccak_256(Buffer.concat([Buffer.from([0x02]), rlpList(fields)]));
+  const sig = secp256k1.sign(sighash, priv);
+  const raw =
+    "0x" +
+    hex(
+      Buffer.concat([
+        Buffer.from([0x02]),
+        rlpList([
+          ...fields,
+          rlpUint(BigInt(sig.recovery)),
+          rlpUint(sig.r),
+          rlpUint(sig.s),
+        ]),
+      ]),
+    );
+
+  if (!send) {
+    console.log("\nPreflight passed. Not sending (pass --send).");
+    return null;
+  }
+  return baseCall("eth_sendRawTransaction", [raw]);
 }
 
 // ------------------------------------------------------------------- main
 
-const [txHash, senderId] = process.argv.slice(2);
-const doBroadcast = process.argv.includes("--broadcast");
-if (!txHash || !senderId) {
-  console.error("usage: node scripts/relay-base.mjs <near-tx-hash> <signer-account-id> [--broadcast]");
-  process.exit(2);
-}
+const argv = process.argv.slice(2);
+const [txHash, senderId] = argv.filter((a) => !a.startsWith("--"));
+const mode = (argv.find((a) => a.startsWith("--mode"))?.split("=")[1] ??
+  (argv.includes("--mode") ? argv[argv.indexOf("--mode") + 1] : null) ??
+  "vault");
+const send = argv.includes("--send");
+const requestId = process.env.RELAY_REQUEST_ID;
 
-// 1. What the CONTRACT recorded. Not what the caller claims.
-const cfg = await nearView(VAULT, "get_base_config", {});
-if (!cfg) throw new Error("the Base rail is closed on this vault");
-
-const sig = await signatureFromTx(txHash, senderId);
-console.log("MPC signature    :", sig.scheme ?? "(no scheme field)");
-
-// Find the request this transaction settled, by matching the signature's tx.
-const reqId = process.env.RELAY_REQUEST_ID;
-if (!reqId) {
+if (!txHash || !senderId || !requestId) {
   console.error(
-    "\nSet RELAY_REQUEST_ID to the request_id of the payment in that transaction.\n" +
-      "The vault stores payments by request id, not by NEAR tx hash, so the two\n" +
-      "cannot be linked from chain data alone.",
+    "usage: RELAY_REQUEST_ID=<id> node scripts/relay-base.mjs <near-tx-hash> " +
+      "<signer-account-id> [--mode vault|operator] [--send]",
   );
   process.exit(2);
 }
-const req = await nearView(VAULT, "get_request", { request_id: reqId });
-if (!req) throw new Error(`no stored request ${reqId}`);
-if (req.reason_code !== "SIGNED") {
-  throw new Error(`request ${reqId} is ${req.reason_code}, not SIGNED — nothing to relay`);
-}
-const route = req.route?.base_usdc;
-if (!route) throw new Error(`request ${reqId} was not routed over Base`);
 
-// 2. Rebuild the EXACT transaction the contract built.
-const to = fromHex(cfg.usdc_address);
-const payee = fromHex(req.recipient);
-const data = Buffer.concat([
-  Buffer.from("a9059cbb", "hex"), // transfer(address,uint256)
-  Buffer.alloc(12),
-  payee,
-  Buffer.alloc(16),
-  Buffer.from(BigInt(req.amount).toString(16).padStart(32, "0"), "hex"),
-]);
-
-const fields = [
-  rlpUint(BigInt(cfg.chain_id)),
-  rlpUint(BigInt(route.nonce)),
-  rlpUint(BigInt(route.max_priority_fee_per_gas)),
-  rlpUint(BigInt(route.max_fee_per_gas)),
-  rlpUint(BigInt(route.gas_limit)),
-  rlpBytes(to),
-  rlpUint(0n), // value: an ERC-20 transfer moves no native ETH
-  rlpBytes(data),
-  rlpList([]), // empty access list
-];
-const unsigned = Buffer.concat([Buffer.from([0x02]), rlpList(fields)]);
-const sighash = keccak_256(unsigned);
-console.log("rebuilt sighash  : 0x" + hex(sighash));
-
-// 3. THE PROOF. Recover the sender from the signature over OUR reconstruction
-//    and compare it to the vault's MPC-derived address. If our RLP differed
-//    from the contract's by a single byte, this would not match.
-const r = BigInt("0x" + sig.big_r.affine_point.slice(2)); // strip the 02/03 prefix byte
-const s = BigInt("0x" + sig.s.scalar);
-const recid = sig.recovery_id;
-
-const signature = new secp256k1.Signature(r, s).addRecoveryBit(recid);
-const recovered = signature.recoverPublicKey(sighash).toRawBytes(false).slice(1);
-const recoveredAddr = addressOf(recovered);
-
-const derivedPk = await nearView("v1.signer-prod.testnet", "derived_public_key", {
-  path: cfg.derivation_path,
-  predecessor: VAULT,
-  domain_id: cfg.domain_id,
-});
-const expectedAddr = addressOf(b58decode(derivedPk.split(":")[1]));
-
-console.log("recovered sender : " + recoveredAddr);
-console.log("vault's address  : " + expectedAddr);
-if (recoveredAddr !== expectedAddr) {
-  console.error(
-    "\nMISMATCH. The reconstruction does not match what was signed, so this raw\n" +
-      "transaction would be attributed to the wrong sender. Not broadcasting.",
-  );
-  process.exit(1);
-}
-console.log("MATCH — the reconstruction is byte-identical to what the vault signed.\n");
-
-// 4. Assemble the signed transaction.
-const signed = Buffer.concat([
-  Buffer.from([0x02]),
-  rlpList([...fields, rlpUint(BigInt(recid)), rlpUint(r), rlpUint(s)]),
-]);
-const raw = "0x" + hex(signed);
-console.log("raw transaction  :", raw.slice(0, 80) + "... (" + signed.length + " bytes)");
-
-// 5. Broadcast, if asked.
-if (!doBroadcast) {
-  console.log("\nNot broadcasting (pass --broadcast to send it to Base).");
+const ledger = readLedger();
+if (ledger[requestId]?.baseTxHash) {
+  console.log(`Already delivered: ${ledger[requestId].baseTxHash} (${ledger[requestId].mode})`);
+  console.log("Refusing to pay twice for one authorization.");
   process.exit(0);
 }
 
-const sent = await rpc(BASE_RPC, { method: "eth_sendRawTransaction", params: [raw] });
-if (sent.error) {
-  console.error("\nBase rejected it:", JSON.stringify(sent.error));
-  process.exit(1);
+const v = await verifyAuthorization(requestId, txHash, senderId);
+console.log("request          :", requestId);
+console.log("authorized payee :", v.req.recipient);
+console.log("authorized amount:", v.amount.toString(), "base units");
+console.log("vault's address  :", v.vaultAddr);
+console.log("AUTHORIZED — the vault's signature covers exactly this payee and amount.\n");
+
+let baseTxHash = null;
+if (mode === "operator") {
+  baseTxHash = await operatorSend({
+    usdc: v.usdc,
+    payee: v.payee,
+    amount: v.amount,
+    chainId: v.cfg.chain_id,
+    send,
+  });
+} else if (mode === "vault") {
+  console.log("raw (vault-signed):", v.rawSigned.slice(0, 72) + "...");
+  if (!send) {
+    console.log("\nNot broadcasting (pass --send).");
+  } else {
+    baseTxHash = await baseCall("eth_sendRawTransaction", [v.rawSigned]);
+  }
+} else {
+  throw new Error(`unknown --mode ${mode}; expected vault or operator`);
 }
-console.log("\nBroadcast. Base tx hash:", sent.result);
+
+if (baseTxHash) {
+  ledger[requestId] = {
+    mode,
+    baseTxHash,
+    payee: v.req.recipient,
+    amount: v.amount.toString(),
+    at: new Date().toISOString(),
+  };
+  writeLedger(ledger);
+  console.log("\nDelivered on Base:", baseTxHash);
+  console.log("recorded in", LEDGER);
+}

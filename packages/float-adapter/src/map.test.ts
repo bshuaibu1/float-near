@@ -334,3 +334,36 @@ describe("a Base payment is not reported as success", () => {
     expect(p.status).toBe("failed");
   });
 });
+
+describe("Base delivery is reported only on evidence", () => {
+  const baseReq = () =>
+    req({ route: { base_usdc: { nonce: "0" } }, status: "SETTLED", reason_code: "SIGNED" });
+
+  it("stays 'signed' with no relayer record", () => {
+    // The chain cannot attest Base settlement, so it is never inferred.
+    const p = requestToPayment(baseReq(), {}, D);
+    expect(p.status).toBe("signed");
+    expect(p.txSignature).toBeNull();
+  });
+
+  it("becomes 'delivered' and carries the Base tx hash once a relayer reports one", () => {
+    const p = requestToPayment(baseReq(), {}, D, {
+      baseTxHash: "0xabc123",
+      mode: "operator",
+    });
+    expect(p.status).toBe("delivered");
+    expect(p.txSignature).toBe("0xabc123");
+  });
+
+  it("does not let a delivery record upgrade a BLOCKED payment", () => {
+    // A blocked payment never reached the signer, so no honest relayer could
+    // have a hash for it. If one appears anyway, the contract's word wins.
+    const p = requestToPayment(
+      req({ route: { base_usdc: {} }, status: "BLOCKED", reason_code: "PARENT_DAILY_BUDGET" }),
+      {},
+      D,
+      { baseTxHash: "0xdeadbeef", mode: "operator" },
+    );
+    expect(p.status).toBe("blocked");
+  });
+});

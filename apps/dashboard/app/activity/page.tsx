@@ -62,6 +62,19 @@ function isSigned(status: string): boolean {
   return status?.toLowerCase() === "signed";
 }
 
+/**
+ * The Base payment actually landed — a relayer reported a Base transaction
+ * hash for it.
+ *
+ * Still not folded into isSuccess, because the two are earned differently: a
+ * NEAR "success" is attested by the contract, while this is an off-chain
+ * observation the chain cannot verify. Same outcome, weaker evidence, and the
+ * badge says so.
+ */
+function isDelivered(status: string): boolean {
+  return status?.toLowerCase() === "delivered";
+}
+
 function resolveVenue(venue: string): string {
   const generateMatch = venue.match(/^Float generate:\s+.+?\s+([A-Za-z0-9]+)$/i);
   if (generateMatch) return `AI image generation · ${generateMatch[1]}`;
@@ -423,7 +436,10 @@ export default function Activity() {
     if (statusFilter === "success" && !isSuccess(p.status)) return false;
     if (
       statusFilter === "failed" &&
-      (isSuccess(p.status) || isBlocked(p.status) || isSigned(p.status))
+      (isSuccess(p.status) ||
+        isBlocked(p.status) ||
+        isSigned(p.status) ||
+        isDelivered(p.status))
     )
       return false;
     if (statusFilter === "blocked" && !isBlocked(p.status)) return false;
@@ -665,7 +681,9 @@ export default function Activity() {
                   <span
                     className="text-[12px] font-mono text-right tabular-nums"
                     style={{
-                      color: isSuccess(p.status) || isSigned(p.status) ? "#111111"
+                      color:
+                        isSuccess(p.status) || isSigned(p.status) || isDelivered(p.status)
+                          ? "#111111"
                            : isBlocked(p.status) ? "#9A5F1A"
                            : "#9F2F2D",
                     }}
@@ -689,7 +707,7 @@ export default function Activity() {
                     <span
                       className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
                       style={
-                        isSuccess(p.status)
+                        isSuccess(p.status) || isDelivered(p.status)
                           ? { background: "#EDF3EC", color: "#346538" }
                           : isSigned(p.status)
                             ? { background: "#EEF2F7", color: "#3B5A7A" }

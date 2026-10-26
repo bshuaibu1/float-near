@@ -231,10 +231,17 @@ const STATUS: Record<string, string> = {
   BLOCKED: "blocked",
 };
 
+/** A Base delivery the relayer observed and recorded off-chain. */
+export interface Delivery {
+  baseTxHash: string;
+  mode: "vault" | "operator";
+}
+
 export function requestToPayment(
   r: VaultRequest,
   nodeLabels: Record<number, string>,
   decimals: number,
+  delivery?: Delivery,
 ): Payment {
   return {
     id: r.request_id,
@@ -253,11 +260,19 @@ export function requestToPayment(
     // tell the reader the money arrived, which is the one claim the whole
     // design is careful never to make. The NEAR rail is unaffected: there,
     // SETTLED really does mean the tokens moved.
+    // signed -> delivered, but ONLY on evidence. A Base payment is "signed"
+    // when the vault proved it authorized the transfer, and "delivered" only
+    // once a relayer reports a Base transaction hash for it. The chain cannot
+    // attest the second step, so it is never inferred — no hash, no claim.
     status:
       railOf(r.route) === "base" && r.reason_code === "SIGNED"
-        ? "signed"
+        ? delivery
+          ? "delivered"
+          : "signed"
         : STATUS[r.status] ?? r.status.toLowerCase(),
-    txSignature: null,
+    // The BASE transaction hash, when one exists. Null on the NEAR rail and on
+    // anything undelivered.
+    txSignature: delivery?.baseTxHash ?? null,
     createdAt: nsToIso(r.created_at_ns),
     prompt: r.memo || null,
     resultUrl: null,
