@@ -1,0 +1,6 @@
+[env]
+# near-sdk's `unit-testing` feature pulls in aws-lc-sys, whose Windows build
+# requires NASM. The crate ships pre-generated NASM objects behind this flag,
+# so setting it here avoids making NASM a prerequisite for `cargo test`.
+# Harmless on Linux/macOS, where the NASM path is not taken at all.
+AWS_LC_SYS_PREBUILT_NASM = "1"

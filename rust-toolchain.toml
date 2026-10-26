@@ -1,0 +1,6 @@
+[toolchain]
+# near-sdk 5.29.1 pulls near-sdk-env 0.1.7, which requires rustc >= 1.95.
+# Pinned so a clone builds identically for a judge.
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

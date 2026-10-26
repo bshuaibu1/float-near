@@ -1,0 +1,20 @@
+[package]
+name = "vault"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = "=5.29.1"
+
+[dev-dependencies]
+near-sdk = { version = "=5.29.1", features = ["unit-testing"] }
+
+[features]
+default = []
+# Shortens the budget window so the day-boundary test is deterministic.
+# NON-DEFAULT ON PURPOSE. `clock_mode()` reports a distinct string when this
+# is on, and scripts/deploy-testnet.sh refuses to proceed if it sees it.
+test-clock = []

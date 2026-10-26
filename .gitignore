@@ -1,0 +1,9 @@
+/target
+**/target
+# Wasm build output (regenerate with scripts/build-wasm.sh)
+/res
+node_modules/
+.env
+.env.*
+!.env.example
+.DS_Store
