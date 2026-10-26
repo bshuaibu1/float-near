@@ -173,3 +173,59 @@ async fn reason_code_panics_reach_the_receipt_outcome() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// The day boundary. Kills M8 (callback `req.reserved_day` -> `self.today()`).
+///
+/// This is the one invariant that needs a clock, and it is the only test that
+/// opts into the short budget window. With a 100 ms day a transfer callback
+/// ALWAYS lands in a later bucket than its request, because a NEAR block is
+/// ~1.1 s. So:
+///   correct code  -> books against reserved_day, i.e. the request's bucket
+///   M8 applied    -> decrements `pending` on a later, ZEROED ledger ->
+///                    checked_sub underflow -> LEDGER_INVARIANT panic
+///
+/// Deterministic, and loud rather than silent — which is why the day length is
+/// the test variable here instead of a delayed transfer. A delay would need
+/// promise yield/resume in the mock and would race against block time.
+#[tokio::test]
+async fn settlement_is_booked_to_the_reserved_day_not_the_callback_day() -> anyhow::Result<()> {
+    let e = setup(1, CAP * 10).await?;
+    set_day_len(&e, TEST_DAY_NS).await?;
+
+    let out = pay(&e.agents[0], &e, "d1", PAY, e.payee.id().as_str()).await?;
+    assert!(out.is_success(), "dispatch failed: {out:#?}");
+    assert_eq!(ft_transfer_count(&e).await?, 1, "the transfer never fired");
+
+    let r = request(&e, "d1").await?;
+    assert_eq!(r.status, "SETTLED");
+    let d = r.reserved_day;
+
+    // Guard against this test becoming a silent no-op. If the day length were
+    // ever long enough that the callback shared the request's bucket, then
+    // reserved_day and today() would agree and M8 would be unkillable while
+    // every assertion below still passed.
+    let now = current_day(&e).await?;
+    assert!(
+        now > d,
+        "the clock did not advance past the reserved day ({now} vs {d}); \
+         this test would prove nothing — is TEST_DAY_NS too long?"
+    );
+
+    for node in [ROOT, TEAM, AGENT0] {
+        let b = budget(&e, node, Some(d)).await?;
+        assert_eq!(b.executed(), PAY, "level {node}: not booked to the reserved day");
+        assert_eq!(b.pending(), 0, "level {node}: reservation outstanding on the reserved day");
+    }
+
+    // Sweep forward rather than checking only d+1: the callback can land
+    // several 100 ms buckets later, and narrowing a completeness check to one
+    // value is how an under-report reads as clean.
+    for k in (d + 1)..=(now + 2) {
+        for node in [ROOT, TEAM, AGENT0] {
+            let b = budget(&e, node, Some(k)).await?;
+            assert_eq!(b.executed(), 0, "level {node}: spend leaked into day {k}");
+            assert_eq!(b.pending(), 0, "level {node}: reservation leaked into day {k}");
+        }
+    }
+    Ok(())
+}

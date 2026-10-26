@@ -770,8 +770,13 @@ pub fn fail(code: ReasonCode, detail: &str) -> ! {
 }
 
 /// A lowered cap can leave `used > cap`; that means nothing is available.
-/// `saturating_sub` and not `-`: u128 subtraction wraps silently in release
-/// builds, which would turn an exhausted budget into an enormous one.
+///
+/// `saturating_sub` and not `-`: u128 subtraction wraps silently in a release
+/// build, which would turn an exhausted budget into an enormous one. Pinned by
+/// `available_saturates_when_a_lowered_cap_is_already_exceeded` (mutation M11,
+/// executed: 1 red). Note that test runs in DEBUG, where `-` panics; the
+/// workspace's `overflow-checks = true` is what makes release behave the same,
+/// so that profile line is load-bearing and not cosmetic.
 pub fn available(daily_cap: u128, led: &DailyLedger) -> u128 {
     let used = led.executed.saturating_add(led.pending);
     daily_cap.saturating_sub(used)

@@ -21,7 +21,7 @@ Protocol for every row:
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline: **8 unit + 6 sandbox = 14 passed, 0 failed, 0 warnings.**
+Baseline: **10 unit + 7 sandbox = 17 passed, 0 failed, 0 warnings.**
 
 The sandbox tier must run under Linux or WSL: `near-workspaces` ships a
 sandbox node only for linux-x86_64, linux-aarch64 and darwin-arm64. Build the
@@ -74,6 +74,64 @@ sandbox tier had to exist before the mutation pass could be called complete.
   charged.)
 - **Actual:** ✅ **3 failed, 1 passed** — prediction matched exactly.
 
+
+### M8 — callback books against `today()` instead of `reserved_day`
+
+- **Edit:** `on_transfer_result`, `r.reserved_day` → `self.today()`.
+- **Predicted:** `settlement_is_booked_to_the_reserved_day_not_the_callback_day`
+  only. The other sandbox tests run at the production day length, where the two
+  values coincide.
+- **Actual:** ✅ **1 failed, 4 passed** — and via the predicted mechanism:
+  `Smart contract panicked: LEDGER_INVARIANT: pending underflow`, because the
+  release lands on a later, zeroed ledger.
+
+### M1 — I1 boundary in `add_node`, `>` → `>=`
+
+- **Edit:** `add_node`, `if new_sum > parent_cap` → `>=` (line-targeted: the
+  same text appears twice, in `add_node` and `set_node_caps`).
+- **Predicted:** `i1_sigma_children_equal_to_parent_is_allowed` only.
+- **Actual:** ✅ **1 failed, 7 passed.**
+- **Note:** the first attempt asserted the pattern occurred once, and the
+  assert fired — so the edit never landed and the suite ran UNMUTATED. Without
+  the count assertion that run's 8 greens would have been recorded as "M1
+  survives". Stating the expected count before editing is what caught it.
+
+### M2a — containment against CHILDREN, direction slip
+
+- **Edit:** `set_node_caps`, `if l.daily_cap.0 < node.child_sum_for(..)` → `>`.
+- **Predicted:** `i1_lowering_parent_below_existing_children_is_rejected` only.
+- **Actual:** ✅ **1 failed, 7 passed.**
+
+### M2b — containment against the PARENT: **SURVIVED**, hole closed
+
+- **Edit:** `set_node_caps`, the against-parent guard made unreachable
+  (`if false && new_sum > parent_cap`).
+- **Predicted:** survives — no test raised a child's cap above its parent's
+  headroom in strict mode.
+- **Actual:** 🔴 **0 failed, 8 passed. The mutation survived.**
+- **Why the gap existed:** the neighbouring test
+  `i1_lowering_parent_below_existing_children_is_rejected` lowers the ROOT,
+  which has no parent, so it is carried entirely by the against-CHILDREN
+  guard. The upward direction was asserted nowhere, while a code comment
+  claimed containment was checked "in both directions". This is exactly the
+  passing-negative-test trap: a test named for one clause being carried by
+  another.
+- **Closed by:** `i1_raising_a_child_above_the_parents_headroom_is_rejected`
+  plus its allowed row `i1_raising_a_child_exactly_into_the_parents_headroom_is_allowed`,
+  both written WHILE M2b was still applied and watched going red, then the
+  mutation reverted. Re-run after revert: 10 passed.
+
+### M11 — `available()` `saturating_sub` → `-`
+
+- **Edit:** `available()`, `daily_cap.saturating_sub(used)` → `daily_cap - used`.
+- **Predicted:** `available_saturates_when_a_lowered_cap_is_already_exceeded` only.
+- **Actual:** ✅ **1 failed, 9 passed** — `attempt to subtract with overflow`.
+- **Note:** that test runs in DEBUG, where `-` panics. In a release build
+  without `overflow-checks` it would WRAP instead, silently turning an
+  exhausted budget into an enormous one. So the workspace's
+  `overflow-checks = true` is load-bearing, and the compound case (drop both)
+  is not covered by any single-edit mutation.
+
 ---
 
 ## Queued (the tests exist; the mutation has not been run yet)
@@ -82,9 +140,6 @@ Do not record these as proven until each has a real result in the table above.
 
 | # | Edit | Predicted red |
 | --- | --- | --- |
-| M1 | `add_node` I1 check `new_sum > parent_cap` → `>=` | `i1_sigma_children_equal_to_parent_is_allowed` |
-| M2 | delete the parent-side re-check in `set_node_caps` | `i1_lowering_parent_below_existing_children_is_rejected` |
-| M11 | `available()` `saturating_sub` → `-` | `available_saturates_when_a_lowered_cap_is_already_exceeded` |
 | M20 | `clock_mode()` → `"production"` under `--features test-clock` | `scripts/deploy-testnet.sh` guard |
 
 ## Blocked on the sandbox tier (`contracts/integration-tests`)
@@ -94,7 +149,6 @@ schedule a promise and the callback never executes there.
 
 | # | Edit | Predicted red |
 | --- | --- | --- |
-| M8 | callback `req.reserved_day` → `self.today()` | day-boundary test |
 | M9 | drop the `pending.checked_sub` release in the failure branch | forced-failure + unregistered-recipient tests |
 | M21 | plain `cargo build --target wasm32-unknown-unknown` instead of `cargo near build` | `reason_code_panics_reach_the_receipt_outcome`. **This one already fired for real:** the tier was initially built the plain way, every panic arrived as `WebAssembly trap: unreachable`, and the contract's stable reason codes were silently gone. |
 | M22 | `TEST_DAY_NS` as the default day length in `setup()` | `concurrency_parent_cap_is_exact_*` (via the one-day-bucket assertion). **Also fired for real:** a 100 ms day made `current_day()` a moving target and would have let 16 concurrent payments draw on two separate daily budgets. |

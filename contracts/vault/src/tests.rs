@@ -176,6 +176,40 @@ fn i1_lowering_parent_below_existing_children_is_rejected() {
     v.set_node_caps(root, limit(999, 999)); // would strand 1 unit
 }
 
+/// I1 upward: RAISING a child above what its parent can cover is rejected.
+///
+/// Written because mutation M2b survived — disabling the against-parent guard
+/// in `set_node_caps` left all 8 other tests green. The lowering test next to
+/// this one exercises the against-CHILDREN guard instead (the root has no
+/// parent), so the upward direction was asserted nowhere while a comment
+/// claimed containment was checked "in both directions".
+#[test]
+#[should_panic(expected = "INVALID_ALLOCATION")]
+fn i1_raising_a_child_above_the_parents_headroom_is_rejected() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let a = v.add_node(Some(root), "a".into(), limit(600, 600), 0, None);
+    v.add_node(Some(root), "b".into(), limit(400, 400), 0, None); // sum == 1000, no headroom
+
+    // 1000 - 600 + 601 = 1001 > 1000. One unit over, from below.
+    v.set_node_caps(a, limit(601, 601));
+}
+
+/// The matching allowed row, so the boundary is pinned from both sides rather
+/// than only the rejecting one.
+#[test]
+fn i1_raising_a_child_exactly_into_the_parents_headroom_is_allowed() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let a = v.add_node(Some(root), "a".into(), limit(600, 600), 0, None);
+    v.add_node(Some(root), "b".into(), limit(300, 300), 0, None); // sum == 900, 100 spare
+
+    v.set_node_caps(a, limit(700, 700)); // 900 - 600 + 700 == 1000 exactly
+    assert_eq!(v.get_node(root).child_sum_for(&tok()), usdc(1000).0);
+}
+
 #[test]
 fn i1_overcommit_mode_permits_sigma_children_above_parent() {
     let mut v = new_vault(false);
