@@ -16,6 +16,9 @@ pub const MAX_LABEL_LEN: usize = 48;
 pub const MAX_REQUEST_ID_LEN: usize = 64;
 pub const MAX_MEMO_LEN: usize = 256;
 pub const MAX_COOLDOWN_SEC: u32 = 7 * 24 * 60 * 60;
+/// Upper bound on one `list_requests` page. A view that returns everything
+/// when asked for a huge page turns a dashboard refresh into an unbounded read.
+pub const MAX_LIST_LIMIT: u32 = 50;
 
 pub const NS_PER_SEC: u64 = 1_000_000_000;
 

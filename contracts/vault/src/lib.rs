@@ -731,6 +731,27 @@ impl Vault {
         self.requests.get(&request_id).cloned()
     }
 
+    /// Stored payment requests, NEWEST FIRST, for the activity feed.
+    ///
+    /// Note what is NOT here: a BLOCKED request is never stored. The hot path
+    /// returns it as a value and emits an event, deliberately — storing
+    /// rejected attempts would let an agent grow the vault's storage bill at
+    /// will. So this view shows in-flight, settled and failed payments, and a
+    /// block is only visible in the response to the call that was blocked, or
+    /// in the event log. A dashboard must say so rather than render an empty
+    /// "blocked" list and imply none ever happened.
+    pub fn list_requests(&self, from_index: Option<u32>, limit: Option<u32>) -> Vec<PaymentRequest> {
+        let from = from_index.unwrap_or(0) as usize;
+        let limit = limit.unwrap_or(20).min(MAX_LIST_LIMIT) as usize;
+        self.requests
+            .values()
+            .rev()
+            .skip(from)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     pub fn get_node_budget(
         &self,
         node_id: NodeId,

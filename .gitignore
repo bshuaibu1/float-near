@@ -8,3 +8,11 @@ dist/
 .env.*
 !.env.example
 .DS_Store
+
+# Next.js build output
+.next/
+# artefacts that rode along with the copied Float dashboard
+apps/dashboard/.localappdata/
+apps/dashboard/build-output.txt
+apps/dashboard/tsconfig.tsbuildinfo
+apps/dashboard/git

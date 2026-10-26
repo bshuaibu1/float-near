@@ -726,6 +726,7 @@ fn contract_constants_match_the_shared_file() {
     assert_eq!(MAX_MEMO_LEN as u64, num("MAX_MEMO_LEN"));
     assert_eq!(MAX_COOLDOWN_SEC as u64, num("MAX_COOLDOWN_SEC"));
     assert_eq!(MAX_PURGE_LIMIT as u64, num("MAX_PURGE_LIMIT"));
+    assert_eq!(MAX_LIST_LIMIT as u64, num("MAX_LIST_LIMIT"));
     assert_eq!(MIN_GAS_FOR_DISPATCH.as_tgas(), num("MIN_GAS_FOR_DISPATCH_TGAS"));
     assert_eq!(PRODUCTION_DAY_NS, num("PRODUCTION_DAY_NS"));
 
@@ -741,4 +742,99 @@ fn contract_constants_match_the_shared_file() {
         text("MIN_AGENT_KEY_ALLOWANCE_YOCTO")
     );
     assert_eq!(AGENT_ALLOWED_METHOD, text("AGENT_ALLOWED_METHOD"));
+}
+
+// =====================================================================
+// list_requests — the activity feed the dashboard renders
+// =====================================================================
+
+#[test]
+fn list_requests_is_empty_on_a_fresh_vault() {
+    let t = tree();
+    assert_eq!(t.v.list_requests(None, None).len(), 0);
+}
+
+#[test]
+fn list_requests_returns_newest_first() {
+    let t = tree();
+    let mut v = t.v;
+    for i in 0..3u64 {
+        testing_env!(ctx(r1(), ZERO, i).build());
+        assert_dispatched(v.request_payment(
+            format!("q{i}"),
+            tok(),
+            usdc(1),
+            payee(),
+            "".into(),
+        ));
+    }
+    let ids: Vec<String> = v.list_requests(None, None).into_iter().map(|r| r.request_id).collect();
+    assert_eq!(ids, vec!["q2", "q1", "q0"], "activity must read newest-first");
+}
+
+#[test]
+fn list_requests_honours_from_index_and_limit() {
+    let t = tree();
+    let mut v = t.v;
+    for i in 0..5u64 {
+        testing_env!(ctx(r1(), ZERO, i).build());
+        assert_dispatched(v.request_payment(
+            format!("q{i}"),
+            tok(),
+            usdc(1),
+            payee(),
+            "".into(),
+        ));
+    }
+    let page: Vec<String> = v
+        .list_requests(Some(1), Some(2))
+        .into_iter()
+        .map(|r| r.request_id)
+        .collect();
+    // newest-first is q4,q3,q2,q1,q0 — skip 1, take 2.
+    assert_eq!(page, vec!["q3", "q2"]);
+}
+
+/// A view that silently returns everything when asked for a huge page is how a
+/// dashboard request turns into an unbounded read.
+#[test]
+fn list_requests_clamps_an_oversized_limit() {
+    let t = tree();
+    let mut v = t.v;
+    for i in 0..3u64 {
+        testing_env!(ctx(r1(), ZERO, i).build());
+        assert_dispatched(v.request_payment(
+            format!("q{i}"),
+            tok(),
+            usdc(1),
+            payee(),
+            "".into(),
+        ));
+    }
+    assert_eq!(v.list_requests(None, Some(u32::MAX)).len(), 3);
+    assert!(MAX_LIST_LIMIT <= 100, "the clamp must stay small enough to be a bound");
+}
+
+#[test]
+fn list_requests_past_the_end_is_empty_not_a_panic() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("q0".into(), tok(), usdc(1), payee(), "".into()));
+    assert_eq!(v.list_requests(Some(99), Some(10)).len(), 0);
+}
+
+/// The dashboard shows a reason code next to every terminal payment, so the
+/// field has to survive the view rather than be an internal detail.
+#[test]
+fn list_requests_carries_the_reason_code_and_charged_chain() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("q0".into(), tok(), usdc(1), payee(), "".into()));
+
+    let r = &v.list_requests(None, None)[0];
+    assert_eq!(r.reason_code, ReasonCode::TransferPending);
+    assert_eq!(r.reserved_chain, vec![t.root, t.research, t.n_r1]);
+    assert_eq!(r.recipient, payee());
 }
