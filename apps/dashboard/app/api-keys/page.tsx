@@ -98,9 +98,8 @@ export default function AgentKeysPage() {
           Agent keys
         </h2>
         <p className="text-[13px] mt-1.5 max-w-2xl" style={{ color: "#787774" }}>
-          Each agent is a NEAR sub-account of the vault. Its key is a function-call access key
-          that can call only <span className="font-mono">request_payment</span> on this vault and
-          cannot attach a deposit. Read live from the chain on every load.
+          Each agent has its own account and its own key. A key can only ask this vault to send
+          money — nothing else. Checked against the chain every time this page loads.
         </p>
       </div>
 
@@ -115,8 +114,8 @@ export default function AgentKeysPage() {
               No agents bound yet.
             </span>
             <br />
-            The owner creates one with <span className="font-mono">create_agent_account</span>,
-            which makes the sub-account and attaches the restricted key in a single call.
+            The owner creates one in a single step, which makes the agent its own account and
+            attaches the restricted key at the same time.
           </Panel>
         ) : (
           <div className="space-y-3">
@@ -226,22 +225,29 @@ export default function AgentKeysPage() {
                             </div>
 
                             {k.restricted ? (
-                              <p className="text-[12px] leading-5" style={{ color: "#787774" }}>
-                                May call{" "}
-                                {k.methodNames.map((m, i) => (
-                                  <span key={m}>
-                                    {i > 0 && ", "}
-                                    <span className="font-mono" style={{ color: "#111111" }}>
-                                      {m}
+                              <div>
+                                <p className="text-[12px] leading-5" style={{ color: "#787774" }}>
+                                  This key can only ask the vault to send money. It cannot change
+                                  rules, cannot send money by itself, and cannot talk to any other
+                                  contract.
+                                </p>
+                                {/* The exact method and contract, kept as a
+                                    secondary line. The plain sentence above is
+                                    the claim; THIS is the evidence for it, read
+                                    from the chain. Dropping it would leave the
+                                    page asserting a restriction without showing
+                                    what was actually read. */}
+                                <p className="mt-1 text-[11px] leading-4" style={{ color: "#A0A09A" }}>
+                                  On chain:{" "}
+                                  {k.methodNames.map((m, i) => (
+                                    <span key={m}>
+                                      {i > 0 && ", "}
+                                      <span className="font-mono">{m}</span>
                                     </span>
-                                  </span>
-                                ))}{" "}
-                                on{" "}
-                                <span className="font-mono" style={{ color: "#111111" }}>
-                                  {k.receiverId}
-                                </span>
-                                . Nothing else, on no other contract, with no deposit.
-                              </p>
+                                  ))}{" "}
+                                  on <span className="font-mono">{k.receiverId}</span>, no deposit.
+                                </p>
+                              </div>
                             ) : (
                               <p className="text-[12px] leading-5" style={{ color: "#9F2F2D" }}>
                                 This key is NOT restricted — it can call any method on any contract
@@ -273,7 +279,17 @@ export default function AgentKeysPage() {
             <div className="bg-white rounded-lg px-6 py-4" style={border}>
               <p className="text-[12px] leading-5" style={{ color: "#787774" }}>
                 <span className="font-medium" style={{ color: "#111111" }}>
-                  Private keys are not shown here, and this dashboard does not hold them.
+                  To let an agent spend, put its private key where the agent runs.
+                </span>{" "}
+                For the MCP server that means the{" "}
+                <span className="font-mono">NEAR_VAULT_AGENT_KEY</span> environment variable,
+                alongside <span className="font-mono">NEAR_VAULT_AGENT_ID</span>. The key is
+                already restricted, so it needs no extra guarding beyond the usual care with
+                secrets.
+              </p>
+              <p className="mt-2 text-[12px] leading-5" style={{ color: "#787774" }}>
+                <span className="font-medium" style={{ color: "#111111" }}>
+                  Private keys are never shown here, and this dashboard does not hold them.
                 </span>{" "}
                 An agent&apos;s private key lives wherever that agent runs — in the MCP server&apos;s{" "}
                 <span className="font-mono">NEAR_VAULT_AGENT_KEY</span> variable, for example. The

@@ -625,12 +625,24 @@ export default function Activity() {
                       >
                         {p.agentName}
                       </p>
-                      <p
-                        className="text-[11px] truncate leading-tight"
-                        style={{ color: "#787774" }}
-                      >
-                        {resolveVenue(p.venue)}
-                      </p>
+                      {/* On a BLOCKED row the venue is near-useless — the
+                          payment never happened. What a reader needs is WHY,
+                          and for a parent-pool block that reason is the whole
+                          point of the product. Showing only a "BLOCKED" badge
+                          hid it behind a click. Not truncated, deliberately:
+                          the sentence is the content. */}
+                      {isBlocked(p.status) && p.blockMessage ? (
+                        <p className="text-[11px] leading-snug" style={{ color: "#9A5F1A" }}>
+                          {p.blockMessage}
+                        </p>
+                      ) : (
+                        <p
+                          className="text-[11px] truncate leading-tight"
+                          style={{ color: "#787774" }}
+                        >
+                          {resolveVenue(p.venue)}
+                        </p>
+                      )}
                     </div>
                   </div>
 

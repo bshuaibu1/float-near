@@ -282,8 +282,8 @@ export const REASONS: Record<string, string> = {
   PARENT_PER_TX_LIMIT: "Over a per-payment cap set higher up the tree.",
   DAILY_BUDGET: "This agent has spent its own daily budget.",
   PARENT_DAILY_BUDGET:
-    "The shared parent pool is exhausted — this agent still has its own budget left, " +
-    "but the team or root budget it draws from does not.",
+    "The shared pool is empty. This agent still has its own limit left, but the team " +
+    "or root budget it draws from does not.",
   TRANSFER_FAILED: "The token transfer failed, so the reservation was released.",
   INSUFFICIENT_GAS: "Not enough gas was attached to dispatch the transfer.",
 };

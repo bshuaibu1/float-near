@@ -102,9 +102,8 @@ export default function FundPage() {
             Fund the vault
           </h1>
           <p className="text-[14px] leading-6" style={{ color: "#787774" }}>
-            Send NEP-141 USDC to the vault contract. Agents never hold the tokens — they draw
-            against the hierarchical budgets, and every payment is checked at every level of the
-            tree before any value moves.
+            Send USDC to this address. Agents never hold the tokens — they only request
+            payments, and the vault checks the limits first.
           </p>
         </div>
 
@@ -154,11 +153,11 @@ export default function FundPage() {
                 <StepNum n="1" />
                 <div>
                   <p className="text-[13px] font-medium" style={{ color: "#111111" }}>
-                    Transfer NEP-141 USDC to the vault
+                    Send USDC to the vault
                   </p>
                   <p className="mt-0.5 text-[12px] leading-5" style={{ color: "#787774" }}>
-                    Use <span className="font-mono">ft_transfer</span> from any NEAR wallet, or the
-                    token contract directly. The vault must be registered with the token first.
+                    Send it from any NEAR wallet that supports this token. The vault has to be
+                    registered with the token first, which it already is.
                   </p>
                 </div>
               </FeatureRow>
@@ -167,11 +166,11 @@ export default function FundPage() {
                 <StepNum n="2" />
                 <div>
                   <p className="text-[13px] font-medium" style={{ color: "#111111" }}>
-                    The owner sets budgets per node
+                    The owner sets the limits
                   </p>
                   <p className="mt-0.5 text-[12px] leading-5" style={{ color: "#787774" }}>
-                    A daily cap and a per-payment cap at each level — root, team, agent. Children
-                    may be overcommitted against a shared parent pool on purpose.
+                    A daily limit and a per-payment limit at every level — the whole treasury, each
+                    team, each agent. Teams can hand out more than they hold, on purpose.
                   </p>
                 </div>
               </FeatureRow>
@@ -183,9 +182,8 @@ export default function FundPage() {
                     Agents spend without ever holding funds
                   </p>
                   <p className="mt-0.5 text-[12px] leading-5" style={{ color: "#787774" }}>
-                    Each agent key can call only{" "}
-                    <span className="font-mono">request_payment</span> on this vault, and cannot
-                    attach a deposit.
+                    An agent's key can only ask this vault to send money. It cannot move funds
+                    itself and cannot touch anything else.
                   </p>
                 </div>
               </FeatureRow>
@@ -201,7 +199,7 @@ export default function FundPage() {
                   <span className="font-medium" style={{ color: "#111111" }}>
                     Balance is not the same as spendable today.
                   </span>{" "}
-                  The vault holds{" "}
+                  The vault is holding{" "}
                   {balance === null
                     ? "an unknown amount"
                     : `${formatUsdc(toUiAmount(balance, info.tokenDecimals))} USDC`}
@@ -217,8 +215,8 @@ export default function FundPage() {
           </Card>
 
           <Card
-            title="Send NEP-141 USDC"
-            subtitle="Transfer to this vault account from any NEAR wallet or exchange that supports NEP-141."
+            title="Send USDC here"
+            subtitle="Transfer to this vault account from any NEAR wallet or exchange."
           >
             <div className="flex flex-col items-center gap-3">
               <div

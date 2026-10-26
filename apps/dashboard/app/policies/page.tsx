@@ -166,8 +166,8 @@ export default function Policies() {
             Policies
           </h1>
           <p className="text-[13px] mt-1" style={{ color: "#787774" }}>
-            The limits this vault enforces on-chain, per node. Every payment is checked against
-            each level of the tree before any value moves.
+            The limits this vault enforces, level by level. Every payment is checked against all
+            of them before any money moves.
           </p>
         </div>
 
@@ -181,8 +181,7 @@ export default function Policies() {
           </div>
         ) : agents.length === 0 ? (
           <div className="bg-white rounded-lg px-5 py-10 text-center text-[13px]" style={{ ...border, color: "#787774" }}>
-            This vault has no budget nodes yet. The owner creates them with{" "}
-            <span className="font-mono">add_node</span>.
+            This vault has no spending levels yet. The owner creates them.
           </div>
         ) : (
           <>
@@ -208,36 +207,36 @@ export default function Policies() {
             <div className="grid grid-cols-12 gap-4">
               <div className="col-span-12 md:col-span-8">
                 <Section
-                  title="Enforced on-chain"
-                  description="Read from the contract. These are the values the vault is applying right now."
+                  title="Limits in force now"
+                  description="Read straight from the vault. These are the numbers it is applying right now."
                 >
                   <Row
-                    label="Daily cap"
-                    description="daily_cap — the most this node can spend in one budget day, across all its children."
+                    label="Daily limit"
+                    description="The most this level can spend in one day, including everything under it."
                   >
                     <Readout value={selected?.policy?.dailyBudget} unit="USDC" />
                   </Row>
                   <Row
-                    label="Per-payment cap"
-                    description="per_tx_cap — any single payment above this is refused with PER_TX_LIMIT."
+                    label="Per-payment limit"
+                    description="The most one payment can be."
                   >
                     <Readout value={selected?.policy?.perTxLimit} unit="USDC" />
                   </Row>
                   <Row
                     label="Cooldown"
-                    description="cooldown_sec — minimum gap between two payments from this node. 0 disables it."
+                    description="The shortest gap allowed between two payments from this level. Zero means no wait."
                   >
                     <Readout value={String(selected?.policy?.cooldownSeconds ?? 0)} unit="sec" />
                   </Row>
                   <Row
                     label="Spent today"
-                    description="executed + pending for the current budget day. In-flight payments count."
+                    description="Spent so far today. Payments still in flight are counted, so this never understates it."
                   >
                     <Readout value={selected?.dailySpent} unit="USDC" />
                   </Row>
                   <Row
                     label="Frozen"
-                    description="freeze_node — a frozen node, or any frozen node above it, blocks every payment."
+                    description="A frozen level, or any frozen level above it, blocks every payment."
                     last
                   >
                     <Pill
@@ -249,8 +248,8 @@ export default function Policies() {
                 </Section>
 
                 <Section
-                  title="Payee allowlist"
-                  description="recipients — resolved the way the contract resolves it: the nearest ancestor with a list. Always enforced; it is not a toggle."
+                  title="Who can be paid"
+                  description="The addresses this level may pay. If it has no list of its own, it uses the nearest one above it. Always on — not a switch."
                 >
                   {selected?.policy?.allowedAddresses?.length ? (
                     <div className="flex flex-wrap gap-2 py-1">
@@ -266,9 +265,8 @@ export default function Policies() {
                     </div>
                   ) : (
                     <p className="py-1 text-[12px]" style={{ color: "#9F2F2D" }}>
-                      No allowlist resolves for this node, so every payment from it is refused with
-                      RECIPIENT_NOT_ALLOWED. The owner sets one with{" "}
-                      <span className="font-mono">set_recipients</span>.
+                      No list applies here, so every payment from this level is refused. The owner
+                      needs to say who it is allowed to pay.
                     </p>
                   )}
                 </Section>
@@ -276,11 +274,11 @@ export default function Policies() {
                 {/* The write path. Not a save button — see the note below. */}
                 <Section
                   title="Change a limit"
-                  description="Produces the owner command to run. This dashboard never signs owner methods."
+                  description="Builds a command for you to run. This dashboard never signs anything that changes the rules."
                 >
                   <div className="flex flex-wrap items-end gap-3 py-1">
-                    <Field label="Daily cap" unit="USDC" value={dailyCap} onChange={setDailyCap} />
-                    <Field label="Per-payment" unit="USDC" value={perTxCap} onChange={setPerTxCap} />
+                    <Field label="Daily limit" unit="USDC" value={dailyCap} onChange={setDailyCap} />
+                    <Field label="Per-payment limit" unit="USDC" value={perTxCap} onChange={setPerTxCap} />
                     <button
                       onClick={() => void buildPlan("caps")}
                       className="rounded-md px-3 py-2 text-[12px] font-medium"
@@ -345,6 +343,9 @@ export default function Policies() {
                       >
                         {plan.cli}
                       </pre>
+                      <p className="mt-2 text-[11.5px] leading-5" style={{ color: "#787774" }}>
+                        Copy this and run it in your own wallet. This page never signs for you.
+                      </p>
                     </div>
                   )}
                 </Section>

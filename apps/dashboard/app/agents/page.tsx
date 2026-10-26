@@ -133,8 +133,8 @@ export default function AgentsPage() {
           Budget tree
         </h2>
         <p className="text-[13px] mt-1.5 max-w-2xl" style={{ color: "#787774" }}>
-          Every payment is checked at each level from the agent up to the root. A child can be
-          refused because a pool it shares is exhausted, even when its own budget is untouched.
+          Every payment is checked at each level, from the agent up to the top. An agent can be
+          refused because a pool it shares is empty, even when its own limit is untouched.
         </p>
       </div>
 
@@ -144,8 +144,7 @@ export default function AgentsPage() {
         <Panel tone="error">{error}</Panel>
       ) : agents.length === 0 ? (
         <Panel>
-          This vault has no budget nodes yet. The owner creates them with{" "}
-          <span className="font-mono">add_node</span>.
+          This vault has no spending levels yet. The owner creates them.
         </Panel>
       ) : (
         <>
@@ -154,8 +153,7 @@ export default function AgentsPage() {
               className="mb-4 rounded-lg px-5 py-3 text-[12px]"
               style={{ background: "#FDEBEC", color: "#9F2F2D", ...border }}
             >
-              The vault is <span className="font-mono">paused</span>. Every payment is refused with
-              VAULT_PAUSED, regardless of budgets.
+              The vault is paused. Every payment is refused right now, whatever the limits say.
             </div>
           )}
 
@@ -168,9 +166,9 @@ export default function AgentsPage() {
               </p>
               <p className="text-[12px] mt-1" style={{ color: "#92400E" }}>
                 {noAllowlist.map((a) => (a.displayName ?? a.agentId).trim()).join(", ")} — every
-                payment from {noAllowlist.length === 1 ? "it is" : "them is"} refused with
-                RECIPIENT_NOT_ALLOWED. The allowlist is always enforced and is inherited from the
-                nearest ancestor that has one, so setting it on the root covers the whole tree.{" "}
+                payment from {noAllowlist.length === 1 ? "it is" : "them is"} refused. A level with
+                no list of its own uses the nearest one above it, so setting one at the top covers
+                everything.{" "}
                 <Link href="/policies" className="underline">
                   Open Policies
                 </Link>
@@ -325,7 +323,7 @@ export default function AgentsPage() {
             <span className="font-mono">{info?.strictAllocation ? "strict" : "overcommit"}</span>
             {info?.strictAllocation
               ? " — children cannot be allocated more than their parent holds."
-              : " — children may be allocated more than their parent holds, so the shared pool is what actually binds. That is the behaviour Activity reports as PARENT_DAILY_BUDGET."}
+              : " — agents can be given more budget than the team has. They share one pool. When the pool runs out, later agents are blocked even if they still have their own limit left."}
           </p>
         </>
       )}

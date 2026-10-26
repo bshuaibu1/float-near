@@ -226,7 +226,8 @@ export default function Overview() {
               daily_cap - executed - pending for the root node. Labelling it
               "USDC Balance" made a 100/day cap look like the whole treasury.
               The real balance is on the Fund page. */}
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-4" style={{ color:"#787774" }}>Root budget remaining today</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5" style={{ color:"#787774" }}>How much can still be spent today</p>
+          <p className="text-[12px] mb-4" style={{ color:"#A0A09A" }}>This is the shared limit for everyone. Agents draw from it.</p>
           <div className="flex items-baseline gap-2 mb-1">
             <span className="text-[36px] font-semibold tracking-tight leading-none" style={{ color:"#111111" }}>
               {loading ? "—" : balance.toLocaleString([], { minimumFractionDigits:2, maximumFractionDigits:2 })}
@@ -286,7 +287,7 @@ export default function Overview() {
                 </div>
                 <div className="min-w-0">
                   <p className="text-[13px] font-medium" style={{ color:"#111111" }}>Fund the vault</p>
-                  <p className="text-[11px]" style={{ color:"#787774" }}>Send NEP-141 USDC to the contract</p>
+                  <p className="text-[11px]" style={{ color:"#787774" }}>Send USDC to the vault address</p>
                 </div>
                 <ArrowRight size={12} className="ml-auto shrink-0" style={{ color:"#EAEAEA" }} />
               </Link>
