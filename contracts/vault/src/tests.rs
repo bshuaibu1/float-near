@@ -528,6 +528,72 @@ fn a_non_owner_cannot_call_an_owner_method() {
 }
 
 // =====================================================================
+// purge_settled
+//
+// Spact's own threat model discloses that stored requests "never shrink; there
+// is no pruning yet". This is the pruning — and the thing it must never do is
+// delete a request that still holds a reservation, because that would strand
+// the `pending` it charged at every level of the chain for the rest of the day
+// with nothing left to release it.
+// =====================================================================
+
+#[test]
+fn purge_settled_never_removes_an_in_flight_request() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("p1".into(), tok(), usdc(1), payee(), "".into()));
+
+    // In the unit tier the callback never runs, so this request is parked in
+    // TRANSFER_PENDING — exactly the state purge must refuse to touch.
+    assert_eq!(v.get_request("p1".into()).unwrap().status, Status::TransferPending);
+
+    testing_env!(ctx(owner(), YOCTO, 1).build());
+    // `u64::MAX` as the cutoff makes EVERY request old enough, so only the
+    // status check can protect this one.
+    let removed = v.purge_settled(u64::MAX, 100);
+
+    assert_eq!(removed, 0, "purge removed an in-flight request");
+    assert!(
+        v.get_request("p1".into()).is_some(),
+        "an in-flight request was deleted; its reservation can never be released"
+    );
+    assert_eq!(
+        v.get_node_budget(t.n_r1, tok(), None).unwrap().pending,
+        usdc(1),
+        "the reservation held by the in-flight request was disturbed"
+    );
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn purge_settled_is_owner_only() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(stranger(), YOCTO, 0).build());
+    v.purge_settled(u64::MAX, 10);
+}
+
+#[test]
+#[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
+fn purge_settled_requires_the_owner_deposit() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), ZERO, 0).build());
+    v.purge_settled(u64::MAX, 10);
+}
+
+/// A zero limit is a no-op rather than an unbounded sweep. Guards the
+/// defaulting mistake where "no limit given" silently means "all".
+#[test]
+fn purge_settled_with_a_zero_limit_removes_nothing() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    assert_eq!(v.purge_settled(u64::MAX, 0), 0);
+}
+
+// =====================================================================
 // create_agent_account validation
 //
 // The happy path needs a real account to exist, so it is proven behaviourally

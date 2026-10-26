@@ -50,6 +50,9 @@ pub const MIN_AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_millinear(500);
 /// agent's authority, so it is a single const rather than a parameter.
 pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
 pub const GAS_FOR_CREATE_CALLBACK: Gas = Gas::from_tgas(10);
+/// Upper bound on a single purge sweep, so one call cannot exhaust gas
+/// part-way and leave an unpredictable amount of work done.
+pub const MAX_PURGE_LIMIT: u32 = 100;
 pub const MAX_SUB_LABEL_LEN: usize = 32;
 pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 
@@ -435,6 +438,58 @@ impl Vault {
             .get_mut(&node_id)
             .unwrap_or_else(|| fail(ReasonCode::UnknownNode, "no such node"));
         n.frozen = frozen;
+    }
+
+    /// Deletes SETTLED and TRANSFER_FAILED requests reserved strictly before
+    /// `before_day`, at most `limit` per call. Returns how many were removed.
+    ///
+    /// Requests are stored permanently otherwise, and the VAULT pays their
+    /// storage staking (an agent's function-call key cannot attach a deposit,
+    /// so it cannot pay for its own). Without pruning that only ever grows.
+    ///
+    /// It must NEVER remove a TRANSFER_PENDING request. Such a request still
+    /// holds `pending` at every level of its chain, and the callback keyed by
+    /// its id is the only thing that can release it — delete the request and
+    /// that budget is consumed for the rest of the day with nothing left to
+    /// give it back.
+    ///
+    /// TRADE-OFF, measured and deliberate: pruning FREES the request id.
+    /// Duplicate detection is `requests.contains_key(id)`, so once a record is
+    /// gone its id is accepted again and pays a second time. The replay is
+    /// charged to the CURRENT day and bounded by every cap in the chain, so it
+    /// is not a drain — but a request id is a unique idempotency key only among
+    /// RETAINED requests. Pinned by
+    /// `purge_settled_removes_history_without_refunding_the_budget`.
+    #[payable]
+    pub fn purge_settled(&mut self, before_day: u64, limit: u32) -> u32 {
+        self.assert_owner();
+        if limit > MAX_PURGE_LIMIT {
+            fail(ReasonCode::InvalidConfig, "limit above MAX_PURGE_LIMIT");
+        }
+        if limit == 0 {
+            return 0;
+        }
+
+        // Collected first: the map cannot be mutated while it is iterated.
+        let mut doomed: Vec<String> = Vec::new();
+        for (id, r) in self.requests.iter() {
+            if doomed.len() as u32 >= limit {
+                break;
+            }
+            let terminal = matches!(r.status, Status::Settled | Status::TransferFailed);
+            if terminal && r.reserved_day < before_day {
+                doomed.push(id.clone());
+            }
+        }
+
+        let removed = doomed.len() as u32;
+        for id in doomed {
+            self.requests.remove(&id);
+        }
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"purged","data":[{{"removed":{removed},"before_day":{before_day}}}]}}"#
+        ));
+        removed
     }
 
     #[payable]

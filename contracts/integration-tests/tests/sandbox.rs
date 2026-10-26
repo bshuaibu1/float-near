@@ -229,3 +229,97 @@ async fn settlement_is_booked_to_the_reserved_day_not_the_callback_day() -> anyh
     }
     Ok(())
 }
+
+/// purge_settled, positive side. The unit tier cannot reach this: it cannot
+/// run a callback, so it can never produce a SETTLED request to prune.
+///
+/// The load-bearing assertion is the LEDGER one. Purging deletes spend
+/// HISTORY; it must not un-spend money. If `executed` dropped when a request
+/// was pruned, the daily cap would silently refill and the whole budget
+/// guarantee would be defeated by garbage collection.
+#[tokio::test]
+async fn purge_settled_removes_history_without_refunding_the_budget()
+-> anyhow::Result<()> {
+    let e = setup(1, CAP * 10).await?;
+
+    for i in 0..3 {
+        let out = pay(&e.agents[0], &e, &format!("g{i}"), PAY, e.payee.id().as_str()).await?;
+        assert!(out.is_success(), "g{i} failed: {out:#?}");
+    }
+    assert_eq!(ft_transfer_count(&e).await?, 3);
+
+    let day = request(&e, "g0").await?.reserved_day;
+    let before = budget(&e, ROOT, Some(day)).await?;
+    assert_eq!(before.executed(), PAY * 3, "three payments should be booked");
+
+    // The day bound must hold: these requests are reserved ON `day`, and the
+    // cutoff is exclusive, so a cutoff of `day` must match nothing.
+    let none = purge(&e, day, 100).await?;
+    assert_eq!(none, 0, "cutoff is not exclusive — it pruned same-day requests");
+    assert!(request(&e, "g0").await.is_ok(), "g0 was pruned too early");
+
+    // The limit must bound the sweep rather than being advisory.
+    let one = purge(&e, day + 1, 1).await?;
+    assert_eq!(one, 1, "limit was not honoured");
+
+    let two = purge(&e, day + 1, 100).await?;
+    assert_eq!(two, 2, "the remaining two were not pruned");
+    for i in 0..3 {
+        assert!(
+            request(&e, &format!("g{i}")).await.is_err(),
+            "g{i} survived the purge"
+        );
+    }
+
+    // THE POINT: the spend is still booked after its history is gone.
+    let after = budget(&e, ROOT, Some(day)).await?;
+    assert_eq!(after.executed(), PAY * 3, "purging REFUNDED the budget");
+    assert_eq!(after.pending(), 0);
+    assert_eq!(after.available(), before.available(), "available drifted");
+
+    // KNOWN SEMANTIC, pinned here rather than left implicit: pruning FREES the
+    // request id. Duplicate detection is `requests.contains_key(id)`, so once
+    // a record is gone its id is accepted again and pays a second time.
+    //
+    // That is a deliberate consequence of pruning, not a drain: the replay is
+    // charged to the CURRENT day and is bounded by every cap in the chain, as
+    // the assertion below shows. But it means a request id is a unique
+    // idempotency key only among RETAINED requests, and a client that retries
+    // an id older than the purge cutoff will be paid twice. Belongs in the
+    // README's known-limitations list.
+    let replay = pay(&e.agents[0], &e, "g0", PAY, e.payee.id().as_str()).await?;
+    let o: PaymentOutcomeView = replay.json()?;
+    assert_eq!(o.status, "SETTLED", "a pruned id is accepted as a fresh one");
+    assert_eq!(
+        budget(&e, ROOT, Some(day)).await?.executed(),
+        PAY * 4,
+        "the replayed payment was not charged"
+    );
+    Ok(())
+}
+
+/// The deploy guard's premise, made testable without a testnet.
+///
+/// scripts/deploy-testnet.sh builds with --no-default-features and refuses to
+/// proceed unless the DEPLOYED contract reports clock_mode()=="production".
+/// That guard is only worth anything if a test-clock build actually announces
+/// itself — so this asserts the marker is present in the exact binary the
+/// script is meant to reject. The matching production-side assertion lives in
+/// the unit tier (`cargo test -p vault --no-default-features`).
+///
+/// Kills M20 (clock_mode lying under --features test-clock).
+#[tokio::test]
+async fn the_test_clock_build_announces_itself() -> anyhow::Result<()> {
+    let e = setup(0, 0).await?;
+    let mode: String = e.vault.view("clock_mode").await?.json()?;
+    assert_eq!(
+        mode, "TEST-CLOCK-DO-NOT-DEPLOY",
+        "res/vault_test_clock.wasm does not announce its test clock, so the          deploy-script guard would wave it through"
+    );
+
+    // And the capability the marker warns about is really there: the owner can
+    // shrink the budget window. If this failed, the marker would be a lie in
+    // the other direction.
+    set_day_len(&e, TEST_DAY_NS).await?;
+    Ok(())
+}

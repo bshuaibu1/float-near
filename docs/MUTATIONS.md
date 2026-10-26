@@ -21,7 +21,7 @@ Protocol for every row:
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline: **29 unit + 8 sandbox = 37 passed, 0 failed, 0 warnings.**
+Baseline: **33 unit + 9 sandbox = 42 passed, 0 failed, 0 warnings.**
 
 The sandbox tier must run under Linux or WSL: `near-workspaces` ships a
 sandbox node only for linux-x86_64, linux-aarch64 and darwin-arm64. Build the
@@ -200,15 +200,35 @@ M6's zero-cooldown sibling (`i4_zero_cooldown_permits_two_payments_at_the_same_t
 is correctly unaffected, because the `cooldown_sec > 0` guard short-circuits
 before the comparator.
 
+
+### M20 — `clock_mode()` lies under `--features test-clock`
+
+The deploy-script guard is only worth something if a test-clock build actually
+announces itself. Made testable without a testnet by asserting the marker in
+the exact binary the script is meant to reject.
+
+- **Edit:** the `test-clock` `clock_mode()`, `"TEST-CLOCK-DO-NOT-DEPLOY"` →
+  `"production"`.
+- **Predicted:** `the_test_clock_build_announces_itself` only.
+- **Actual:** ✅ **1 failed, 6 passed.**
+- The production side is pinned separately by
+  `production_build_reports_production_clock_and_a_real_day`, which runs under
+  `cargo test -p vault --no-default-features`. Both sides of the marker are
+  asserted, so neither can drift into agreeing with the other.
+- **Not verified:** `scripts/deploy-testnet.sh` itself has only been
+  syntax-checked (`bash -n`). Its end-to-end behaviour needs a testnet account
+  and has NOT been exercised. What is proven is the premise the guard rests on.
+
 ---
 
 ## Queued (the tests exist; the mutation has not been run yet)
 
 Do not record these as proven until each has a real result in the table above.
 
+*(none outstanding — every mutation with an existing test has been run.)*
+
 | # | Edit | Predicted red |
 | --- | --- | --- |
-| M20 | `clock_mode()` → `"production"` under `--features test-clock` | `scripts/deploy-testnet.sh` guard |
 
 ## Blocked on the sandbox tier (`contracts/integration-tests`)
 

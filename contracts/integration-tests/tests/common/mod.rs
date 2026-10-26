@@ -291,3 +291,15 @@ pub async fn set_day_len(e: &Env, ns: u64) -> Result<()> {
         .into_result()?;
     Ok(())
 }
+
+pub async fn purge(e: &Env, before_day: u64, limit: u32) -> Result<u32> {
+    Ok(e.owner
+        .call(e.vault.id(), "purge_settled")
+        .args_json(json!({ "before_day": before_day, "limit": limit }))
+        .deposit(ONE_YOCTO)
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?
+        .json()?)
+}
