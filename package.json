@@ -1,9 +1,15 @@
 {
   "name": "near-vault-workspace",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0"
   }
 }
