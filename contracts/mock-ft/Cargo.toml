@@ -1,0 +1,16 @@
+[package]
+name = "mock-ft"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = "=5.29.1"
+
+# NOTE: profiles in non-root workspace manifests are ignored by cargo, so
+# `overflow-checks = true` lives in the workspace root instead. It matters for
+# this crate specifically: a silently wrapping add in the MOCK could make a
+# broken vault look correct, so the instrument is held to the same standard as
+# the thing it measures.

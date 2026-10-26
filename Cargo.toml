@@ -1,5 +1,5 @@
 [workspace]
-members = ["contracts/vault"]
+members = ["contracts/vault", "contracts/mock-ft", "contracts/integration-tests"]
 resolver = "2"
 
 [workspace.package]
@@ -11,5 +11,21 @@ codegen-units = 1
 opt-level = "z"
 lto = true
 debug = false
-panic = "abort"
 overflow-checks = true
+# `panic = "abort"` is left unset; cargo-near manages the contract profile.
+#
+# WHY THIS MATTERS, and it is not the profile: the wasm must be built with
+# `cargo near build`, never plain `cargo build --target wasm32-unknown-unknown`.
+# near-sdk selects its host-function implementation by cfg:
+#   #[cfg(near)]                 -> real on-chain host functions (cargo-near)
+#   #[cfg(target_family="wasm")] -> pure-Rust fallbacks, "not for on-chain use"
+# Built the plain way, `env::panic_str` never reaches the host `panic_utf8`, so
+# every contract panic arrives as
+#   FunctionCallError(ExecutionError("WebAssembly trap: An `unreachable`
+#   opcode was executed."))
+# and the message — i.e. this contract's stable reason code — is gone. A caller
+# would see "unreachable opcode" instead of INVALID_CONFIG.
+#
+# The unit tier cannot catch this: unit tests run natively and panic normally
+# with the message intact. Pinned by the sandbox test
+# `reason_code_panics_reach_the_receipt_outcome`.

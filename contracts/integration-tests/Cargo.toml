@@ -1,0 +1,25 @@
+[package]
+name = "integration-tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# No library; this crate exists only to host tests/.
+[lib]
+path = "src/lib.rs"
+
+# No near-sdk dependency: it emits a compile_error when built for a native
+# target outside cargo-near, and these tests only need the JSON surface.
+[dependencies]
+
+[dev-dependencies]
+near-workspaces = "=0.23.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+anyhow = "1"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+futures = "0.3"
+
+# NOTE: the vault crate is deliberately NOT a dependency. These tests assert
+# on the contract's JSON surface, not on its internal Rust types, so a change
+# to an internal struct cannot silently keep them passing.

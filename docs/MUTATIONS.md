@@ -10,14 +10,24 @@ Protocol for every row:
 1. State the predicted red tests **before** running. A disagreement is a bug
    in the prediction or in the test, and gets investigated before moving on.
 2. Apply the mutation with the editor.
-3. Run `AWS_LC_SYS_PREBUILT_NASM=1 cargo test -p vault`.
+3. Run the affected tier:
+   - unit: `cargo test -p vault`
+   - sandbox (Linux/WSL): `bash scripts/build-wasm.sh && cargo test -p integration-tests`
+     — the wasm must be REBUILT after a contract edit, or the mutation is not
+     in the binary under test and the run is meaningless.
 4. Revert by editing the line back; re-run and confirm green. That run doubles
    as proof the revert restored the right code.
 5. If a mutation **survives**, write the missing test *while the mutation is
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline: **8 passed, 0 failed, 0 warnings.**
+Baseline: **8 unit + 6 sandbox = 14 passed, 0 failed, 0 warnings.**
+
+The sandbox tier must run under Linux or WSL: `near-workspaces` ships a
+sandbox node only for linux-x86_64, linux-aarch64 and darwin-arm64. Build the
+wasm with `scripts/build-wasm.sh` (which uses `cargo near build`, never plain
+`cargo build` — see the note in the workspace `Cargo.toml`) and run with
+`CARGO_TARGET_DIR` pointed at a Linux-native path.
 
 ---
 
@@ -49,6 +59,21 @@ Proves the ancestor **check** is load-bearing, independently of the ledger key.
   `i1_reallocation_reopens_a_blocked_child`. 6 others unaffected.
 - **Actual:** ✅ **2 failed, 6 passed** — prediction matched exactly.
 
+### M4 — ancestor *charge* reduced to the leaf
+
+The sibling of M3. Not killable from the unit tier at all: with no callback,
+`executed` never moves, so the charge is unobservable there. This is why the
+sandbox tier had to exist before the mutation pass could be called complete.
+
+- **Edit:** `request_payment` pass two, `for id in &chain` → `for id in &[node_id]`.
+- **Predicted:** `i3_single_payment_charges_agent_team_and_root`,
+  `forced_transfer_failure_releases_the_reservation_at_every_level`,
+  `unregistered_recipient_releases_the_reservation`. The reason-code test is
+  unaffected. (The two failure tests go red because the callback releases from
+  a three-node `reserved_chain` and underflows on levels that were never
+  charged.)
+- **Actual:** ✅ **3 failed, 1 passed** — prediction matched exactly.
+
 ---
 
 ## Queued (the tests exist; the mutation has not been run yet)
@@ -59,7 +84,6 @@ Do not record these as proven until each has a real result in the table above.
 | --- | --- | --- |
 | M1 | `add_node` I1 check `new_sum > parent_cap` → `>=` | `i1_sigma_children_equal_to_parent_is_allowed` |
 | M2 | delete the parent-side re-check in `set_node_caps` | `i1_lowering_parent_below_existing_children_is_rejected` |
-| M4 | `request_payment` pass two, `&chain` → `&[node_id]` | needs the sandbox tier (I3 charge is observable only as `pending` at every level) |
 | M11 | `available()` `saturating_sub` → `-` | `available_saturates_when_a_lowered_cap_is_already_exceeded` |
 | M20 | `clock_mode()` → `"production"` under `--features test-clock` | `scripts/deploy-testnet.sh` guard |
 
@@ -72,11 +96,14 @@ schedule a promise and the callback never executes there.
 | --- | --- | --- |
 | M8 | callback `req.reserved_day` → `self.today()` | day-boundary test |
 | M9 | drop the `pending.checked_sub` release in the failure branch | forced-failure + unregistered-recipient tests |
+| M21 | plain `cargo build --target wasm32-unknown-unknown` instead of `cargo near build` | `reason_code_panics_reach_the_receipt_outcome`. **This one already fired for real:** the tier was initially built the plain way, every panic arrived as `WebAssembly trap: unreachable`, and the contract's stable reason codes were silently gone. |
+| M22 | `TEST_DAY_NS` as the default day length in `setup()` | `concurrency_parent_cap_is_exact_*` (via the one-day-bucket assertion). **Also fired for real:** a 100 ms day made `current_day()` a moving target and would have let 16 concurrent payments draw on two separate daily budgets. |
 | M10 | remove the `status != TransferPending` idempotency gate | forced-failure test (figures double) |
 | M12 | freeze check `&chain` → leaf only | freeze-subtree test |
 | M13 | `effective_recipients` returns inherited ∪ own | allowlist-override test |
 | M15 | drop `method_names` from the provisioned access key | function-call-key reachability test |
-| M17–M19 | harness guards: mock `set_fail_next`, receiver registration, `TEST_DAY_NS` | the tests that depend on each |
+| M17 | mock's `ft_transfer` returns instead of panicking when armed | forced-failure test (differential control) |
+| M18 | drop the receiver-registration check in the mock | `unregistered_recipient_releases_the_reservation` |
 
 ## Expected to survive
 
