@@ -22,6 +22,17 @@ export const MIN_AGENT_KEY_ALLOWANCE_YOCTO = (5n * 10n ** 23n).toString();
 
 export const DEFAULT_GAS_TGAS = 100;
 
+/**
+ * Gas for a Base-routed payment.
+ *
+ * The contract demands MIN_GAS_FOR_BASE_DISPATCH (230 Tgas) for this rail
+ * because MPC signing fans out across the signer network — the default 100
+ * would make EVERY Base payment fail with INSUFFICIENT_GAS. That floor is
+ * mirrored in shared/contract-constants.json and asserted on both sides, so a
+ * change to the contract's requirement cannot silently leave this too low.
+ */
+export const BASE_GAS_TGAS = 280;
+
 // Mirrors of the contract's bounds. Duplicated so a bad call fails here rather
 // than costing gas — and pinned against shared/contract-constants.json by
 // constants.test.ts, because a silent drift would turn this validation into a

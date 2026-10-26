@@ -20,6 +20,47 @@ import { Account, JsonRpcProvider, KeyPair, KeyPairSigner } from "near-api-js";
 /** Must match AGENT_ALLOWED_METHOD in the contract; pinned by constants.test.ts. */
 const ALLOWED_METHOD = "request_payment";
 
+/** Fee and ordering fields for a Base-routed payment. Decimal strings. */
+export interface BaseRouteFields {
+  nonce: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  gasLimit: string;
+}
+
+/**
+ * The contract's `route` argument.
+ *
+ * Note what is NOT here: no payload, no destination, no amount. The contract
+ * builds the ERC-20 calldata and the EIP-1559 transaction itself from the
+ * amount and recipient it authorized, and signs the hash of its own
+ * construction. These fields are fees and ordering only — a caller who lies
+ * about them wastes its own gas and cannot move the payment. If this interface
+ * ever grows a `payload` field, that property is gone.
+ */
+export type RouteArg = "near_direct" | { base_usdc: Record<string, string> };
+
+export function buildRoute(rail: "near" | "base", base?: BaseRouteFields): RouteArg {
+  if (rail === "near") return "near_direct";
+  if (!base) {
+    throw new Error("rail 'base' requires nonce, maxFeePerGas, maxPriorityFeePerGas and gasLimit");
+  }
+  for (const [k, v] of Object.entries(base)) {
+    // Decimal strings, because U128/U64 cross the ABI as strings and a JSON
+    // number would lose precision above 2^53. Rejected here rather than
+    // on-chain so a typo costs nothing.
+    if (!/^[0-9]+$/.test(v)) throw new Error(`${k} must be a decimal string, got ${v}`);
+  }
+  return {
+    base_usdc: {
+      nonce: base.nonce,
+      max_priority_fee_per_gas: base.maxPriorityFeePerGas,
+      max_fee_per_gas: base.maxFeePerGas,
+      gas_limit: base.gasLimit,
+    },
+  };
+}
+
 export interface PayArgs {
   rpcUrl: string;
   vault: string;
@@ -32,6 +73,8 @@ export interface PayArgs {
   recipient: string;
   memo: string;
   gasTgas: number;
+  /** Omitted means the NEAR rail, matching the contract's `Option<Route>`. */
+  route?: RouteArg;
 }
 
 export async function sendRequestPayment(a: PayArgs): Promise<unknown> {
@@ -50,6 +93,9 @@ export async function sendRequestPayment(a: PayArgs): Promise<unknown> {
       amount: a.amount.toString(),
       recipient: a.recipient,
       memo: a.memo,
+      // Omitted entirely when undefined: the contract takes `Option<Route>`
+      // and a missing field deserialises to None, which is the NEAR rail.
+      ...(a.route === undefined ? {} : { route: a.route }),
     },
     gas: BigInt(a.gasTgas) * 10n ** 12n,
     // Hardcoded zero, and not a parameter. A function-call key that attaches

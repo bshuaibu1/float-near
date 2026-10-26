@@ -25,6 +25,7 @@ import { z } from "zod";
 
 import { fromBaseUnits, toBaseUnits } from "./amounts.js";
 import {
+  BASE_GAS_TGAS,
   DEFAULT_GAS_TGAS,
   planAddNode,
   planCreateAgentAccount,
@@ -38,7 +39,7 @@ import {
   type OwnerPayload,
 } from "./payloads.js";
 import { DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
-import { sendRequestPayment } from "./sign.js";
+import { buildRoute, sendRequestPayment } from "./sign.js";
 
 const cfg = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
@@ -158,8 +159,25 @@ server.tool(
     memo: z.string().max(256).default(""),
     token: z.string().optional(),
     requestId: z.string().optional().describe("omit to generate one"),
+    rail: z
+      .enum(["near", "base"])
+      .default("near")
+      .describe(
+        "near = NEP-141 transfer, proves settlement. base = Chain Signatures over a Base USDC transfer, proves authorization + signature only (relaying is off-chain and unobserved). BOTH rails run the same hierarchical budget check and the same payee allowlist.",
+      ),
+    base: z
+      .object({
+        nonce: z.string(),
+        maxFeePerGas: z.string(),
+        maxPriorityFeePerGas: z.string(),
+        gasLimit: z.string(),
+      })
+      .optional()
+      .describe(
+        "Required when rail=base. Fee and ordering fields ONLY — the contract builds the ERC-20 calldata and the transaction itself from the amount and recipient it authorized, so these cannot redirect the payment.",
+      ),
   },
-  async ({ amount, recipient, memo, token, requestId }) => {
+  async ({ amount, recipient, memo, token, requestId, rail, base }) => {
     const creds = requireAgentKey(cfg);
     const out = await sendRequestPayment({
       rpcUrl: cfg.rpcUrl,
@@ -171,7 +189,10 @@ server.tool(
       amount: toBaseUnits(amount, cfg.decimals),
       recipient,
       memo,
-      gasTgas: DEFAULT_GAS_TGAS,
+      // The Base rail needs more than the default: the contract rejects it
+      // below 230 Tgas because MPC signing fans out across the signer network.
+      gasTgas: rail === "base" ? BASE_GAS_TGAS : DEFAULT_GAS_TGAS,
+      route: buildRoute(rail, base),
     });
     return json(out);
   },

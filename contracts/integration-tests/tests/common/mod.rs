@@ -411,3 +411,32 @@ pub async fn set_fail_signing(e: &Env, fail: bool) -> Result<()> {
         .into_result()?;
     Ok(())
 }
+
+/// Sends `request_payment` with an EXPLICIT route value, as a raw JSON literal.
+///
+/// This exists to pin the WIRE FORMAT the MCP server emits. `buildRoute("near")`
+/// returns the bare string `"near_direct"`, and whether serde accepts that for
+/// an externally-tagged unit variant is an assumption about the ABI, not a fact
+/// the other tests check — they all pass the struct variant or omit the field.
+pub async fn pay_raw_route(
+    agent: &Account,
+    e: &Env,
+    request_id: &str,
+    amount: u128,
+    recipient: &str,
+    route: serde_json::Value,
+) -> Result<near_workspaces::result::ExecutionFinalResult> {
+    Ok(agent
+        .call(e.vault.id(), "request_payment")
+        .args_json(json!({
+            "request_id": request_id,
+            "token": e.ft.id(),
+            "amount": amount.to_string(),
+            "recipient": recipient,
+            "memo": "",
+            "route": route,
+        }))
+        .max_gas()
+        .transact()
+        .await?)
+}

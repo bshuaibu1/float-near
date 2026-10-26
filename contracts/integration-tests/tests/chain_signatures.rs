@@ -258,3 +258,35 @@ async fn the_signed_payload_changes_with_the_authorized_payee() -> Result<()> {
     );
     Ok(())
 }
+
+/// The MCP server's NEAR-rail wire format is accepted by the contract.
+///
+/// `buildRoute("near")` emits the bare string `"near_direct"`. Every other test
+/// either omits `route` or passes the struct variant, so nothing established
+/// that serde accepts the unit variant in that form. A mismatch here would make
+/// every MCP payment fail at deserialisation — after the TypeScript tests
+/// passed, because they only check what the client produces, not what the
+/// contract accepts.
+#[tokio::test]
+async fn the_mcp_near_rail_wire_format_deserialises() -> Result<()> {
+    let e = setup(1, CAP).await?;
+
+    let out = pay_raw_route(
+        &e.agents[0],
+        &e,
+        "w1",
+        PAY,
+        e.payee.id().as_str(),
+        serde_json::json!("near_direct"),
+    )
+    .await?;
+    assert!(out.is_success(), "contract rejected the MCP's near-rail route: {out:#?}");
+
+    let r = request(&e, "w1").await?;
+    assert_eq!(r.status, "SETTLED");
+    // It really took the NEAR rail, rather than being accepted and ignored.
+    assert_eq!(r.reason_code, "SETTLED", "explicit near_direct did not settle as NEP-141");
+    assert_eq!(ft_transfer_count(&e).await?, 1, "no NEP-141 transfer happened");
+    assert_eq!(sign_count(&e).await?, 0, "the near rail reached the signer");
+    Ok(())
+}
