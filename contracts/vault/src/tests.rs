@@ -681,3 +681,64 @@ fn create_agent_account_rejects_a_node_that_already_has_an_account() {
     // n_r1 is already bound to r1() by the fixture.
     let _ = v.create_agent_account(t.n_r1, "dup".into(), a_public_key(), a);
 }
+
+// =====================================================================
+// Cross-language drift guard
+//
+// The MCP server validates locally so a bad call fails before it costs gas or
+// a wallet round-trip — which means it DUPLICATES these bounds, which means it
+// can drift from the contract silently and turn its own validation into a lie
+// the chain then rejects.
+//
+// Both sides assert against one committed file. The TypeScript half is
+// packages/mcp/src/constants.test.ts. Change a bound and BOTH fail until the
+// file and both sides agree.
+// =====================================================================
+
+#[test]
+fn contract_constants_match_the_shared_file() {
+    let raw = include_str!("../../../shared/contract-constants.json");
+    let c: near_sdk::serde_json::Value =
+        near_sdk::serde_json::from_str(raw).expect("shared/contract-constants.json is valid JSON");
+
+    let num = |k: &str| -> u64 {
+        c.get(k)
+            .unwrap_or_else(|| panic!("{k} missing from shared/contract-constants.json"))
+            .as_u64()
+            .unwrap_or_else(|| panic!("{k} is not a number"))
+    };
+    let text = |k: &str| -> String {
+        c.get(k)
+            .unwrap_or_else(|| panic!("{k} missing from shared/contract-constants.json"))
+            .as_str()
+            .unwrap_or_else(|| panic!("{k} is not a string"))
+            .to_string()
+    };
+
+    assert_eq!(MAX_DEPTH as u64, num("MAX_DEPTH"));
+    assert_eq!(MAX_NODES as u64, num("MAX_NODES"));
+    assert_eq!(MAX_CHILDREN as u64, num("MAX_CHILDREN"));
+    assert_eq!(MAX_TOKENS as u64, num("MAX_TOKENS"));
+    assert_eq!(MAX_RECIPIENTS as u64, num("MAX_RECIPIENTS"));
+    assert_eq!(MAX_LABEL_LEN as u64, num("MAX_LABEL_LEN"));
+    assert_eq!(MAX_SUB_LABEL_LEN as u64, num("MAX_SUB_LABEL_LEN"));
+    assert_eq!(MAX_REQUEST_ID_LEN as u64, num("MAX_REQUEST_ID_LEN"));
+    assert_eq!(MAX_MEMO_LEN as u64, num("MAX_MEMO_LEN"));
+    assert_eq!(MAX_COOLDOWN_SEC as u64, num("MAX_COOLDOWN_SEC"));
+    assert_eq!(MAX_PURGE_LIMIT as u64, num("MAX_PURGE_LIMIT"));
+    assert_eq!(MIN_GAS_FOR_DISPATCH.as_tgas(), num("MIN_GAS_FOR_DISPATCH_TGAS"));
+    assert_eq!(PRODUCTION_DAY_NS, num("PRODUCTION_DAY_NS"));
+
+    // Token amounts as decimal strings: a JSON number cannot hold a
+    // yoctoNEAR value, and rounding one into an f64 is exactly the silent
+    // drift this guard exists to prevent.
+    assert_eq!(
+        AGENT_ACCOUNT_STORAGE.as_yoctonear().to_string(),
+        text("AGENT_ACCOUNT_STORAGE_YOCTO")
+    );
+    assert_eq!(
+        MIN_AGENT_KEY_ALLOWANCE.as_yoctonear().to_string(),
+        text("MIN_AGENT_KEY_ALLOWANCE_YOCTO")
+    );
+    assert_eq!(AGENT_ALLOWED_METHOD, text("AGENT_ALLOWED_METHOD"));
+}
