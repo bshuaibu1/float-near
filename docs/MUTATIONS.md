@@ -335,3 +335,33 @@ Against the REAL signer, not the mock:
 
 Still NOT established by any of this: that the signature is valid for Base, or
 that the transaction would be accepted there. Nothing was relayed.
+
+## Gas ceiling (`contracts/integration-tests/tests/gas_ceiling.rs`)
+
+| # | Edit | Predicted | Actual |
+| --- | --- | --- | --- |
+| M26 | `wrapping_mul` instead of `checked_mul` on `gas_limit * max_fee_per_gas` | overflow test | **SURVIVED.** See below. |
+| M27 | remove the ceiling check entirely | the ceiling tests | 4 of 7 red |
+| M28 | remove the sweep's age floor (`aged = true`) | `sweep_leaves_a_young_reservation_alone` | as predicted |
+
+### M26 survived because the TEST was weak, not the guard
+
+The first overflow test used the obvious inputs — `gas_limit = u64::MAX`,
+`max_fee_per_gas = u128::MAX`. That product wraps to `2^128 - 2^64 + 1`, which
+is astronomically ABOVE the ceiling, so the request was still refused and the
+test still passed. It was refusing for the wrong reason and proving nothing
+about overflow at all.
+
+The input that actually exercises it is `2^63 * 2^65 = 2^128`, which wraps to
+exactly **zero** — the one shape where a wrapping multiply reads as "free" and
+the guard waves through the most expensive transaction the vault can build.
+The test now asserts its own premise (`wrapping_mul(gas, fee) == 0`) before
+making the call, so it cannot silently drift back to inputs that do not wrap
+small, and it keeps the both-maxed pair as a second shape.
+
+Rewritten while M26 was still applied and confirmed red before reverting.
+
+The general lesson, which has now cost two mutations on this feature (M23 was
+the same shape): *a passing test proves nothing about the clause you think it
+covers until a mutation shows which assertion carries it.* Picking the
+laziest extreme value is not the same as picking the adversarial one.

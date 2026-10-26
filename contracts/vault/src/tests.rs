@@ -845,3 +845,125 @@ fn list_requests_carries_the_reason_code_and_charged_chain() {
     assert_eq!(r.reserved_chain, vec![t.root, t.research, t.n_r1]);
     assert_eq!(r.recipient, payee());
 }
+
+// =====================================================================
+// sweep_stuck_pending
+//
+// This tier is the RIGHT place for it, unusually so: a unit test cannot
+// schedule a promise, so the callback never runs and a dispatched request sits
+// in TransferPending naturally — which IS the stuck state being swept. The
+// sandbox tier would have to fast-forward an hour of blocks to reach it.
+
+/// A reservation older than the age floor is released at EVERY level.
+#[test]
+fn sweep_releases_a_stuck_reservation_at_every_level() {
+    let t = tree();
+    let mut v = t.v;
+
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("stuck".into(), tok(), usdc(100), payee(), "".into(), None));
+
+    for id in [t.root, t.research, t.n_r1] {
+        assert_eq!(
+            v.get_node_budget(id, tok(), None).unwrap().pending,
+            usdc(100),
+            "node {id} should hold the reservation before the sweep"
+        );
+    }
+
+    // An hour and a nanosecond later, the owner gives up on the callback.
+    testing_env!(ctx(owner(), YOCTO, MIN_SWEEP_AGE_NS + 1).build());
+    assert_eq!(v.sweep_stuck_pending(10), 1);
+
+    for id in [t.root, t.research, t.n_r1] {
+        let b = v.get_node_budget(id, tok(), None).unwrap();
+        assert_eq!(b.pending, U128(0), "node {id} never released its reservation");
+        // Released, NOT booked: nothing proved the payment happened.
+        assert_eq!(b.executed, U128(0), "node {id} booked an unproven spend");
+    }
+
+    let r = v.get_request("stuck".into()).unwrap();
+    assert_eq!(r.status, Status::TransferFailed);
+    // Tagged as an owner intervention rather than reusing TRANSFER_FAILED,
+    // otherwise an audit cannot tell the two apart.
+    assert_eq!(r.reason_code, ReasonCode::SweptStuck);
+}
+
+/// A reservation YOUNGER than the floor is left alone.
+///
+/// The floor is what stops an owner releasing a live reservation whose callback
+/// is about to land, so it needs its own assertion — the test above would pass
+/// with no age check at all.
+#[test]
+fn sweep_leaves_a_young_reservation_alone() {
+    let t = tree();
+    let mut v = t.v;
+
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("fresh".into(), tok(), usdc(100), payee(), "".into(), None));
+
+    // One nanosecond short of the floor.
+    testing_env!(ctx(owner(), YOCTO, MIN_SWEEP_AGE_NS - 1).build());
+    assert_eq!(v.sweep_stuck_pending(10), 0, "swept a reservation inside the in-flight window");
+
+    assert_eq!(
+        v.get_node_budget(t.n_r1, tok(), None).unwrap().pending,
+        usdc(100),
+        "a young reservation was released"
+    );
+    assert_eq!(v.get_request("fresh".into()).unwrap().status, Status::TransferPending);
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn sweep_is_owner_only() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), YOCTO, MIN_SWEEP_AGE_NS + 1).build());
+    v.sweep_stuck_pending(10);
+}
+
+/// The limit is honoured, so one call cannot run out of gas part-way and leave
+/// an unpredictable amount of work done.
+#[test]
+fn sweep_honours_its_limit() {
+    let t = tree();
+    let mut v = t.v;
+
+    for i in 0..3u64 {
+        testing_env!(ctx(r1(), ZERO, i).build());
+        assert_dispatched(v.request_payment(
+            format!("s{i}"),
+            tok(),
+            usdc(10),
+            payee(),
+            "".into(),
+            None,
+        ));
+    }
+
+    testing_env!(ctx(owner(), YOCTO, MIN_SWEEP_AGE_NS + 10).build());
+    assert_eq!(v.sweep_stuck_pending(2), 2, "limit not honoured");
+    assert_eq!(v.sweep_stuck_pending(10), 1, "the remainder was not swept on a second pass");
+    assert_eq!(v.sweep_stuck_pending(10), 0, "swept something twice");
+}
+
+/// A swept request becomes purgeable, which is the other half of the point:
+/// `purge_settled` takes only terminal requests, so before the sweep existed a
+/// stuck request held its storage forever.
+#[test]
+fn a_swept_request_can_then_be_purged() {
+    let t = tree();
+    let mut v = t.v;
+
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("stuck".into(), tok(), usdc(10), payee(), "".into(), None));
+
+    testing_env!(ctx(owner(), YOCTO, MIN_SWEEP_AGE_NS + 1).build());
+    // Not purgeable while pending, however old it is.
+    assert_eq!(v.purge_settled(u64::MAX, 10), 0, "a pending request was purged");
+
+    assert_eq!(v.sweep_stuck_pending(10), 1);
+    assert_eq!(v.purge_settled(u64::MAX, 10), 1, "a swept request is still not purgeable");
+    assert!(v.get_request("stuck".into()).is_none());
+}

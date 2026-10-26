@@ -330,6 +330,10 @@ pub async fn open_base_rail(e: &Env) -> Result<()> {
                 "derivation_path": "base-1",
                 // domain 0 = CaitSith/secp256k1 on the real signer.
                 "domain_id": 0,
+                // 0.01 ETH. A normal transfer is 100_000 gas * 20 gwei =
+                // 0.002 ETH, so this leaves headroom for a fee spike while
+                // bounding the worst case well below any sane gas balance.
+                "max_tx_fee_wei": "10000000000000000",
             }
         }))
         .deposit(ONE_YOCTO)
@@ -436,6 +440,42 @@ pub async fn pay_raw_route(
             "recipient": recipient,
             "memo": "",
             "route": route,
+        }))
+        .max_gas()
+        .transact()
+        .await?)
+}
+
+/// The gas ceiling `open_base_rail` sets, in wei (0.01 ETH).
+pub const FEE_CEILING_WEI: u128 = 10_000_000_000_000_000;
+
+/// A Base payment with caller-chosen fee fields, so a test can push on the gas
+/// ceiling rather than only on the budget tree.
+#[allow(clippy::too_many_arguments)]
+pub async fn pay_base_fees(
+    agent: &Account,
+    e: &Env,
+    request_id: &str,
+    amount: u128,
+    recipient: &str,
+    gas_limit: u64,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+) -> Result<near_workspaces::result::ExecutionFinalResult> {
+    Ok(agent
+        .call(e.vault.id(), "request_payment")
+        .args_json(json!({
+            "request_id": request_id,
+            "token": e.ft.id(),
+            "amount": amount.to_string(),
+            "recipient": recipient,
+            "memo": "",
+            "route": { "base_usdc": {
+                "nonce": "0",
+                "max_priority_fee_per_gas": max_priority_fee_per_gas.to_string(),
+                "max_fee_per_gas": max_fee_per_gas.to_string(),
+                "gas_limit": gas_limit.to_string(),
+            }},
         }))
         .max_gas()
         .transact()

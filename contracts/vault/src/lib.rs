@@ -73,6 +73,13 @@ pub const MIN_GAS_FOR_BASE_DISPATCH: Gas = Gas::from_tgas(130);
 /// Upper bound on a single purge sweep, so one call cannot exhaust gas
 /// part-way and leave an unpredictable amount of work done.
 pub const MAX_PURGE_LIMIT: u32 = 100;
+/// Minimum age before a pending reservation may be swept.
+///
+/// A NEAR receipt chain settles in seconds, so an hour is far outside any
+/// legitimate in-flight window. It is a CONSTANT and not a parameter on
+/// purpose: an owner who could pass zero could sweep a live reservation whose
+/// callback is about to land.
+pub const MIN_SWEEP_AGE_NS: u64 = 3_600 * NS_PER_SEC;
 pub const MAX_SUB_LABEL_LEN: usize = 32;
 pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 
@@ -550,6 +557,65 @@ impl Vault {
         removed
     }
 
+    /// Releases reservations whose callback never arrived. Owner only.
+    ///
+    /// WHY THIS IS NEEDED. If a callback panics or runs out of gas, NEAR rolls
+    /// back only that callback's receipt — the `pending` charge taken in the
+    /// dispatching receipt survives. `purge_settled` cannot help: it only
+    /// takes terminal requests, so a stuck `TransferPending` would hold its
+    /// budget for the rest of the day AND its storage forever.
+    ///
+    /// WHAT THE OWNER IS ASSERTING. That the callback is never coming. There
+    /// is a real tradeoff here and it should not be glossed: on the NEP-141
+    /// rail, if `ft_transfer` SUCCEEDED and only the callback died, the tokens
+    /// have already left the vault, and sweeping releases a reservation for a
+    /// spend that genuinely happened — the budget under-counts it. The age
+    /// floor makes that window negligible rather than impossible, so an owner
+    /// should check the token balance before sweeping a NEAR-rail request.
+    /// The alternative — no sweep at all — locks the budget until the day
+    /// rolls over and the storage permanently, which is worse.
+    ///
+    /// The outcome is deliberately tagged `SWEPT_STUCK` rather than reusing
+    /// `TRANSFER_FAILED`, so an audit can tell an owner's intervention apart
+    /// from a rail that actually reported failure.
+    ///
+    /// Resolution goes through `resolve_reservation`, the same single place
+    /// both rails use, so a swept reservation is released exactly once and a
+    /// late callback finds a non-pending status and becomes a no-op.
+    #[payable]
+    pub fn sweep_stuck_pending(&mut self, limit: u32) -> u32 {
+        self.assert_owner();
+        if limit > MAX_PURGE_LIMIT {
+            fail(ReasonCode::InvalidConfig, "limit above MAX_PURGE_LIMIT");
+        }
+        if limit == 0 {
+            return 0;
+        }
+        let now = env::block_timestamp();
+
+        // Collected first: the map cannot be mutated while it is iterated.
+        let mut stuck: Vec<String> = Vec::new();
+        for (id, r) in self.requests.iter() {
+            if stuck.len() as u32 >= limit {
+                break;
+            }
+            let aged = now.saturating_sub(r.updated_at_ns.0) >= MIN_SWEEP_AGE_NS;
+            if r.status == Status::TransferPending && aged {
+                stuck.push(id.clone());
+            }
+        }
+
+        let swept = stuck.len() as u32;
+        for id in &stuck {
+            // succeeded = false: release the reservation, do NOT book it.
+            self.resolve_reservation(id, false, ReasonCode::Settled, ReasonCode::SweptStuck);
+        }
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"swept_stuck","data":[{{"swept":{swept}}}]}}"#
+        ));
+        swept
+    }
+
     #[payable]
     pub fn set_paused(&mut self, paused: bool) {
         self.assert_owner();
@@ -577,6 +643,15 @@ impl Vault {
             }
             if c.derivation_path.is_empty() || c.derivation_path.len() > 64 {
                 fail(ReasonCode::InvalidEvmAddress, "derivation_path must be 1..=64 chars");
+            }
+            // A zero ceiling would silently close the rail while the config
+            // still reads as open, so it is rejected rather than accepted as
+            // an accidental kill switch. Use `set_base_config(None)` to close.
+            if c.max_tx_fee_wei.0 == 0 {
+                fail(
+                    ReasonCode::FeeCeilingExceeded,
+                    "max_tx_fee_wei must be > 0; pass config: null to close the rail",
+                );
             }
         }
         self.base_config = config;
@@ -663,10 +738,32 @@ impl Vault {
         // is merely not allowed never reports as malformed.
         let base_target = match &route {
             Route::NearDirect => None,
-            Route::BaseUsdc { .. } => {
+            Route::BaseUsdc { nonce: _, max_priority_fee_per_gas, max_fee_per_gas, gas_limit } => {
                 let Some(cfg) = self.base_config.clone() else {
                     return blocked(&request_id, node_id, ReasonCode::BaseRailClosed);
                 };
+
+                // EIP-1559 validity: a transaction whose priority fee exceeds
+                // its max fee is malformed and Base would reject it. Refusing
+                // here means the vault never spends a signature on it.
+                if max_priority_fee_per_gas.0 > max_fee_per_gas.0 {
+                    return blocked(&request_id, node_id, ReasonCode::InvalidFeeFields);
+                }
+
+                // THE GAS CEILING. See BaseConfig::max_tx_fee_wei.
+                //
+                // `checked_mul` and not `*`: `gas_limit` is caller-supplied and
+                // `max_fee_per_gas` is a u128, so the product can overflow. A
+                // wrapping multiply would turn an enormous fee into a small
+                // number and sail past the ceiling — the overflow IS the
+                // attack, so it is treated as exceeding the ceiling rather
+                // than as an arithmetic detail.
+                let worst_case_fee = u128::from(gas_limit.0).checked_mul(max_fee_per_gas.0);
+                match worst_case_fee {
+                    Some(fee) if fee <= cfg.max_tx_fee_wei.0 => {}
+                    _ => return blocked(&request_id, node_id, ReasonCode::FeeCeilingExceeded),
+                }
+
                 match evm::parse_evm_address(recipient.as_str()) {
                     Some(addr) => Some((cfg, addr)),
                     None => return blocked(&request_id, node_id, ReasonCode::InvalidEvmAddress),
