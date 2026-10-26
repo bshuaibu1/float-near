@@ -68,9 +68,16 @@ pub struct PaymentRequestView {
     pub reason_code: String,
 }
 
-/// A real Base USDC address, used so the test exercises the same 20-byte shape
-/// production would. Nothing is sent to it — the signature is never relayed.
-pub const BASE_USDC: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+/// USDC on Base SEPOLIA (chain 84532), which is the chain id these fixtures
+/// use. Verified 2026-10-26 against a Base Sepolia node: code present,
+/// `symbol()` returns "USDC".
+///
+/// It was previously the Base MAINNET address (`0x833589…02913`) next to
+/// chain_id 84532 — a pairing with NO CONTRACT at that address on Sepolia. No
+/// test could catch it, because the signer is a mock and no chain is involved,
+/// so the mismatch only matters to a relayed transaction. Kept consistent here
+/// anyway so the repo never shows a mainnet/testnet pairing as if it were fine.
+pub const BASE_USDC: &str = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
 /// An arbitrary lowercase EVM payee.
 pub const EVM_PAYEE: &str = "0x4200000000000000000000000000000000000006";
 /// A SECOND payee, so a test can vary who is paid and not just how much.

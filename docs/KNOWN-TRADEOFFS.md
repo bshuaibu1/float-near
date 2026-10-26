@@ -136,8 +136,31 @@ Bounded honestly:
   they copy (`MAX_PROMISE_RESULT_LEN`, `MAX_MPC_RESULT_LEN`) precisely so they
   cannot be pushed out of gas by a large return value.
 
-There is currently **no** owner method to release a stuck reservation inside
-the same day. That is a known gap, not a defended design decision.
+`sweep_stuck_pending(limit)` closes this. Owner-only, it releases such a
+reservation through `resolve_reservation` — the same single place both rails
+use, so it is released exactly once and a late callback finds a non-pending
+status and becomes a no-op.
+
+Two details that are deliberate:
+
+- The outcome is tagged `SWEPT_STUCK`, not `TRANSFER_FAILED`, so an audit can
+  tell an owner's intervention apart from a rail that actually reported
+  failure.
+- The age floor (`MIN_SWEEP_AGE_NS`, one hour) is a **constant, not a
+  parameter**. An owner who could pass zero could release a live reservation
+  whose callback was about to land.
+
+**The tradeoff, stated plainly.** On the NEP-141 rail, if `ft_transfer`
+succeeded and only the callback died, the tokens have already left the vault.
+Sweeping then releases a reservation for a spend that genuinely happened, and
+the budget under-counts it. The age floor makes that window negligible, not
+impossible — an owner should check the token balance before sweeping a
+NEAR-rail request. The alternative, no sweep at all, locks the budget until the
+day rolls over and the storage permanently, which is worse.
+
+A swept request also becomes terminal and therefore purgeable. Before the sweep
+existed, `purge_settled` could never reclaim a stuck request's storage, because
+it takes only terminal requests.
 
 ## 5. What the contract does NOT prove about Base
 
@@ -152,3 +175,37 @@ Relaying is off-chain and the contract cannot observe it. This is why `SIGNED`
 is a deliberately distinct reason code from `SETTLED`, and why the dashboard
 reports the rail as `base` rather than `near`. Nothing in this repo has been
 relayed to Base.
+
+## 6. A config error no test could catch: chain id vs token address
+
+Found while costing out the relayer, not by any test.
+
+The live vault was configured with `chain_id: 84532` (Base Sepolia) and
+`usdc_address: 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` — which is the Base
+**MAINNET** USDC. Verified against a Base Sepolia node on 2026-10-26:
+
+```
+0x833589fcd6edb6e08f4c7c32d4f71b54bda02913   NO CONTRACT
+0x036cbd53842c5426634e7929541ec2318f3dcf7e   code present, symbol() = "USDC"
+```
+
+A transaction signed under that config would have been perfectly valid and
+would have called an address with no code on Sepolia — the transfer would do
+nothing while every NEAR-side assertion still passed.
+
+**No test could have caught this**, and that is the point worth keeping: the
+signer is a mock and no chain is involved, so the contract's own view of
+correctness ("I signed what I authorized") is satisfied either way. The pairing
+only matters to a *relayed* transaction, which is precisely the thing this
+project does not do. It is a configuration fact about the outside world, and
+the only way to check it was to ask the outside world.
+
+Fixed in the live config and in the test fixture — the fixture does not care
+about the value, but a repo that shows a mainnet address beside a testnet chain
+id teaches the wrong pairing to whoever copies it next.
+
+The general shape: `max_tx_fee_wei`, `chain_id`, `usdc_address`,
+`derivation_path` and `domain_id` are all owner-set facts about an external
+chain. The contract validates their SHAPE (lowercase 20-byte hex, non-zero
+ceiling) and cannot validate their TRUTH. Anyone deploying this must check the
+token address against the chain id they are using.
