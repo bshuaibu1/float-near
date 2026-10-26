@@ -106,7 +106,7 @@ describe("nodeToApiAgent", () => {
 
 describe("treeToApiAgents", () => {
   const tree: VaultNode[] = [
-    node({ id: 0, parent: null, path: [], label: "root", account: null, child_count: 2 }),
+    node({ id: 0, parent: null, path: [], label: "root", account: null, child_count: 2, recipients: ["bob.testnet"] }),
     node({ id: 1, parent: 0, path: [0], label: "research", account: null, child_count: 2 }),
     node({ id: 2, parent: 1, path: [0, 1], label: "r1", account: "r1.vault.testnet" }),
     node({ id: 3, parent: 1, path: [0, 1], label: "r2", account: "r2.vault.testnet" }),
@@ -114,21 +114,45 @@ describe("treeToApiAgents", () => {
   const budgets = new Map(tree.map((n) => [n.id, { executed: "0", pending: "0" }]));
 
   it("keeps the tree order root-first so the hierarchy reads top-down", () => {
+    const NB = "\u00a0";
     const rows = treeToApiAgents(tree, budgets, D);
     expect(rows.map((r) => r.displayName)).toEqual([
       "root",
       "└─ research",
-      "   └─ r1",
-      "   └─ r2",
+      NB.repeat(3) + "└─ r1",
+      NB.repeat(3) + "└─ r2",
     ]);
   });
 
-  it("marks depth so the existing flat table still shows the hierarchy", () => {
-    // The Float agents table is flat. Indenting the display name is the
-    // minimal way to show root -> team -> agent without redesigning it.
+  /**
+   * REGRESSION. The first version indented with PLAIN spaces. Every assertion
+   * passed and the page rendered FLAT, because HTML collapses leading
+   * whitespace - depth 2 looked identical to depth 1 and the hierarchy, the
+   * entire point of the view, was invisible. Found by looking at the screen,
+   * not by a test. So this asserts the actual character and explicitly
+   * rejects the space that silently regresses it.
+   */
+  it("indents with NON-BREAKING spaces, which HTML will not collapse", () => {
     const rows = treeToApiAgents(tree, budgets, D);
-    expect(rows[0]!.displayName).not.toMatch(/└/);
-    expect(rows[2]!.displayName.startsWith("   └─")).toBe(true);
+    const deep = rows[2]!.displayName;
+    expect(deep.startsWith("\u00a0")).toBe(true);
+    expect(deep.startsWith(" ")).toBe(false);
+  });
+
+  it("gives each depth a visibly different prefix", () => {
+    const rows = treeToApiAgents(tree, budgets, D);
+    const pre = (s: string) => s.slice(0, s.indexOf("└"));
+    expect(pre(rows[1]!.displayName)).toBe("");
+    expect(pre(rows[2]!.displayName).length).toBe(3);
+  });
+
+  it("resolves the EFFECTIVE payee allowlist, not the raw node field", () => {
+    // Children inherit root list on-chain. Reporting their raw null made the
+    // UI badge them unrestricted, the opposite of what the contract enforces.
+    const rows = treeToApiAgents(tree, budgets, D);
+    for (const r of rows) {
+      expect(r.policy?.allowedAddresses).toEqual(["bob.testnet"]);
+    }
   });
 });
 

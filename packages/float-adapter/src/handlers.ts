@@ -9,6 +9,7 @@
 
 import {
   blockedToPayment,
+  lifetimeByNode,
   requestToPayment,
   treeToApiAgents,
   type ApiAgent,
@@ -53,32 +54,41 @@ async function loadTreeAndUsage(
   const budgets = new Map<number, DayUsage>();
   const labels: Record<number, string> = {};
 
-  // One view per node. Bounded by MAX_NODES (64), and the alternative would be
-  // a new contract method returning the whole tree's usage — not worth the
-  // surface for a demo-scale tree.
-  for (const n of tree) {
-    labels[n.id] = n.label;
-    const b = await view<{ executed: string; pending: string } | null>("get_node_budget", {
-      node_id: n.id,
-      token: cfg.token,
-      day: null,
-    });
+  // CONCURRENT, not sequential. One view per node is bounded by MAX_NODES (64),
+  // but issuing them in series costs a full testnet round-trip EACH: measured
+  // at 30s for a five-node tree, which is not a dashboard, it is a progress
+  // bar. Only `get_tree` is a real dependency; the per-node budgets depend on
+  // nothing but it. Pinned by the concurrency test in handlers.test.ts.
+  for (const n of tree) labels[n.id] = n.label;
+  const fetched = await Promise.all(
+    tree.map((n) =>
+      view<{ executed: string; pending: string } | null>("get_node_budget", {
+        node_id: n.id,
+        token: cfg.token,
+        day: null,
+      }),
+    ),
+  );
+  tree.forEach((n, i) => {
+    const b = fetched[i];
     budgets.set(n.id, b ? { executed: b.executed, pending: b.pending } : { executed: "0", pending: "0" });
-  }
+  });
   return { tree, budgets, labels };
 }
 
 export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
   const { tree, budgets, labels } = await loadTreeAndUsage(view, cfg);
-  const agents: ApiAgent[] = treeToApiAgents(tree, budgets, cfg.decimals);
 
-  const requests = await view<VaultRequest[]>("list_requests", { from_index: 0, limit: 20 });
+  // Also concurrent: neither depends on the other.
+  const [requests, cfgView] = await Promise.all([
+    view<VaultRequest[]>("list_requests", { from_index: 0, limit: 20 }),
+    view<{ paused: boolean; owner: string; vault_id: string }>("get_config", {}),
+  ]);
+  const agents: ApiAgent[] = treeToApiAgents(tree, budgets, cfg.decimals, lifetimeByNode(requests));
   const onchain = requests.map((r) => requestToPayment(r, labels, cfg.decimals));
   const recent = [...cfg.blockedRing, ...onchain]
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     .slice(0, 20);
-
-  const cfgView = await view<{ paused: boolean; owner: string; vault_id: string }>("get_config", {});
   const root = tree.find((n) => n.parent === null);
   const rootUsage = root ? budgets.get(root.id) : undefined;
 

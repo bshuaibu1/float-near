@@ -16,3 +16,6 @@ apps/dashboard/.localappdata/
 apps/dashboard/build-output.txt
 apps/dashboard/tsconfig.tsbuildinfo
 apps/dashboard/git
+
+# testnet demo agent keys - never commit
+.demo/

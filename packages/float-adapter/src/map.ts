@@ -140,13 +140,66 @@ export function treeToApiAgents(
   tree: VaultNode[],
   budgets: Map<number, DayUsage>,
   decimals: number,
+  lifetime: Map<number, { spent: bigint; count: number }> = new Map(),
 ): ApiAgent[] {
+  const byId = new Map(tree.map((n) => [n.id, n]));
   return tree.map((n) => {
     const a = nodeToApiAgent(n, budgets.get(n.id) ?? { executed: "0", pending: "0" }, decimals);
-    const depth = n.path.length;
-    a.displayName = depth === 0 ? n.label : `${"   ".repeat(depth - 1)}└─ ${n.label}`;
+    a.displayName = indent(n.path.length, n.label);
+
+    // The EFFECTIVE allowlist, resolved the way the contract resolves it.
+    // Reporting the raw `recipients` field made every inheriting node look
+    // unrestricted in the UI ("Open x402"), which is the opposite of true:
+    // they inherit the root's allowlist and the contract enforces it.
+    a.policy = { ...a.policy, allowedAddresses: effectiveRecipients(n, byId) };
+
+    const lt = lifetime.get(n.id);
+    if (lt) {
+      a.lifetimeSpent = fromBaseUnits(lt.spent, decimals);
+      a.lifetimePayments = lt.count;
+    }
     return a;
   });
+}
+
+/**
+ * Depth prefix using NON-BREAKING spaces.
+ *
+ * Plain spaces look right in a test assertion and vanish on screen: HTML
+ * collapses leading whitespace, so depth-2 rendered identically to depth-1 and
+ * the hierarchy — the entire point of the view — was invisible. The unit test
+ * was green while the screen was wrong, which is why this is asserted against
+ * the rendered character and not a trimmed string.
+ */
+export function indent(depth: number, label: string): string {
+  if (depth === 0) return label;
+  return `${"\u00a0".repeat(3 * (depth - 1))}└─ ${label}`;
+}
+
+/** Mirrors the contract's `effective_recipients`: nearest ancestor with a list. */
+export function effectiveRecipients(
+  n: VaultNode,
+  byId: Map<number, VaultNode>,
+): string[] | undefined {
+  const chain = [...n.path, n.id].reverse(); // self first, then upward
+  for (const id of chain) {
+    const node = byId.get(id);
+    if (node?.recipients && node.recipients.length) return node.recipients;
+  }
+  return undefined;
+}
+
+/** Settled spend per node, within RETAINED history (purge_settled removes rows). */
+export function lifetimeByNode(
+  requests: VaultRequest[],
+): Map<number, { spent: bigint; count: number }> {
+  const m = new Map<number, { spent: bigint; count: number }>();
+  for (const r of requests) {
+    if (r.status !== "SETTLED") continue;
+    const cur = m.get(r.node_id) ?? { spent: 0n, count: 0 };
+    m.set(r.node_id, { spent: cur.spent + BigInt(r.amount), count: cur.count + 1 });
+  }
+  return m;
 }
 
 function nsToIso(ns: string): string {

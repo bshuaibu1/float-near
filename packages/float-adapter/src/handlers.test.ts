@@ -60,7 +60,7 @@ describe("getDashboard", () => {
     // Teams are rows too: they hold the shared pool, which is the thing this
     // product exists to show.
     return getDashboard(stubView(), cfg()).then((d) => {
-      expect(d.agents.map((a) => a.displayName)).toEqual(["root", "└─ research", "   └─ r1"]);
+      expect(d.agents.map((a) => a.displayName)).toEqual(["root", "└─ research", "   └─ r1"]);
     });
   });
 
@@ -185,5 +185,53 @@ describe("paymentFromOutcome", () => {
     );
     expect(p).toBeNull();
     expect(c.blockedRing).toHaveLength(0);
+  });
+});
+
+describe("dashboard RPC concurrency", () => {
+  // Measured against live testnet: issuing the per-node budget views in series
+  // took 30s for a five-node tree. Only get_tree is a real dependency. This
+  // pins the fix — a future refactor that reintroduces `await` inside the loop
+  // would still be CORRECT and would still pass every other test, which is
+  // exactly how a 30-second dashboard ships.
+  it("issues the per-node budget views concurrently", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const view: ViewFn = async <T>(m: string) => {
+      if (m === "get_node_budget") {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 20));
+        inFlight -= 1;
+        return { executed: "0", pending: "0" } as T;
+      }
+      if (m === "get_tree") return TREE as T;
+      if (m === "list_requests") return [] as T;
+      return { paused: false, owner: "a.testnet", vault_id: "v.testnet" } as T;
+    };
+
+    await getDashboard(view, cfg());
+    expect(peak).toBe(TREE.length);
+  });
+
+  it("does not serialise list_requests behind get_config", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const slow = new Set(["list_requests", "get_config"]);
+    const view: ViewFn = async <T>(m: string) => {
+      if (slow.has(m)) {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 20));
+        inFlight -= 1;
+      }
+      if (m === "get_tree") return TREE as T;
+      if (m === "get_node_budget") return { executed: "0", pending: "0" } as T;
+      if (m === "list_requests") return [] as T;
+      return { paused: false, owner: "a.testnet", vault_id: "v.testnet" } as T;
+    };
+
+    await getDashboard(view, cfg());
+    expect(peak).toBe(2);
   });
 });
