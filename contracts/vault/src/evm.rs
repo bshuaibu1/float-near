@@ -130,6 +130,20 @@ pub fn eip1559_unsigned(f: &Eip1559Fields) -> Vec<u8> {
     out
 }
 
+/// Lowercase hex, no `0x`.
+///
+/// The MPC contract's current interface takes the payload as a hex STRING
+/// (`payload_v2: {"Ecdsa": "<64 hex>"}`), not as a byte array. Measured against
+/// v1.signer-prod.testnet on 2026-10-26.
+pub fn hex32(b: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for byte in b {
+        s.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
+        s.push(char::from_digit((byte & 0x0f) as u32, 16).unwrap());
+    }
+    s
+}
+
 /// The 32-byte hash the MPC network signs.
 pub fn eip1559_sighash(f: &Eip1559Fields) -> [u8; 32] {
     let digest = env::keccak256(&eip1559_unsigned(f));
@@ -185,6 +199,22 @@ mod tests {
         assert_eq!(be_minimal(1), vec![0x01]);
         assert_eq!(be_minimal(256), vec![0x01, 0x00]);
         assert_eq!(be_minimal(u128::MAX), vec![0xff; 16]);
+    }
+
+    #[test]
+    fn hex32_is_64_lowercase_chars_with_no_prefix() {
+        let mut b = [0u8; 32];
+        b[0] = 0x0a;
+        b[31] = 0xff;
+        let h = hex32(&b);
+        assert_eq!(h.len(), 64);
+        assert!(h.starts_with("0a"), "{h}");
+        assert!(h.ends_with("ff"), "{h}");
+        assert!(!h.contains("0x"));
+        assert_eq!(h, h.to_lowercase());
+        // Leading nibble must NOT be trimmed: this is a fixed-width field, and
+        // a 63-char string is rejected by the signer's Min32/Max32 bound.
+        assert_eq!(hex32(&[0u8; 32]), "0".repeat(64));
     }
 
     #[test]

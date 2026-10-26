@@ -328,7 +328,8 @@ pub async fn open_base_rail(e: &Env) -> Result<()> {
                 "usdc_address": BASE_USDC,
                 "chain_id": 84532,
                 "derivation_path": "base-1",
-                "key_version": 0,
+                // domain 0 = CaitSith/secp256k1 on the real signer.
+                "domain_id": 0,
             }
         }))
         .deposit(ONE_YOCTO)

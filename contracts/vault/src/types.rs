@@ -155,7 +155,11 @@ pub struct BaseConfig {
     pub chain_id: u64,
     /// MPC derivation path. Fixes which Base address the vault controls.
     pub derivation_path: String,
-    pub key_version: u32,
+    /// Which MPC root key signs. Measured on v1.signer-prod.testnet
+    /// 2026-10-26: domain 0 is CaitSith/secp256k1 — the ECDSA curve an EVM
+    /// chain needs. Domain 1 is Frost/Ed25519 and would produce a signature
+    /// Base cannot verify, which is why this is owner-set and not guessed.
+    pub domain_id: u64,
 }
 
 #[near(serializers = [borsh, json])]

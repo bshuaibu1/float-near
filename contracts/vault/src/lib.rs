@@ -57,15 +57,19 @@ pub const MIN_AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_millinear(500);
 pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
 pub const GAS_FOR_CREATE_CALLBACK: Gas = Gas::from_tgas(10);
 
-/// MPC signing is expensive — it fans out across the signer network. Measured
-/// requirement is well above a normal cross-contract call, and an under-funded
-/// sign call that runs out of gas never returns to the callback, which would
-/// leave the reservation held.
-pub const GAS_FOR_MPC_SIGN: Gas = Gas::from_tgas(200);
+/// Gas for the MPC sign call.
+///
+/// MEASURED, not guessed: v1.signer-prod.testnet's own `config` reports
+/// `sign_call_gas_attachment_requirement_tera_gas: 15`, and a live sign call
+/// at 100 Tgas returned a real secp256k1 signature. 100 keeps a wide margin
+/// over the stated requirement while leaving room under NEAR's 300 Tgas cap —
+/// an under-funded sign call that runs out of gas never returns to the
+/// callback, which would leave the reservation held at every level.
+pub const GAS_FOR_MPC_SIGN: Gas = Gas::from_tgas(100);
 pub const GAS_FOR_SIGNATURE_CALLBACK: Gas = Gas::from_tgas(10);
-/// The Base rail needs the sign gas plus its callback, so it demands more
-/// prepaid gas than the NEAR rail. Checked BEFORE anything is charged.
-pub const MIN_GAS_FOR_BASE_DISPATCH: Gas = Gas::from_tgas(230);
+/// The Base rail demands more prepaid gas than the NEAR rail. Checked BEFORE
+/// anything is charged.
+pub const MIN_GAS_FOR_BASE_DISPATCH: Gas = Gas::from_tgas(130);
 /// Upper bound on a single purge sweep, so one call cannot exhaust gas
 /// part-way and leave an unpredictable amount of work done.
 pub const MAX_PURGE_LIMIT: u32 = 100;
@@ -79,13 +83,30 @@ trait MpcSigner {
     fn sign(&mut self, request: SignRequest) -> near_sdk::Promise;
 }
 
-/// What `v1.signer` expects. `payload` is the 32-byte hash — and the whole
-/// design hinges on the vault computing that hash itself.
+/// What `v1.signer-prod.testnet` actually expects, read off its embedded ABI
+/// and confirmed by a live `sign` call on 2026-10-26.
+///
+/// The older `{payload: [u8;32], key_version}` shape still deserialises there
+/// via a documented backward-compatible alias, but it is DEPRECATED. This uses
+/// the current field names so the rail does not depend on a compatibility path
+/// that may be dropped.
+///
+/// `payload_v2` is the 32-byte hash as hex — and the whole design hinges on the
+/// vault computing that hash itself rather than accepting one.
 #[near(serializers = [json])]
 pub struct SignRequest {
-    pub payload: [u8; 32],
+    pub payload_v2: Payload,
     pub path: String,
-    pub key_version: u32,
+    pub domain_id: u64,
+}
+
+/// Externally tagged, which serialises to `{"Ecdsa": "<64 hex>"}`.
+///
+/// Only the ECDSA arm exists here: Base verifies secp256k1, and the signer's
+/// Eddsa arm would return a signature no EVM chain can check.
+#[near(serializers = [json])]
+pub enum Payload {
+    Ecdsa(String),
 }
 
 #[ext_contract(ext_ft)]
@@ -782,11 +803,21 @@ impl Vault {
 
                 PromiseOrValue::Promise(
                     ext_mpc::ext(cfg.mpc_contract)
+                        // `sign` is PAYABLE: the signer asks for a deposit per
+                        // request to stop the network being spammed. Measured
+                        // on v1.signer-prod.testnet — 1 yocto is accepted. It
+                        // comes from the VAULT's balance, not the caller's,
+                        // because a function-call agent key cannot attach a
+                        // deposit at all. Omitting it made every live Base
+                        // payment fail, and the mock could not show that.
+                        .with_attached_deposit(ONE_YOCTO)
                         .with_static_gas(GAS_FOR_MPC_SIGN)
                         .sign(SignRequest {
-                            payload: evm::eip1559_sighash(&fields),
+                            payload_v2: Payload::Ecdsa(evm::hex32(
+                                &evm::eip1559_sighash(&fields),
+                            )),
                             path: cfg.derivation_path,
-                            key_version: cfg.key_version,
+                            domain_id: cfg.domain_id,
                         })
                         .then(
                             Self::ext(env::current_account_id())
