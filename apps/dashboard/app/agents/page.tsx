@@ -177,9 +177,15 @@ export default function AgentsPage() {
             </div>
           )}
 
-          <div className="bg-white rounded-lg overflow-hidden" style={border}>
+          {/* overflow-x-auto + a min-width on the rows: the fixed columns add
+              up to 35rem, so below roughly 600px the 1.5fr name column was
+              crushed to zero width and the node labels disappeared entirely
+              while still being present in the DOM. Scrolling is the honest
+              behaviour; silently hiding the one column that identifies the row
+              is not. */}
+          <div className="bg-white rounded-lg overflow-x-auto" style={border}>
             <div
-              className="grid grid-cols-[1.5fr_7rem_6rem_6rem_9rem_7rem] gap-4 px-6 py-3 text-[11px] font-medium uppercase tracking-wider"
+              className="grid min-w-[55rem] grid-cols-[minmax(12rem,1.5fr)_7rem_6rem_6rem_9rem_7rem] gap-4 px-6 py-3 text-[11px] font-medium uppercase tracking-wider"
               style={{ color: "#787774", borderBottom: "1px solid #EAEAEA" }}
             >
               <span>Node</span>
@@ -197,7 +203,7 @@ export default function AgentsPage() {
               return (
                 <div
                   key={a.agentId}
-                  className="grid grid-cols-[1.5fr_7rem_6rem_6rem_9rem_7rem] gap-4 items-center px-6 py-3 hover:bg-[#FBFBFA] transition-colors duration-100"
+                  className="grid min-w-[55rem] grid-cols-[minmax(12rem,1.5fr)_7rem_6rem_6rem_9rem_7rem] gap-4 items-center px-6 py-3 hover:bg-[#FBFBFA] transition-colors duration-100"
                   style={{ borderBottom: i < agents.length - 1 ? "1px solid #EAEAEA" : "none" }}
                 >
                   {/* The hierarchy, drawn. displayName already carries the depth
@@ -319,11 +325,9 @@ export default function AgentsPage() {
           )}
 
           <p className="mt-4 text-[11.5px] leading-5" style={{ color: "#787774" }}>
-            Allocation is{" "}
-            <span className="font-mono">{info?.strictAllocation ? "strict" : "overcommit"}</span>
             {info?.strictAllocation
-              ? " — children cannot be allocated more than their parent holds."
-              : " — agents can be given more budget than the team has. They share one pool. When the pool runs out, later agents are blocked even if they still have their own limit left."}
+              ? "A team cannot hand out more than it holds, so an agent's own limit is always real."
+              : "Agents can be given more budget than the team has. They share one pool. When the pool runs out, later agents are blocked even if they still have their own limit left."}
           </p>
         </>
       )}
