@@ -16,8 +16,8 @@ mod tests;
 use near_sdk::json_types::{U128, U64};
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{
-    assert_one_yocto, env, ext_contract, near, AccountId, BorshStorageKey, Gas, NearToken,
-    PanicOnDefault, PromiseOrValue,
+    assert_one_yocto, env, ext_contract, near, AccountId, Allowance, BorshStorageKey, Gas,
+    NearToken, PanicOnDefault, Promise, PromiseOrValue, PublicKey,
 };
 
 pub use crate::types::*;
@@ -32,6 +32,26 @@ const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 const MAX_PROMISE_RESULT_LEN: usize = 256;
 
 pub const PRODUCTION_DAY_NS: u64 = 86_400 * NS_PER_SEC;
+
+/// Floor for the agent account's own storage staking, on top of whatever gas
+/// allowance the owner grants its key.
+pub const AGENT_ACCOUNT_STORAGE: NearToken = NearToken::from_millinear(50);
+/// Lower bound on a usable key allowance.
+///
+/// MEASURED, not guessed: an earlier version hardcoded 0.05 NEAR and the key
+/// was dead on arrival — `NotEnoughBalance { balance: 0.2 NEAR, cost: 1.0009
+/// NEAR }`. NEAR reserves the FULL prepaid gas against the signer up front and
+/// refunds the unused part afterwards, so a 300 Tgas call needs ~1 NEAR of
+/// headroom even though it burns a small fraction of that. An allowance sized
+/// to expected burn rather than to prepaid gas produces a key that cannot
+/// transact at all.
+pub const MIN_AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_millinear(500);
+/// The ONLY method an agent key may call. Anything added here widens the
+/// agent's authority, so it is a single const rather than a parameter.
+pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
+pub const GAS_FOR_CREATE_CALLBACK: Gas = Gas::from_tgas(10);
+pub const MAX_SUB_LABEL_LEN: usize = 32;
+pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 
 #[ext_contract(ext_ft)]
 #[allow(dead_code)]
@@ -283,21 +303,102 @@ impl Vault {
     #[payable]
     pub fn bind_agent(&mut self, node_id: NodeId, account_id: AccountId) {
         self.assert_owner();
-        if account_id == self.owner || account_id == env::current_account_id() {
-            fail(ReasonCode::InvalidConfig, "agent must not be the owner or the vault");
+        self.do_bind(node_id, account_id);
+    }
+
+    /// Creates `<sub_label>.<vault>` and gives it ONE function-call access key
+    /// pinned to this vault and to `request_payment` alone, then binds it to
+    /// `node_id` once the account actually exists.
+    ///
+    /// The authority this grants is the whole security story, so it is worth
+    /// stating exactly what the resulting key can and cannot do:
+    ///
+    /// - `receiver_id` is this vault, so the key cannot call ANY other
+    ///   contract — including the token itself. That matters: a key that could
+    ///   call `ft_transfer` directly would hold the vault's own transfer
+    ///   authority and every budget check would be moot.
+    /// - `method_names` is exactly `["request_payment"]`, so it cannot reach
+    ///   owner methods.
+    /// - a NEAR function-call key cannot attach a deposit at all, so it cannot
+    ///   move NEAR directly. Every movement of value is contract logic.
+    ///
+    /// Owner-gated by requiring a deposit rather than by `assert_one_yocto`:
+    /// the deposit funds the new account, and requiring one is just as
+    /// effective at excluding a function-call key, which cannot attach any.
+    #[payable]
+    pub fn create_agent_account(
+        &mut self,
+        node_id: NodeId,
+        sub_label: String,
+        public_key: PublicKey,
+        key_allowance: NearToken,
+    ) -> Promise {
+        if env::predecessor_account_id() != self.owner {
+            fail(ReasonCode::NotOwner, "owner only");
         }
-        if self.account_to_node.contains_key(&account_id) {
-            fail(ReasonCode::InvalidConfig, "account already bound to a node");
+        if key_allowance < MIN_AGENT_KEY_ALLOWANCE {
+            fail(
+                ReasonCode::InvalidConfig,
+                "key_allowance below the usable floor (see MIN_AGENT_KEY_ALLOWANCE)",
+            );
         }
-        let n = self
-            .nodes
-            .get_mut(&node_id)
-            .unwrap_or_else(|| fail(ReasonCode::UnknownNode, "no such node"));
-        if n.account.is_some() {
-            fail(ReasonCode::InvalidConfig, "node already has an account");
+        let required = key_allowance.saturating_add(AGENT_ACCOUNT_STORAGE);
+        let deposit = env::attached_deposit();
+        if deposit < required {
+            fail(
+                ReasonCode::InvalidConfig,
+                "deposit must cover key_allowance plus account storage",
+            );
         }
-        n.account = Some(account_id.clone());
-        self.account_to_node.insert(account_id, node_id);
+        if sub_label.is_empty()
+            || sub_label.len() > MAX_SUB_LABEL_LEN
+            || !sub_label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
+        {
+            fail(ReasonCode::InvalidConfig, "sub_label must be 1..=32 chars of [a-z0-9-_]");
+        }
+
+        let vault_id = env::current_account_id();
+        let sub_id = format!("{sub_label}.{vault_id}");
+        if sub_id.len() > MAX_ACCOUNT_ID_LEN {
+            fail(ReasonCode::InvalidConfig, "resulting account id is too long");
+        }
+        let sub: AccountId = sub_id
+            .parse()
+            .unwrap_or_else(|_| fail(ReasonCode::InvalidConfig, "invalid account id"));
+
+        // Validate the binding BEFORE creating anything, so a rejected bind
+        // cannot leave an orphaned funded account behind.
+        self.assert_bindable(node_id, &sub);
+
+        Promise::new(sub.clone())
+            .create_account()
+            .transfer(deposit)
+            .add_access_key_allowance(
+                public_key,
+                Allowance::limited(key_allowance)
+                    .unwrap_or_else(|| fail(ReasonCode::InvalidConfig, "zero key allowance")),
+                vault_id,
+                AGENT_ALLOWED_METHOD.to_string(),
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(GAS_FOR_CREATE_CALLBACK)
+                    .on_agent_created(node_id, sub),
+            )
+    }
+
+    /// Binds only if the account was really created. Binding optimistically
+    /// would leave a node pointing at an account that does not exist.
+    #[private]
+    pub fn on_agent_created(&mut self, node_id: NodeId, account_id: AccountId) -> bool {
+        let created = env::promise_results_count() == 1
+            && env::promise_result_checked(0, MAX_PROMISE_RESULT_LEN).is_ok();
+        if created {
+            self.do_bind(node_id, account_id);
+        }
+        created
     }
 
     #[payable]
@@ -688,6 +789,32 @@ impl Vault {
             }
         }
         Vec::new()
+    }
+
+    /// Shared by `bind_agent` and `on_agent_created` so the two paths cannot
+    /// drift apart in what they consider a legal binding.
+    fn assert_bindable(&self, node_id: NodeId, account_id: &AccountId) {
+        if account_id == &self.owner || account_id == &env::current_account_id() {
+            fail(ReasonCode::InvalidConfig, "agent must not be the owner or the vault");
+        }
+        if self.account_to_node.contains_key(account_id) {
+            fail(ReasonCode::InvalidConfig, "account already bound to a node");
+        }
+        let n = self
+            .nodes
+            .get(&node_id)
+            .unwrap_or_else(|| fail(ReasonCode::UnknownNode, "no such node"));
+        if n.account.is_some() {
+            fail(ReasonCode::InvalidConfig, "node already has an account");
+        }
+    }
+
+    fn do_bind(&mut self, node_id: NodeId, account_id: AccountId) {
+        self.assert_bindable(node_id, &account_id);
+        if let Some(n) = self.nodes.get_mut(&node_id) {
+            n.account = Some(account_id.clone());
+        }
+        self.account_to_node.insert(account_id, node_id);
     }
 
     fn bump_child_sum(&mut self, parent_id: NodeId, token: &AccountId, old: u128, new: u128) {
