@@ -10,7 +10,16 @@
 
 import { randomUUID } from "node:crypto";
 
-export const DEFAULT_RPC_URL = "https://rpc.testnet.near.org";
+/**
+ * NOT `rpc.testnet.near.org`. That endpoint now answers every request with
+ * HTTP error -429 and the text "THIS ENDPOINT IS DEPRECATED! STOP USING IT
+ * NOW!" — observed 2026-10-26. It fails closed for reads, which would make the
+ * whole product look broken for anyone who left the default in place.
+ *
+ * Overridable with NEAR_VAULT_RPC_URL; providers are listed at
+ * https://docs.near.org/api/rpc/providers
+ */
+export const DEFAULT_RPC_URL = "https://test.rpc.fastnear.com";
 
 export function encodeArgs(args: unknown): string {
   // Explicit utf8: a memo is free text, goes on-chain, and a latin-1

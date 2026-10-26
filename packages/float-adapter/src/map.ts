@@ -247,7 +247,16 @@ export function requestToPayment(
     // is already its own column, so echoing it adds nothing.
     venue: r.memo || r.recipient,
     rail: railOf(r.route),
-    status: STATUS[r.status] ?? r.status.toLowerCase(),
+    // A Base payment is NOT "success". The contract proved it obtained a
+    // signature; it cannot see whether the transaction landed, and nothing in
+    // this repo relays it. Rendering SETTLED as "success" for that rail would
+    // tell the reader the money arrived, which is the one claim the whole
+    // design is careful never to make. The NEAR rail is unaffected: there,
+    // SETTLED really does mean the tokens moved.
+    status:
+      railOf(r.route) === "base" && r.reason_code === "SIGNED"
+        ? "signed"
+        : STATUS[r.status] ?? r.status.toLowerCase(),
     txSignature: null,
     createdAt: nsToIso(r.created_at_ns),
     prompt: r.memo || null,

@@ -9,7 +9,7 @@
  * node:http with no framework, because the whole job is four JSON endpoints.
  *
  *   NEAR_VAULT_CONTRACT        required
- *   NEAR_VAULT_RPC_URL         default https://rpc.testnet.near.org
+ *   NEAR_VAULT_RPC_URL         default https://test.rpc.fastnear.com
  *   NEAR_VAULT_TOKEN           required (the NEP-141 the vault pays in)
  *   NEAR_VAULT_TOKEN_DECIMALS  default 6
  *   NEAR_VAULT_AGENT_ID        only needed for POST /v1/pay
@@ -41,7 +41,9 @@ import type { VaultNode } from "./map.js";
 
 const env = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
-  rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? "https://rpc.testnet.near.org",
+  // See DEFAULT_RPC_URL in @near-vault/mcp: the old public testnet endpoint
+  // is deprecated and now returns -429 for every call.
+  rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com",
   token: process.env.NEAR_VAULT_TOKEN ?? "",
   decimals: Number(process.env.NEAR_VAULT_TOKEN_DECIMALS ?? "6"),
   agentId: process.env.NEAR_VAULT_AGENT_ID,

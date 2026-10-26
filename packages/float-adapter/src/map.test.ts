@@ -293,3 +293,44 @@ describe("railOf", () => {
     expect(railOf(null)).toBe("near");
   });
 });
+
+describe("a Base payment is not reported as success", () => {
+  // The contract proved it obtained a SIGNATURE over a Base transaction. It
+  // cannot observe whether that transaction landed, and nothing in this repo
+  // relays it. "Success" would tell the reader the money arrived — the one
+  // claim this design is careful never to make.
+  it("maps a SIGNED base payment to 'signed', not 'success'", () => {
+    const p = requestToPayment(
+      req({ route: { base_usdc: { nonce: "0" } }, status: "SETTLED", reason_code: "SIGNED" }),
+      {},
+      D,
+    );
+    expect(p.status).toBe("signed");
+    expect(p.rail).toBe("base");
+  });
+
+  it("still maps a NEAR-rail SETTLED payment to success", () => {
+    // On the NEP-141 rail, SETTLED really does mean the tokens moved, so this
+    // must not be collateral damage from the rule above.
+    const p = requestToPayment(
+      req({ route: "near_direct", status: "SETTLED", reason_code: "SETTLED" }),
+      {},
+      D,
+    );
+    expect(p.status).toBe("success");
+    expect(p.rail).toBe("near");
+  });
+
+  it("maps a FAILED signature to failed, not signed", () => {
+    const p = requestToPayment(
+      req({
+        route: { base_usdc: { nonce: "0" } },
+        status: "TRANSFER_FAILED",
+        reason_code: "SIGNATURE_FAILED",
+      }),
+      {},
+      D,
+    );
+    expect(p.status).toBe("failed");
+  });
+});

@@ -12,7 +12,7 @@
  *
  * Configure with:
  *   NEAR_VAULT_CONTRACT        required
- *   NEAR_VAULT_RPC_URL         default https://rpc.testnet.near.org
+ *   NEAR_VAULT_RPC_URL         default https://test.rpc.fastnear.com
  *   NEAR_VAULT_TOKEN           default token for pay/budget calls
  *   NEAR_VAULT_TOKEN_DECIMALS  default 6
  *   NEAR_VAULT_AGENT_ID        only needed to PAY

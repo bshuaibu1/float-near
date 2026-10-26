@@ -51,6 +51,17 @@ function isBlocked(status: string): boolean {
   return status?.toLowerCase() === "blocked";
 }
 
+/**
+ * The cross-chain rail's terminal state.
+ *
+ * Deliberately NOT folded into isSuccess: the vault obtained a signature over
+ * a Base transaction, which is not the same as the money arriving. Nothing
+ * relays it, so the dashboard cannot know that it did.
+ */
+function isSigned(status: string): boolean {
+  return status?.toLowerCase() === "signed";
+}
+
 function resolveVenue(venue: string): string {
   const generateMatch = venue.match(/^Float generate:\s+.+?\s+([A-Za-z0-9]+)$/i);
   if (generateMatch) return `AI image generation · ${generateMatch[1]}`;
@@ -410,7 +421,11 @@ export default function Activity() {
     if (agentFilter !== "all" && p.agentId !== agentFilter) return false;
     if (railFilter !== "all" && resolveRail(p.rail) !== railFilter) return false;
     if (statusFilter === "success" && !isSuccess(p.status)) return false;
-    if (statusFilter === "failed" && (isSuccess(p.status) || isBlocked(p.status))) return false;
+    if (
+      statusFilter === "failed" &&
+      (isSuccess(p.status) || isBlocked(p.status) || isSigned(p.status))
+    )
+      return false;
     if (statusFilter === "blocked" && !isBlocked(p.status)) return false;
     return true;
   });
@@ -650,7 +665,7 @@ export default function Activity() {
                   <span
                     className="text-[12px] font-mono text-right tabular-nums"
                     style={{
-                      color: isSuccess(p.status) ? "#111111"
+                      color: isSuccess(p.status) || isSigned(p.status) ? "#111111"
                            : isBlocked(p.status) ? "#9A5F1A"
                            : "#9F2F2D",
                     }}
@@ -676,9 +691,11 @@ export default function Activity() {
                       style={
                         isSuccess(p.status)
                           ? { background: "#EDF3EC", color: "#346538" }
-                          : isBlocked(p.status)
-                            ? { background: "#FEF3E2", color: "#9A5F1A" }
-                            : { background: "#FDEBEC", color: "#9F2F2D" }
+                          : isSigned(p.status)
+                            ? { background: "#EEF2F7", color: "#3B5A7A" }
+                            : isBlocked(p.status)
+                              ? { background: "#FEF3E2", color: "#9A5F1A" }
+                              : { background: "#FDEBEC", color: "#9F2F2D" }
                       }
                     >
                       {isSuccess(p.status) ? "success" : p.status}
