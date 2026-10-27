@@ -404,3 +404,38 @@ describe("getAgentKeys", () => {
     expect(rows[0]!.error).toContain("RPC down");
   });
 });
+
+describe("transactionStats counts the Base rail", () => {
+  const baseReq = (id: string, over: Partial<VaultRequest> = {}): VaultRequest => ({
+    ...REQ,
+    request_id: id,
+    route: { base_usdc: { nonce: "0" } },
+    reason_code: "SIGNED",
+    ...over,
+  });
+
+  it("counts signed and delivered payments as approved", async () => {
+    // Regression: filtering on "success" alone meant a dashboard showing two
+    // Base payments reported "0 approved" — the summary contradicted the list
+    // rendered directly beneath it.
+    const d = await getDashboard(
+      stubView({ list_requests: [baseReq("a"), baseReq("b")] }),
+      cfg({ deliveries: { b: { mode: "operator", baseTxHash: "0xabc", payee: "0x42", amount: "3", at: "" } } }),
+    );
+    expect(d.transactionStats.total).toBe(2);
+    expect(d.transactionStats.approved).toBe(2);
+    expect(d.transactionStats.failed).toBe(0);
+  });
+
+  it("still does not count a failed payment as approved", async () => {
+    // The guard above must not become "count everything".
+    const d = await getDashboard(
+      stubView({
+        list_requests: [baseReq("a"), baseReq("c", { status: "TRANSFER_FAILED", reason_code: "SIGNATURE_FAILED" })],
+      }),
+      cfg(),
+    );
+    expect(d.transactionStats.approved).toBe(1);
+    expect(d.transactionStats.failed).toBe(1);
+  });
+});

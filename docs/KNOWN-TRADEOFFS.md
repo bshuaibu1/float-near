@@ -187,6 +187,28 @@ NEAR budgets unchanged by the delivery
 
 The user funded NEAR only. They never funded the vault's derived Base address.
 
+Run a second time to show the path is repeatable, not a one-off:
+
+```
+request      xcheck-1793047796, 3 USDC
+Base tx      0x3eda86b8c624e8ce5be395d2f53a7c0bb3a0150fcb60e07469dcfaa2e00b3103
+receipt      status SUCCESS, block 50813910
+operator     15.00 -> 12.00 USDC
+payee        17.10 -> 20.10 USDC   (+3.00 exactly)
+```
+
+And re-running the FIRST request with `--send` refused rather than paying
+again:
+
+```
+Already delivered: 0x7b44c375... (operator)
+Refusing to pay twice for one authorization.
+```
+
+That check runs before the operator key is even read, so a replay cannot spend
+the float even with the key present. 8.00 USDC delivered across two runs,
+every balance delta predicted before the send and matched exactly.
+
 **This leg is CUSTODIAL.** The operator holds the Base float, pays the gas, and
 could decline to deliver — delivery is a promise backed by the operator, not by
 the chain. Describe it as operator-facilitated. It is not trustless and must

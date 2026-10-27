@@ -325,7 +325,14 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
     agents,
     transactionStats: {
       total: onchain.length + cfg.blockedRing.length,
-      approved: onchain.filter((p) => p.status === "success").length,
+      // The Base rail's terminal states count as approved. "success" alone was
+      // written when NEAR was the only rail; once Base payments report
+      // "signed"/"delivered" it rendered "4 transactions, 0 approved /
+      // 0 blocked" — every payment the vault had authorized vanished from the
+      // count. The UI's own list and this total disagreed on screen.
+      approved: onchain.filter((p) =>
+        ["success", "signed", "delivered"].includes(p.status),
+      ).length,
       blocked: cfg.blockedRing.length,
       failed: onchain.filter((p) => p.status === "failed").length,
       other: onchain.filter((p) => p.status === "pending").length,

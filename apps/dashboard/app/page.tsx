@@ -13,7 +13,11 @@ import {
 } from "@/lib/float-session";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "http://127.0.0.1:8787";
-const APPROVED = ["approved", "confirmed", "success"];
+// Includes the Base rail's two terminal states. "signed" means the vault
+// authorized and signed the transfer; "delivered" means a relayer reported it
+// landed. Both are approved payments — omitting them showed "4 transactions,
+// 0 approved / 0 blocked", which reads as though none of them happened.
+const APPROVED = ["approved", "confirmed", "success", "signed", "delivered"];
 
 /** Aggregate spend by calendar day over the last 14 days. Returns [oldest…today]. */
 function computeDailySpend(activity: ActivityItem[]): { spend: number; label: string }[] {
@@ -429,7 +433,7 @@ export default function Overview() {
         ) : (
           <div>
             {activity.slice(0, 6).map((r, i) => {
-              const approved = ["approved","confirmed","success"].includes(r.status?.toLowerCase());
+              const approved = APPROVED.includes(r.status?.toLowerCase());
               return (
                 <div key={r.id}
                   className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 items-center px-6 py-3 transition-colors duration-100 hover:bg-[#FBFBFA]"
