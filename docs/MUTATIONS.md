@@ -365,3 +365,39 @@ The general lesson, which has now cost two mutations on this feature (M23 was
 the same shape): *a passing test proves nothing about the clause you think it
 covers until a mutation shows which assertion carries it.* Picking the
 laziest extreme value is not the same as picking the adversarial one.
+
+## M28 — the ancestor check ignores pending reservations
+
+The mutation that matters most for the concurrency claim, because it IS the
+failure mode the pitch says Float avoids.
+
+```rust
+// real
+if amount.0 > available(lim.daily_cap.0, &led) {
+// mutant — count only settled spend, ignore in-flight reservations
+if amount.0 > lim.daily_cap.0.saturating_sub(led.executed) {
+```
+
+A reservation that has been taken but not yet settled stops counting against
+the pool. Each individual draw looks affordable against `executed` alone, so
+the eleventh 10-USDC draw is admitted into a 100-USDC pool.
+
+Caught by all 8 `i4_contention_seed_*` tests:
+
+```
+seed 0 step 10: pool OVERDRAWN — committed 110000000 > cap 100000000
+```
+
+Every seed fails at step 10, which is the first step where an unsettled
+reservation could matter. That it is the SAME step across independently
+shuffled interleavings is the point: the overdraw is a property of the
+accounting rule, not of one unlucky ordering.
+
+**A note on how this mutation was nearly recorded as passing.** The first
+attempt wrote `led.executed.0`, which does not compile — `executed` is already
+`u128`. The test command was filtered through a grep for "test result|
+OVERDRAWN", the build error matched neither, and the run therefore printed
+nothing at all. Nothing looks exactly like a clean pass. The mutation was only
+caught because an empty result from a command that should always print
+*something* is itself the anomaly worth checking.
+

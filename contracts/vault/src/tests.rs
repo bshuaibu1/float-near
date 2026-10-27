@@ -967,3 +967,133 @@ fn a_swept_request_can_then_be_purged() {
     assert_eq!(v.purge_settled(u64::MAX, 10), 1, "a swept request is still not purgeable");
     assert!(v.get_request("stuck".into()).is_none());
 }
+
+// =====================================================================
+// I4 — sixteen agents contending for one overcommitted pool
+//
+// What "exact concurrency" can honestly mean on NEAR.
+//
+// NEAR executes receipts SEQUENTIALLY within a shard. Contention between
+// agents therefore manifests as an arbitrary INTERLEAVING of ordered
+// operations, never as simultaneous mutation of the same ledger. So the
+// property that has to hold is not "parallel writes are safe" — nothing runs
+// in parallel — but rather:
+//
+//     for ANY interleaving of draws across N agents sharing one
+//     overcommitted pool, the pool is never overdrawn.
+//
+// That is exactly what this tier CAN test, and it is testable here precisely
+// BECAUSE execution is sequential. Spawning OS threads would prove nothing
+// about the runtime, because the runtime does not do that.
+//
+// The setup is the adversarial one: sixteen agents EACH allocated the full
+// pool, so 1600 USDC of allowance sits above a 100 USDC pool — 16x
+// overcommitted. If the ancestor ledger were checked lazily, or cached, or
+// updated after dispatch rather than before, some interleaving here would
+// overdraw it.
+// =====================================================================
+
+/// Deterministic PRNG. `rand` is not a dependency and a test that shuffles
+/// differently on every run cannot be bisected when it fails.
+fn lcg(state: &mut u64) -> u64 {
+    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *state >> 33
+}
+
+/// One seed = one interleaving = one test.
+///
+/// near-sdk's mocked blockchain keeps a single storage map for the whole test
+/// function, and node ids restart at 0 with each `new_vault`. Looping seeds
+/// inside one `#[test]` therefore makes seed N+1's root inherit seed N's
+/// ledger — the first version of this test did exactly that and failed with
+/// "ledger disagrees with what was dispatched" on the second seed. Separate
+/// test functions get separate thread-local storage, so each interleaving
+/// starts genuinely clean.
+macro_rules! contention_case {
+    ($name:ident, $seed:expr) => {
+        #[test]
+        fn $name() {
+            run_contention_case($seed);
+        }
+    };
+}
+
+contention_case!(i4_contention_seed_0, 0);
+contention_case!(i4_contention_seed_1, 1);
+contention_case!(i4_contention_seed_2, 2);
+contention_case!(i4_contention_seed_3, 3);
+contention_case!(i4_contention_seed_4, 4);
+contention_case!(i4_contention_seed_5, 5);
+contention_case!(i4_contention_seed_6, 6);
+contention_case!(i4_contention_seed_7, 7);
+
+fn run_contention_case(seed: u64) {
+    const AGENTS: usize = 16;
+    const POOL: u128 = 100;
+    const DRAW: u128 = 10; // 10 draws fit; every one after that must be refused
+
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let root = v.add_node(None, "root".into(), limit(POOL, POOL), 0, Some(vec![payee()]));
+
+    let mut nodes = Vec::new();
+    for i in 0..AGENTS {
+        // Each child is allocated the ENTIRE pool: 16x overcommitted.
+        let n = v.add_node(Some(root), format!("a{i}"), limit(POOL, POOL), 0, None);
+        let acct: AccountId = format!("a{i}.vault.testnet").parse().unwrap();
+        v.bind_agent(n, acct.clone());
+        nodes.push(acct);
+    }
+
+    let mut rng = seed.wrapping_add(1);
+    let mut dispatched = 0u128;
+    let mut refused = 0u32;
+
+    for step in 0..(AGENTS * 3) {
+        let who = nodes[(lcg(&mut rng) as usize) % AGENTS].clone();
+        testing_env!(ctx(who, ZERO, 0).build());
+        let out = v.request_payment(
+            format!("s{seed}-{step}"),
+            tok(),
+            usdc(DRAW),
+            payee(),
+            "".into(),
+            None,
+        );
+        match out {
+            PromiseOrValue::Promise(_) => dispatched += DRAW,
+            PromiseOrValue::Value(o) => {
+                // The ONLY clause that may refuse here is the shared pool.
+                // Per-tx, own-daily, freeze, cooldown and allowlist all admit
+                // this draw, so any other code means the test is measuring
+                // something other than contention.
+                assert_eq!(
+                    o.reason_code,
+                    ReasonCode::ParentDailyBudget,
+                    "seed {seed} step {step}: refused by the WRONG clause",
+                );
+                refused += 1;
+            }
+        }
+
+        // THE INVARIANT, after EVERY step. An end-only assertion cannot tell
+        // "never overdrawn" apart from "overdrawn, then corrected".
+        let b = v.get_node_budget(root, tok(), None).unwrap();
+        let committed = b.executed.0 + b.pending.0;
+        assert!(
+            committed <= usdc(POOL).0,
+            "seed {seed} step {step}: pool OVERDRAWN — committed {} > cap {}",
+            committed,
+            usdc(POOL).0,
+        );
+        assert_eq!(
+            committed,
+            usdc(dispatched).0,
+            "seed {seed} step {step}: ledger disagrees with what was dispatched",
+        );
+    }
+
+    // Exactly the pool, no more and no less, however the draws interleaved.
+    assert_eq!(dispatched, POOL, "seed {seed}: expected the pool fully drawn");
+    assert!(refused > 0, "seed {seed}: nothing was refused — the pool never bound");
+}
