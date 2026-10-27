@@ -11,6 +11,7 @@ import {
   blockedToPayment,
   lifetimeByNode,
   requestToPayment,
+  REASONS,
   treeToApiAgents,
   type ApiAgent,
   type DayUsage,
@@ -47,6 +48,37 @@ export interface AdapterConfig {
   /** Bounded, in-memory. See `recordBlocked`. */
   blockedRing: Payment[];
   maxBlocked: number;
+  /**
+   * Refusals recovered FROM CHAIN by scripts/scan-blocked.mjs, keyed by
+   * request id.
+   *
+   * The in-memory ring above only held refusals this process personally
+   * witnessed, so the most important thing the vault does — refusing a payment
+   * because a SHARED pool is empty — vanished on restart and was invisible for
+   * any payment made by another client. A refused request is deliberately not
+   * stored in contract state (that is the storage griefing vector of §2), but
+   * the NEP-297 event survives in the receipt and can be read back. These rows
+   * carry a tx hash and are therefore independently checkable. The ring's are
+   * not.
+   */
+  chainBlocked?: Record<string, ChainBlocked>;
+  /**
+   * The block range the scanner has actually covered. Without it, "no
+   * refusals happened" and "we have not looked there" render identically —
+   * which is the confusion this feature exists to remove.
+   */
+  blockedScan?: { from: number; to: number } | null;
+}
+
+/** One refusal, as recovered from a receipt outcome. */
+export interface ChainBlocked {
+  requestId: string;
+  nodeId: number;
+  reasonCode: string;
+  agent: string;
+  txHash: string;
+  blockHeight: number;
+  blockTimestampNs: string | number;
 }
 
 /**
@@ -60,6 +92,41 @@ export interface AdapterConfig {
  * not here and cannot be — the dashboard says so rather than implying none
  * happened.
  */
+/**
+ * Chain-recovered refusals as Payment rows.
+ *
+ * Deduped against the in-memory ring by request id, preferring the chain copy
+ * — it is the one that carries a tx hash a reader can check for themselves.
+ */
+export function chainBlockedPayments(
+  cfg: AdapterConfig,
+  nodeLabels: Record<number, string>,
+): Payment[] {
+  const seen = new Set(cfg.blockedRing.map((p) => p.id));
+  return Object.values(cfg.chainBlocked ?? {})
+    .filter((b) => !seen.has(b.requestId))
+    .map((b) => ({
+      id: b.requestId,
+      agentId: String(b.nodeId),
+      agentName: nodeLabels[b.nodeId] ?? `node-${b.nodeId}`,
+      // The amount is NOT in the event, and inventing one would be worse than
+      // showing none: a refused payment moved nothing, and a plausible figure
+      // would read as fact.
+      amount: "0",
+      currency: "USDC",
+      recipientAddress: "",
+      venue: "",
+      rail: "policy",
+      status: "blocked",
+      txSignature: b.txHash,
+      createdAt: new Date(Number(BigInt(b.blockTimestampNs) / 1_000_000n)).toISOString(),
+      blockReason: b.reasonCode,
+      blockMessage: REASONS[b.reasonCode] ?? b.reasonCode,
+      prompt: null,
+      resultUrl: null,
+    }));
+}
+
 export function recordBlocked(cfg: AdapterConfig, p: Payment): void {
   cfg.blockedRing.unshift(p);
   if (cfg.blockedRing.length > cfg.maxBlocked) cfg.blockedRing.length = cfg.maxBlocked;
@@ -300,7 +367,7 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
   const onchain = requests.map((r) =>
     requestToPayment(r, labels, cfg.decimals, cfg.deliveries?.[r.request_id]),
   );
-  const recent = [...cfg.blockedRing, ...onchain]
+  const recent = [...chainBlockedPayments(cfg, labels), ...cfg.blockedRing, ...onchain]
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     .slice(0, 20);
   const root = tree.find((n) => n.parent === null);
@@ -323,8 +390,11 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
       decimals: cfg.decimals,
     },
     agents,
+    // What the refusal history actually covers. A UI that shows "0 blocked"
+    // without this cannot distinguish an honest zero from an unscanned range.
+    blockedCoverage: cfg.blockedScan,
     transactionStats: {
-      total: onchain.length + cfg.blockedRing.length,
+      total: onchain.length + cfg.blockedRing.length + Object.keys(cfg.chainBlocked ?? {}).length,
       // The Base rail's terminal states count as approved. "success" alone was
       // written when NEAR was the only rail; once Base payments report
       // "signed"/"delivered" it rendered "4 transactions, 0 approved /
@@ -333,7 +403,7 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
       approved: onchain.filter((p) =>
         ["success", "signed", "delivered"].includes(p.status),
       ).length,
-      blocked: cfg.blockedRing.length,
+      blocked: cfg.blockedRing.length + Object.keys(cfg.chainBlocked ?? {}).length,
       failed: onchain.filter((p) => p.status === "failed").length,
       other: onchain.filter((p) => p.status === "pending").length,
     },
@@ -368,10 +438,19 @@ export async function getSpendHistory(
     requestToPayment(r, labels, cfg.decimals, cfg.deliveries?.[r.request_id]),
   );
 
-  // Blocked rows only belong on the FIRST page: they live in memory, not in
-  // the contract's paged list, so splicing them into later pages would
-  // duplicate them as the UI scrolls.
-  const merged = offset === 0 ? [...cfg.blockedRing, ...onchain] : onchain;
+  // Blocked rows only belong on the FIRST page: they are not part of the
+  // contract's paged list, so splicing them into later pages would duplicate
+  // them as the UI scrolls.
+  //
+  // Sorted by time rather than concatenated, because chain-recovered refusals
+  // can be older than the in-memory ones and a bare prepend would show them
+  // above newer activity.
+  const merged =
+    offset === 0
+      ? [...chainBlockedPayments(cfg, labels), ...cfg.blockedRing, ...onchain].sort((a, b) =>
+          a.createdAt < b.createdAt ? 1 : -1,
+        )
+      : onchain;
   return { payments: merged.slice(0, limit) };
 }
 

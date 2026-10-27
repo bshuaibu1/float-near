@@ -54,6 +54,8 @@ const env = {
   // delivery that lands while this server is running appears without a
   // restart — the file is small and this is a dashboard, not a hot path.
   relayLedger: process.env.RELAY_LEDGER ?? ".demo/relay-ledger.json",
+  // Refusals recovered from chain by scripts/scan-blocked.mjs.
+  blockedLog: process.env.BLOCKED_LOG ?? ".demo/blocked-log.json",
 };
 
 if (!env.vault || !env.token) {
@@ -88,6 +90,26 @@ const server = createServer(async (req, res) => {
   // A missing or malformed ledger yields NO deliveries, never a crash and
   // never an invented one: the worst it can do is under-report delivery, which
   // is the safe direction for a claim the chain cannot back.
+  // Chain-recovered refusals, re-read per request so a scan that runs while
+  // the server is up appears without a restart. A missing or malformed file
+  // yields none rather than crashing — the failure direction is always to
+  // show fewer refusals than happened, never to invent one.
+  {
+    const parsed = (() => {
+      try {
+        if (!existsSync(env.blockedLog)) return null;
+        return JSON.parse(readFileSync(env.blockedLog, "utf8"));
+      } catch {
+        return null;
+      }
+    })();
+    cfg.chainBlocked = parsed?.blocked ?? {};
+    cfg.blockedScan =
+      parsed && typeof parsed.scannedFrom === "number" && typeof parsed.scannedTo === "number"
+        ? { from: parsed.scannedFrom, to: parsed.scannedTo }
+        : null;
+  }
+
   cfg.deliveries = (() => {
     try {
       if (!existsSync(env.relayLedger)) return {};

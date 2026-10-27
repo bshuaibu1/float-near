@@ -587,7 +587,7 @@ export default function Activity() {
         </div>
 
         {/* Table */}
-        <div className="bg-white rounded-lg overflow-hidden" style={border}>
+        <div className="bg-white rounded-lg overflow-x-auto" style={border}>
 
           {/* Column headers */}
           <div
@@ -595,7 +595,8 @@ export default function Activity() {
             style={{
               color: "#787774",
               borderBottom: "1px solid #EAEAEA",
-              gridTemplateColumns: "5rem 1fr 6rem 4rem 5.5rem 1.5rem",
+              gridTemplateColumns: "5rem minmax(17rem, 1fr) 6rem 4rem 5.5rem 1.5rem",
+              minWidth: "48rem",
             }}
           >
             <span>Time</span>
@@ -633,7 +634,8 @@ export default function Activity() {
                   onClick={() => setSelected(p)}
                   className="w-full grid gap-4 items-center px-6 py-3.5 hover:bg-[#FBFBFA] transition-colors duration-100 text-left"
                   style={{
-                    gridTemplateColumns: "5rem 1fr 6rem 4rem 5.5rem 1.5rem",
+                    gridTemplateColumns: "5rem minmax(17rem, 1fr) 6rem 4rem 5.5rem 1.5rem",
+              minWidth: "48rem",
                     borderBottom: i < pageRows.length - 1 ? "1px solid #EAEAEA" : "none",
                   }}
                 >

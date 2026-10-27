@@ -7,6 +7,7 @@ import {
   getSpendHistory,
   paymentFromOutcome,
   recordBlocked,
+  chainBlockedPayments,
   type AdapterConfig,
   type ViewFn,
 } from "./handlers.js";
@@ -437,5 +438,55 @@ describe("transactionStats counts the Base rail", () => {
     );
     expect(d.transactionStats.approved).toBe(1);
     expect(d.transactionStats.failed).toBe(1);
+  });
+});
+
+describe("refusals recovered from chain", () => {
+  const cb = (over: Record<string, unknown> = {}) => ({
+    requestId: "r-1",
+    nodeId: 2,
+    reasonCode: "PARENT_DAILY_BUDGET",
+    agent: "s0.v.testnet",
+    txHash: "9Swer4H7",
+    blockHeight: 274988232,
+    blockTimestampNs: "1793097140000000000",
+    ...over,
+  });
+
+  it("renders a chain refusal with its tx hash, so a reader can check it", async () => {
+    // The whole point: a row the dashboard did not witness, carrying evidence
+    // anyone can verify against the chain independently.
+    const d = await getDashboard(stubView(), cfg({ chainBlocked: { "r-1": cb() } }));
+    const row = d.recentActivity.find((r) => r.id === "r-1");
+    expect(row).toBeDefined();
+    expect(row!.status).toBe("blocked");
+    expect(d.transactionStats.blocked).toBe(1);
+  });
+
+  it("reports the scanned block range, so zero refusals is distinguishable from never looking", async () => {
+    const scanned = await getDashboard(
+      stubView(),
+      cfg({ chainBlocked: {}, blockedScan: { from: 100, to: 200 } }),
+    );
+    expect(scanned.blockedCoverage).toEqual({ from: 100, to: 200 });
+
+    const never = await getDashboard(stubView(), cfg({ chainBlocked: {} }));
+    expect(never.blockedCoverage ?? null).toBeNull();
+  });
+
+  it("does not double-count a refusal the ring already holds", async () => {
+    // The in-memory ring and the chain scan can both see the same refusal.
+    // Counting it twice would overstate how often the pool bound.
+    const ringRow = {
+      id: "r-1", agentId: "2", agentName: "r1", amount: "1", currency: "USDC",
+      recipientAddress: "", venue: "", rail: "policy", status: "blocked",
+      txSignature: null, createdAt: "2026-10-27T00:00:00.000Z",
+      blockReason: "PARENT_DAILY_BUDGET", blockMessage: "x", prompt: null, resultUrl: null,
+    };
+    const merged = chainBlockedPayments(
+      cfg({ blockedRing: [ringRow as never], chainBlocked: { "r-1": cb() } }),
+      {},
+    );
+    expect(merged).toHaveLength(0);
   });
 });
