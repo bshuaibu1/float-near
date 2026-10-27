@@ -269,3 +269,55 @@ The general shape: `max_tx_fee_wei`, `chain_id`, `usdc_address`,
 chain. The contract validates their SHAPE (lowercase 20-byte hex, non-zero
 ceiling) and cannot validate their TRUTH. Anyone deploying this must check the
 token address against the chain id they are using.
+
+## 9. Exact concurrency, measured on testnet
+
+`i4_contention_seed_*` establishes the property against any interleaving. This
+is the same property observed on the live chain.
+
+### Two agents, one block
+
+r1 and r2 each drew 60 USDC against a shared 100 USDC pool, fired from
+parallel background shells 1 ms apart:
+
+```
+block hash     B1sac98arB9z...   IDENTICAL for both
+block height   274986096         IDENTICAL for both
+r1             SIGNED
+r2             PARENT_DAILY_BUDGET
+pool after     60 of 100         not 120
+r2's own node  0 of 100          its own limit never bound
+```
+
+### Sixteen agents, one pool
+
+Topology, legal today with no constant changed: `root(100) -> swarm(10) ->
+s0..s15(10 each)`. 160 USDC of allowance above a 10 USDC pool, 16x
+overcommitted. `MAX_CHILDREN` is exactly 16 and `MAX_DEPTH` 3 is fully
+consumed, which is also why agents cannot spawn children without a depth bump.
+
+```
+launch spread        4 ms across all 16
+block distribution   14 transactions in block 274988232
+                      2 transactions in block 274988231
+admitted             10
+PARENT_DAILY_BUDGET   6
+pool after           EXACTLY 10.00 of 10.00
+a refused agent      0.00 of its own 10.00 cap
+```
+
+Fourteen agents contended inside a single block and the pool landed exactly on
+its cap. The refused agents were not throttled by their own limits — each held
+its full personal headroom. Only the shared ancestor ledger bound them, which
+is what makes this a contention result rather than a per-agent-limit result.
+
+**What it does not show.** Same-block inclusion is not guaranteed; it depends
+on where the ~1 s block boundary falls, and a later run could spread further.
+"Exactly N admitted" holds regardless of block placement. "All in one block"
+is the part that varies, so a recorded run is the honest demo asset.
+
+**Provisioning cost.** 16 restricted keys at the documented 0.5 N floor plus
+0.05 N storage = 8.80 N, attached by the owner. The floor was NOT lowered to
+save testnet tokens: per §1 it IS the per-agent rate limit, so shaving it
+would have quietly undercut the anti-griefing argument.
+
