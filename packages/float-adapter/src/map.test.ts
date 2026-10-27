@@ -367,3 +367,25 @@ describe("Base delivery is reported only on evidence", () => {
     expect(p.status).toBe("blocked");
   });
 });
+
+describe("railOf after the MPC rail was retired", () => {
+  it("labels a cross-chain payment as intents, not near", () => {
+    // The whole reason railOf exists: a cross-chain payment rendered as a
+    // local one is the UI stating something false about where money went.
+    expect(railOf({ intents: { deposit_address: "x.near" } })).toBe("intents");
+  });
+
+  it("still labels LEGACY base_usdc requests as base", () => {
+    // The variant is gone from the contract, but a vault deployed before the
+    // change still has those requests in state and list_requests keeps
+    // returning them. Falling through to "near" would relabel a cross-chain
+    // payment as a local one — silently, and only on old data.
+    expect(railOf({ base_usdc: { nonce: "0" } })).toBe("base");
+  });
+
+  it("reports near for an absent or unrecognised route", () => {
+    expect(railOf(null)).toBe("near");
+    expect(railOf(undefined)).toBe("near");
+    expect(railOf("near_direct")).toBe("near");
+  });
+});

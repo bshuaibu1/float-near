@@ -39,7 +39,12 @@ import {
   type OwnerPayload,
 } from "./payloads.js";
 import { DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
-import { buildRoute, sendRequestPayment } from "./sign.js";
+import { buildRoute, sendRequestPayment, type RouteArg } from "./sign.js";
+import { getQuote, signBinding, toBase64 } from "./quote.js";
+
+/** How long a quote stays valid. Long enough to sign and send, short
+ *  enough that a stale price is not honoured. */
+const QUOTE_TTL_MS = 20 * 60 * 1000;
 
 const cfg = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
@@ -160,39 +165,84 @@ server.tool(
     token: z.string().optional(),
     requestId: z.string().optional().describe("omit to generate one"),
     rail: z
-      .enum(["near", "base"])
+      .enum(["near", "intents"])
       .default("near")
       .describe(
-        "near = NEP-141 transfer, proves settlement. base = Chain Signatures over a Base USDC transfer, proves authorization + signature only (relaying is off-chain and unobserved). BOTH rails run the same hierarchical budget check and the same payee allowlist.",
+        "near = NEP-141 transfer on NEAR, proves settlement. intents = cross-chain: the vault transfers on NEAR to a solver's one-time deposit address and the solver delivers on the destination chain. BOTH run the same hierarchical budget check and the same payee allowlist.",
       ),
-    base: z
-      .object({
-        nonce: z.string(),
-        maxFeePerGas: z.string(),
-        maxPriorityFeePerGas: z.string(),
-        gasLimit: z.string(),
-      })
+    destinationAsset: z
+      .string()
       .optional()
-      .describe(
-        "Required when rail=base. Fee and ordering fields ONLY — the contract builds the ERC-20 calldata and the transaction itself from the amount and recipient it authorized, so these cannot redirect the payment.",
-      ),
+      .describe("1Click asset id for rail=intents. Defaults to USDC on Base."),
   },
-  async ({ amount, recipient, memo, token, requestId, rail, base }) => {
+  async ({ amount, recipient, memo, token, requestId, rail, destinationAsset }) => {
     const creds = requireAgentKey(cfg);
+    const id = requestId ?? newRequestId();
+    const vault = requireVault();
+
+    let route: RouteArg = "near_direct";
+    let amountIn = toBaseUnits(amount, cfg.decimals);
+
+    if (rail === "intents") {
+      // The agent cannot build this route. It needs a quote AND a signature
+      // from the key the vault owner registered — and that key deliberately
+      // does not live where agents run, because whoever holds it can bind any
+      // deposit address to any payee. So this path only works when the MCP
+      // server is the operator's own.
+      const signerHex = process.env.FLOAT_QUOTE_SIGNER_KEY;
+      if (!signerHex) {
+        throw new Error(
+          "rail=intents needs FLOAT_QUOTE_SIGNER_KEY (32-byte hex). " +
+            "That key binds a payee to a deposit address, so it belongs to the " +
+            "vault operator, not to an agent. Without it the cross-chain rail is closed.",
+        );
+      }
+      const sk = Uint8Array.from(Buffer.from(signerHex.replace(/^0x/, ""), "hex"));
+
+      // EXACT_OUTPUT: `amount` is what the PAYEE receives. What leaves the
+      // vault is the quote's amountIn, and that is what the budget is charged
+      // — so the tree governs real outflow, not the nominal figure.
+      const deadline = new Date(Date.now() + QUOTE_TTL_MS);
+      const q = await getQuote({
+        amountOut: toBaseUnits(amount, cfg.decimals),
+        payee: recipient,
+        refundTo: vault,
+        destinationAsset,
+        deadline,
+      });
+      amountIn = q.amountIn;
+
+      const signature = signBinding(
+        {
+          vault,
+          requestId: id,
+          token: tokenFor(token),
+          amount: q.amountIn,
+          payee: recipient,
+          depositAddress: q.depositAddress,
+          deadlineNs: q.deadlineNs,
+        },
+        sk,
+      );
+      route = buildRoute("intents", {
+        depositAddress: q.depositAddress,
+        quoteDeadlineNs: q.deadlineNs.toString(),
+        signature: toBase64(signature),
+      });
+    }
+
     const out = await sendRequestPayment({
       rpcUrl: cfg.rpcUrl,
-      vault: requireVault(),
+      vault,
       agentId: creds.agentId,
       agentKey: creds.agentKey,
-      requestId: requestId ?? newRequestId(),
+      requestId: id,
       token: tokenFor(token),
-      amount: toBaseUnits(amount, cfg.decimals),
+      amount: amountIn,
       recipient,
       memo,
-      // The Base rail needs more than the default: the contract rejects it
-      // below 230 Tgas because MPC signing fans out across the signer network.
-      gasTgas: rail === "base" ? BASE_GAS_TGAS : DEFAULT_GAS_TGAS,
-      route: buildRoute(rail, base),
+      gasTgas: DEFAULT_GAS_TGAS,
+      route,
     });
     return json(out);
   },

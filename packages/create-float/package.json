@@ -1,0 +1,23 @@
+{
+  "name": "@near-vault/create-float",
+  "version": "0.1.0",
+  "description": "One command to stand up a Float vault on NEAR testnet: account, contract, budget tree, agent keys, and client config.",
+  "type": "module",
+  "bin": {
+    "create-float": "./bin/create-float.mjs"
+  },
+  "files": [
+    "bin/",
+    "res/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "near-api-js": "^7.4.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

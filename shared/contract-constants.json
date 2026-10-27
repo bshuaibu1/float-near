@@ -12,7 +12,7 @@
     "Change a bound and BOTH tests fail until this file and both sides agree."
   ],
 
-  "MAX_DEPTH": 3,
+  "MAX_DEPTH": 4,
   "MAX_NODES": 64,
   "MAX_CHILDREN": 16,
   "MAX_TOKENS": 4,

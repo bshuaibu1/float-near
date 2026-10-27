@@ -480,11 +480,26 @@ fn freeze_on_an_ancestor_blocks_the_leaf_without_propagating() {
 #[test]
 #[should_panic(expected = "MAX_DEPTH")]
 fn depth_beyond_max_is_rejected() {
+    // MAX_DEPTH is now 4 (root -> team -> agent -> sub-agent), so the
+    // standard fixture's root -> research -> r1 leaves exactly one level
+    // spare. Spend it, then prove the next one is refused.
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    // root -> research -> r1 already occupies all MAX_DEPTH levels.
-    v.add_node(Some(t.n_r1), "too-deep".into(), limit(10, 10), 0, None);
+    let sub = v.add_node(Some(t.n_r1), "sub-agent".into(), limit(10, 10), 0, None);
+    v.add_node(Some(sub), "too-deep".into(), limit(10, 10), 0, None);
+}
+
+#[test]
+fn an_agent_can_have_a_sub_agent_beneath_it() {
+    // The point of raising MAX_DEPTH: a fourth level now exists, and a
+    // payment from it must still work — the hot path walks one more level.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let sub = v.add_node(Some(t.n_r1), "sub-agent".into(), limit(10, 10), 0, None);
+    assert_eq!(v.get_node(sub).path.len(), 3, "root, research, r1");
+    assert_eq!(v.get_node(sub).path, vec![t.root, t.research, t.n_r1]);
 }
 
 #[test]
@@ -1096,4 +1111,745 @@ fn run_contention_case(seed: u64) {
     // Exactly the pool, no more and no less, however the draws interleaved.
     assert_eq!(dispatched, POOL, "seed {seed}: expected the pool fully drawn");
     assert!(refused > 0, "seed {seed}: nothing was refused — the pool never bound");
+}
+
+// =====================================================================
+// Ownership handover and the owner's exit.
+//
+// These two capabilities were absent, and their absence compounded: a lost
+// owner key froze the vault's configuration forever, and no path existed to
+// move tokens out except capped agent payments to allowlisted recipients.
+// The tests below pin both the happy path and — more importantly — the
+// refusals, since a handover that accepts the wrong caller is worse than no
+// handover at all.
+// =====================================================================
+
+#[test]
+fn ownership_moves_only_after_the_nominee_accepts() {
+    let mut v = new_vault(true);
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.propose_owner(Some(payee()));
+
+    // Nominated, but NOT yet owner. This is the whole point of two steps.
+    assert_eq!(v.get_pending_owner(), Some(payee()));
+    assert_eq!(v.get_config().owner, owner());
+
+    testing_env!(ctx(payee(), YOCTO, 0).build());
+    v.accept_ownership();
+
+    assert_eq!(v.get_config().owner, payee());
+    assert_eq!(v.get_pending_owner(), None, "nomination must be consumed");
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn a_stranger_cannot_accept_someone_elses_nomination() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.propose_owner(Some(payee()));
+
+    testing_env!(ctx(stranger(), YOCTO, 0).build());
+    v.accept_ownership();
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn accepting_with_no_nomination_outstanding_fails() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(payee(), YOCTO, 0).build());
+    v.accept_ownership();
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn a_stranger_cannot_nominate() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(stranger(), YOCTO, 0).build());
+    v.propose_owner(Some(stranger()));
+}
+
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn the_vault_cannot_be_nominated_as_its_own_owner() {
+    // A vault owning itself makes assert_owner unsatisfiable by any external
+    // caller — the precise brick this feature exists to prevent.
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.propose_owner(Some(vault_id()));
+}
+
+#[test]
+fn a_nomination_can_be_cancelled_and_then_cannot_be_accepted() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.propose_owner(Some(payee()));
+    v.propose_owner(None);
+    assert_eq!(v.get_pending_owner(), None);
+
+    // The cancelled nominee must not still be able to take the vault.
+    testing_env!(ctx(payee(), YOCTO, 0).build());
+    let took_it = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.accept_ownership();
+    }))
+    .is_ok();
+    assert!(!took_it, "a cancelled nominee accepted ownership");
+}
+
+#[test]
+fn the_new_owner_can_administer_and_the_old_one_cannot() {
+    // Ownership that transfers the title but not the authority would be a
+    // cosmetic change. Exercise a real owner-gated call on both sides.
+    let t = tree();
+    let mut v = t.v;
+    let ops = t.ops;
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.propose_owner(Some(payee()));
+    testing_env!(ctx(payee(), YOCTO, 0).build());
+    v.accept_ownership();
+
+    // New owner: works.
+    testing_env!(ctx(payee(), YOCTO, 0).build());
+    v.freeze_node(ops, true);
+
+    // Previous owner: must now be refused.
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let still_had_power = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.freeze_node(ops, false);
+    }))
+    .is_ok();
+    assert!(!still_had_power, "the previous owner retained authority");
+}
+
+#[test]
+fn withdraw_is_owner_only_and_rejects_zero() {
+    let mut v = new_vault(true);
+
+    testing_env!(ctx(stranger(), YOCTO, 0).build());
+    let stranger_withdrew = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.withdraw(tok(), U128(1), stranger());
+    }))
+    .is_ok();
+    assert!(!stranger_withdrew, "a stranger withdrew from the vault");
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let zero_allowed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.withdraw(tok(), U128(0), owner());
+    }))
+    .is_ok();
+    assert!(!zero_allowed, "a zero-amount withdrawal was accepted");
+}
+
+#[test]
+fn withdraw_works_while_paused() {
+    // An escape hatch a pause can close is not an escape hatch. If this ever
+    // starts failing, the owner's exit has been made conditional on the
+    // vault's own state, which is how funds get trapped.
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_paused(true);
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.withdraw(tok(), U128(1), owner());
+}
+
+#[test]
+fn withdraw_does_not_touch_the_budget_ledger() {
+    // The owner's exit is outside the hierarchy on purpose. If a withdrawal
+    // consumed daily budget, a large recovery would starve the agents and the
+    // drip problem would return by another route.
+    let t = tree();
+    let mut v = t.v;
+    let root = t.root;
+    let before = v.get_node_budget(root, tok(), None).unwrap();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.withdraw(tok(), U128(usdc(900).0), owner());
+
+    let after = v.get_node_budget(root, tok(), None).unwrap();
+    assert_eq!(before.executed.0, after.executed.0, "withdrawal consumed executed budget");
+    assert_eq!(before.pending.0, after.pending.0, "withdrawal consumed pending budget");
+    assert_eq!(before.available.0, after.available.0, "withdrawal consumed available budget");
+}
+
+// =====================================================================
+// Reclaiming nodes.
+//
+// `add_node` had no counterpart, so MAX_NODES was a one-way budget: every
+// node ever created consumed one of sixty-four slots permanently. Tolerable
+// while only the owner creates nodes; fatal the moment anything else can,
+// because no amount of freezing or key revocation gives a slot back.
+//
+// The preconditions matter more than the happy path. Getting one wrong does
+// not produce an error — it produces a reservation wedged open forever at
+// every level of its chain.
+// =====================================================================
+
+#[test]
+fn a_removed_node_returns_its_slot_and_its_allocation() {
+    let t = tree();
+    let mut v = t.v;
+    let before = v.get_tree().len();
+    let parent_sum_before = v.get_node(t.research).child_sum_for(&tok());
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.freeze_node(t.n_r2, true);
+    v.remove_node(t.n_r2);
+
+    assert_eq!(v.get_tree().len(), before - 1, "slot not reclaimed");
+    assert!(v.get_tree().iter().all(|n| n.id != t.n_r2));
+
+    // The parent must get its headroom back, or a strict-mode tree can never
+    // re-use the allocation and the slot is only half-freed.
+    let after = v.get_node(t.research);
+    assert!(
+        after.child_sum_for(&tok()) < parent_sum_before,
+        "parent still reserves the removed child's cap",
+    );
+    assert_eq!(after.child_count, 1, "child_count not decremented");
+}
+
+#[test]
+fn the_slot_can_actually_be_reused() {
+    // The whole point. If MAX_NODES does not come back down, removal is
+    // cosmetic.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.freeze_node(t.n_r2, true);
+    v.remove_node(t.n_r2);
+    let fresh = v.add_node(Some(t.research), "r3".into(), limit(50, 10), 0, None);
+    assert_ne!(fresh, t.n_r2, "ids must not be reused");
+    assert_eq!(v.get_node(fresh).label, "r3");
+}
+
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn an_unfrozen_node_cannot_be_removed() {
+    // Freezing is what stops new reservations forming. Without it, a payment
+    // can be reserved between the emptiness check and the removal.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.remove_node(t.n_r2);
+}
+
+#[test]
+#[should_panic(expected = "MAX_CHILDREN")]
+fn a_node_with_children_cannot_be_removed() {
+    // A descendant keeps this node in its `path`; removing it would leave
+    // children charging a level that no longer exists.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.freeze_node(t.research, true);
+    v.remove_node(t.research);
+}
+
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn the_root_cannot_be_removed() {
+    // It would leave a vault no payment can route through, unrecoverably.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.freeze_node(t.root, true);
+    v.remove_node(t.root);
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn a_stranger_cannot_remove_a_node() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(stranger(), YOCTO, 0).build());
+    v.remove_node(t.n_r2);
+}
+
+#[test]
+fn removing_a_bound_node_frees_its_account() {
+    // Otherwise the account stays in `account_to_node` forever and can never
+    // be bound again — the key is orphaned and the account unusable.
+    let t = tree();
+    let mut v = t.v;
+    // The tree fixture already binds r2() to this node.
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    assert_eq!(v.get_node(t.n_r2).account, Some(r2()));
+
+    v.freeze_node(t.n_r2, true);
+    v.remove_node(t.n_r2);
+
+    // Proven by rebinding the same account to a different node, which the
+    // contract refuses while a binding is still held.
+    v.bind_agent(t.ops, r2());
+    assert_eq!(v.get_node(t.ops).account, Some(r2()));
+}
+
+#[test]
+fn a_node_with_an_open_reservation_is_not_removable() {
+    // The dangerous case. A pending reservation releases by subtracting from
+    // this node's ledger; remove the node while one is open and that release
+    // happens in a CALLBACK, where a failure strands the reservation at every
+    // level of the chain.
+    let t = tree();
+    let mut v = t.v;
+    // r1() is already bound by the fixture.
+    // Start a payment but never resolve it: the reservation stays pending.
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    let _ = v.request_payment(
+        "res-open".into(),
+        tok(),
+        usdc(5),
+        payee(),
+        String::new(),
+        None,
+    );
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.freeze_node(t.n_r1, true);
+    let removed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.remove_node(t.n_r1);
+    }))
+    .is_ok();
+    assert!(!removed, "a node with an open reservation was removed");
+}
+
+#[test]
+fn a_reservation_opened_before_midnight_still_blocks_removal() {
+    // `today()` is a fixed window and RESERVATION_TTL is an hour, so a
+    // reservation taken late on one day is still open on the next. Checking
+    // only today would miss exactly this case and let the node go.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_day_len_ns(1_000_000_000); // 1s "days", so crossing one is cheap
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    let _ = v.request_payment(
+        "res-eve".into(),
+        tok(),
+        usdc(5),
+        payee(),
+        String::new(),
+        None,
+    );
+
+    // Move into the next day, leaving the reservation open on the previous.
+    testing_env!(ctx(owner(), YOCTO, 1_500_000_000).build());
+    v.freeze_node(t.n_r1, true);
+    let removed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.remove_node(t.n_r1);
+    }))
+    .is_ok();
+    assert!(!removed, "yesterday's open reservation did not block removal");
+}
+
+// =====================================================================
+// The quote signer.
+//
+// An Intents payment sends funds to a ONE-TIME deposit address from a solver
+// quote. That address can never be on the payee allowlist, and the contract
+// cannot verify that paying it pays the allowlisted payee — the
+// correspondence exists only inside the quote.
+//
+// So without this gate the allowlist is decorative: a compromised agent
+// quotes a swap paying itself, names that deposit address, and the vault
+// funds it while every other check passes. These tests exist to prove the
+// gate rejects each way of lying about the binding, not merely that a good
+// signature works.
+//
+// Real ed25519 here, not a fixture blob: the property under test is that
+// TAMPERING is caught, which a hardcoded signature cannot demonstrate.
+// =====================================================================
+
+use ed25519_dalek::{Signer, SigningKey};
+
+fn signing_key() -> SigningKey {
+    // Deterministic, so a failure is reproducible.
+    SigningKey::from_bytes(&[7u8; 32])
+}
+
+fn signer_pubkey() -> Base64VecU8 {
+    Base64VecU8(signing_key().verifying_key().to_bytes().to_vec())
+}
+
+fn deposit() -> AccountId {
+    "deadbeef-one-time.near".parse().unwrap()
+}
+
+/// The EVM payee an Intents payment ultimately lands on.
+const EVM_PAYEE: &str = "0x4200000000000000000000000000000000000006";
+
+const DEADLINE: u64 = 10_000_000_000;
+
+/// Sign the binding the contract will reconstruct. Fields are passed
+/// individually so a test can deliberately sign the WRONG one.
+#[allow(clippy::too_many_arguments)]
+fn sign_quote(
+    request_id: &str,
+    token: &AccountId,
+    amount: u128,
+    payee: &str,
+    deposit_address: &AccountId,
+    deadline_ns: u64,
+) -> Base64VecU8 {
+    let binding = QuoteBinding {
+        vault: vault_id(),
+        request_id: request_id.to_string(),
+        token: token.clone(),
+        amount: U128(amount),
+        payee: payee.to_string(),
+        deposit_address: deposit_address.clone(),
+        deadline_ns,
+    };
+    let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+    Base64VecU8(signing_key().sign(&msg).to_bytes().to_vec())
+}
+
+fn intents_route(dep: &AccountId, deadline: u64, sig: Base64VecU8) -> Route {
+    Route::Intents {
+        deposit_address: dep.clone(),
+        quote_deadline_ns: U64(deadline),
+        signature: sig,
+    }
+}
+
+/// A tree whose root allowlists the EVM payee, with the signer registered.
+fn intents_tree() -> Tree {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_recipients(t.root, Some(vec![payee(), EVM_PAYEE.parse().unwrap()]));
+    v.set_quote_signer(Some(signer_pubkey()));
+    Tree { v, ..t }
+}
+
+#[test]
+fn a_correctly_signed_quote_dispatches() {
+    let t = intents_tree();
+    let mut v = t.v;
+    let amt = usdc(5);
+    let sig = sign_quote("q-ok", &tok(), amt.0, EVM_PAYEE, &deposit(), DEADLINE);
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    let out = v.request_payment(
+        "q-ok".into(),
+        tok(),
+        amt,
+        EVM_PAYEE.parse().unwrap(),
+        String::new(),
+        Some(intents_route(&deposit(), DEADLINE, sig)),
+    );
+    match out {
+        PromiseOrValue::Promise(_) => {}
+        PromiseOrValue::Value(o) => panic!("a valid quote was blocked: {:?}", o.reason_code),
+    }
+}
+
+#[test]
+fn a_tampered_deposit_address_is_refused() {
+    // THE ATTACK. The agent obtains a legitimate quote for the allowlisted
+    // payee, then swaps in a deposit address of its own. Everything else —
+    // amount, payee, budget, allowlist — still checks out.
+    let t = intents_tree();
+    let mut v = t.v;
+    let amt = usdc(5);
+    let honest = sign_quote("q-swap", &tok(), amt.0, EVM_PAYEE, &deposit(), DEADLINE);
+    let attacker: AccountId = "attacker-deposit.near".parse().unwrap();
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-swap".into(),
+            tok(),
+            amt,
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&attacker, DEADLINE, honest)),
+        ),
+        ReasonCode::QuoteBadSignature,
+    );
+}
+
+#[test]
+fn a_quote_signed_for_a_different_payee_is_refused() {
+    // The mirror of the attack above: a real deposit address, but bound to
+    // somebody else's payment.
+    let t = intents_tree();
+    let mut v = t.v;
+    let amt = usdc(5);
+    let other = sign_quote("q-payee", &tok(), amt.0, "0xdead", &deposit(), DEADLINE);
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-payee".into(),
+            tok(),
+            amt,
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), DEADLINE, other)),
+        ),
+        ReasonCode::QuoteBadSignature,
+    );
+}
+
+#[test]
+fn a_quote_signed_for_a_different_amount_is_refused() {
+    // Otherwise an agent reuses a $1 quote to move $500.
+    let t = intents_tree();
+    let mut v = t.v;
+    let sig = sign_quote("q-amt", &tok(), usdc(1).0, EVM_PAYEE, &deposit(), DEADLINE);
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-amt".into(),
+            tok(),
+            usdc(5),
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), DEADLINE, sig)),
+        ),
+        ReasonCode::QuoteBadSignature,
+    );
+}
+
+#[test]
+fn a_signature_cannot_be_replayed_onto_another_request() {
+    // `request_id` is in the binding, so one quote authorises one payment.
+    let t = intents_tree();
+    let mut v = t.v;
+    let amt = usdc(5);
+    let sig = sign_quote("q-first", &tok(), amt.0, EVM_PAYEE, &deposit(), DEADLINE);
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-second".into(),
+            tok(),
+            amt,
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), DEADLINE, sig)),
+        ),
+        ReasonCode::QuoteBadSignature,
+    );
+}
+
+#[test]
+fn an_expired_quote_is_refused() {
+    // Prices move and deposit addresses expire. Honouring a stale quote
+    // sends real money to an address that may no longer settle.
+    let t = intents_tree();
+    let mut v = t.v;
+    let amt = usdc(5);
+    let sig = sign_quote("q-old", &tok(), amt.0, EVM_PAYEE, &deposit(), 1_000);
+
+    testing_env!(ctx(r1(), ZERO, 5_000).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-old".into(),
+            tok(),
+            amt,
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), 1_000, sig)),
+        ),
+        ReasonCode::QuoteExpired,
+    );
+}
+
+#[test]
+fn with_no_signer_registered_the_intents_rail_is_closed() {
+    // The safe default, and the response to a suspected key compromise:
+    // revoke, and every Intents payment is refused with no other
+    // coordination needed.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_recipients(t.root, Some(vec![EVM_PAYEE.parse().unwrap()]));
+    assert!(v.get_quote_signer().is_none());
+
+    let sig = sign_quote("q-nosigner", &tok(), usdc(5).0, EVM_PAYEE, &deposit(), DEADLINE);
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-nosigner".into(),
+            tok(),
+            usdc(5),
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), DEADLINE, sig)),
+        ),
+        ReasonCode::QuoteSignerUnset,
+    );
+}
+
+#[test]
+fn a_signature_from_the_wrong_key_is_refused() {
+    let t = intents_tree();
+    let mut v = t.v;
+    let amt = usdc(5);
+    let binding = QuoteBinding {
+        vault: vault_id(),
+        request_id: "q-wrongkey".into(),
+        token: tok(),
+        amount: amt,
+        payee: EVM_PAYEE.to_string(),
+        deposit_address: deposit(),
+        deadline_ns: DEADLINE,
+    };
+    let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+    let impostor = SigningKey::from_bytes(&[9u8; 32]);
+    let sig = Base64VecU8(impostor.sign(&msg).to_bytes().to_vec());
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-wrongkey".into(),
+            tok(),
+            amt,
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), DEADLINE, sig)),
+        ),
+        ReasonCode::QuoteBadSignature,
+    );
+}
+
+#[test]
+fn the_allowlist_still_applies_to_the_final_payee() {
+    // The signature binds the deposit address to a payee; it does not
+    // AUTHORISE that payee. A perfectly signed quote for someone not on the
+    // list must still be refused, or the signer could bypass the allowlist
+    // entirely.
+    let t = intents_tree();
+    let mut v = t.v;
+    let amt = usdc(5);
+    let stranger_evm = "0x000000000000000000000000000000000000dead";
+    let sig = sign_quote("q-notallowed", &tok(), amt.0, stranger_evm, &deposit(), DEADLINE);
+
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "q-notallowed".into(),
+            tok(),
+            amt,
+            stranger_evm.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), DEADLINE, sig)),
+        ),
+        ReasonCode::RecipientNotAllowed,
+    );
+}
+
+#[test]
+fn an_intents_payment_is_charged_to_every_level_of_the_tree() {
+    // A cross-chain payment must not escape the hierarchy. It is an ordinary
+    // NEP-141 transfer underneath, so the same reservation runs — but that is
+    // worth pinning, because the whole point of the rail is that it reuses
+    // the budget machinery rather than going around it.
+    let t = intents_tree();
+    let mut v = t.v;
+    let root = t.root;
+    let before = v.get_node_budget(root, tok(), None).unwrap().pending.0;
+
+    let amt = usdc(5);
+    let sig = sign_quote("q-budget", &tok(), amt.0, EVM_PAYEE, &deposit(), DEADLINE);
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    let _ = v.request_payment(
+        "q-budget".into(),
+        tok(),
+        amt,
+        EVM_PAYEE.parse().unwrap(),
+        String::new(),
+        Some(intents_route(&deposit(), DEADLINE, sig)),
+    );
+
+    let after = v.get_node_budget(root, tok(), None).unwrap().pending.0;
+    assert_eq!(after - before, amt.0, "the root was not charged for a cross-chain payment");
+}
+
+/// The byte-for-byte shape of a signed quote binding.
+///
+/// The signer is a TypeScript service; the verifier is this contract. They
+/// must borsh-encode the binding identically or no signature ever verifies —
+/// and the failure is silent and total, indistinguishable from "the key is
+/// wrong". This vector is asserted on BOTH sides, so a field reorder or a
+/// type change breaks a test instead of the rail.
+#[test]
+fn quote_binding_borsh_vector() {
+    let b = QuoteBinding {
+        vault: "v.testnet".parse().unwrap(),
+        request_id: "req-1".to_string(),
+        token: "usdc.testnet".parse().unwrap(),
+        amount: U128(5_000_000),
+        payee: "0xabc".to_string(),
+        deposit_address: "dep.near".parse().unwrap(),
+        deadline_ns: 1_700_000_000_000_000_000,
+    };
+    let hex: String = near_sdk::borsh::to_vec(&b)
+        .expect("borsh")
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect();
+    assert_eq!(
+        hex,
+        "09000000762e746573746e6574050000007265712d310c000000757364632e746573746e6574404b4c00000000000000000000000000050000003078616263080000006465702e6e65617200002a36fe9c9717",
+        "borsh encoding changed — packages/mcp/src/quote.test.ts asserts this same vector",
+    );
+}
+
+/// A signature produced by the TypeScript signer, verified by this contract.
+///
+/// The borsh vector above proves both sides encode the same bytes. This
+/// proves the whole round trip: @noble/curves signs, `env::ed25519_verify`
+/// accepts. Without it, an encoding match could still hide a key-format or
+/// signature-format mismatch, and the failure mode in production is silent —
+/// every cross-chain payment refused, looking exactly like a misconfigured
+/// key.
+///
+/// Regenerate with: node .demo/sigprobe.mjs
+#[test]
+fn a_signature_from_the_typescript_signer_verifies() {
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+    let binding = QuoteBinding {
+        vault: "v.testnet".parse().unwrap(),
+        request_id: "req-1".to_string(),
+        token: "usdc.testnet".parse().unwrap(),
+        amount: U128(5_000_000),
+        payee: "0xabc".to_string(),
+        deposit_address: "dep.near".parse().unwrap(),
+        deadline_ns: 1_700_000_000_000_000_000,
+    };
+    let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+
+    let pk: [u8; 32] = unhex("ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c")
+        .try_into()
+        .unwrap();
+    let sig: [u8; 64] = unhex(
+        "57c4402b8d8605c5169e634405b69f2b85affa1951fb788324b8e9701c1b23f1\
+         b33e8939d089f1f148759bed5501fe3d446381d24a951f584035146575ba190c",
+    )
+    .try_into()
+    .unwrap();
+
+    testing_env!(ctx(owner(), ZERO, 0).build());
+    assert!(
+        near_sdk::env::ed25519_verify(&sig, &msg, &pk),
+        "the TypeScript signer and this contract disagree",
+    );
+
+    // And the negative control: the same signature must NOT verify against a
+    // tampered message, or the assertion above proves nothing.
+    let mut tampered = msg.clone();
+    *tampered.last_mut().unwrap() ^= 0x01;
+    assert!(
+        !near_sdk::env::ed25519_verify(&sig, &tampered, &pk),
+        "verification accepted a tampered message",
+    );
 }

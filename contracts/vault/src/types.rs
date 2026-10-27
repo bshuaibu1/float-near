@@ -1,4 +1,4 @@
-use near_sdk::json_types::{U128, U64};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::{near, AccountId};
 
 // ---------------------------------------------------------------- bounds
@@ -7,7 +7,12 @@ use near_sdk::{near, AccountId};
 // and predictable. MAX_DEPTH in particular is what lets the hot path walk a
 // fixed-length ancestor array instead of recursing.
 
-pub const MAX_DEPTH: usize = 3; // root -> team -> agent
+pub const MAX_DEPTH: usize = 4; // root -> team -> agent -> sub-agent
+// Raised from 3 so an agent can have sub-agents beneath it. The cost is
+// real and lands on the hot path: `chain` is path+self, and every payment
+// loops it three times (frozen check, cap check, charge). A fourth level
+// is therefore ~3 extra map reads and 1 extra write per payment. It stays
+// a fixed-length walk, which is the property that actually matters.
 pub const MAX_NODES: u32 = 64;
 pub const MAX_CHILDREN: u32 = 16;
 pub const MAX_TOKENS: usize = 4;
@@ -94,30 +99,43 @@ pub struct BudgetView {
 
 /// Which rail settles a payment.
 ///
-/// - `NearDirect`: the NEP-141 transfer callback proves SETTLEMENT.
-/// - `BaseUsdc`: the Chain Signatures callback proves the vault obtained a
-///   SIGNATURE over a Base transaction it BUILT ITSELF. It does NOT prove that
-///   transaction landed on Base — relaying is off-chain and unobserved.
+/// - `NearDirect`: the NEP-141 transfer callback proves SETTLEMENT on NEAR.
+/// - `Intents`: a NEP-141 transfer to a solver's one-time deposit address.
+///   The callback proves the vault PAID THE SOLVER; it does not prove the
+///   solver delivered on the far chain, which is off-chain and unobserved.
 ///
 /// Both rails run the SAME hierarchical check and the SAME reservation
 /// lifecycle, so the cross-chain path cannot be used to step around the budget
 /// tree or the payee allowlist.
 ///
-/// The `BaseUsdc` fields are fee and ordering parameters ONLY. Everything that
-/// determines WHERE value goes — the token contract, the payee, the amount —
-/// is derived by the contract from what it already authorized, never taken
-/// from the caller. A caller who lies about `max_fee_per_gas` wastes its own
-/// gas; it cannot move the payment.
+/// Nothing in either variant determines WHERE value goes. The payee is checked
+/// against the allowlist, and for `Intents` the deposit address is bound to
+/// that payee by a signature from a key the owner registered — so a caller who
+/// substitutes an address of its own is refused rather than funded.
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Route {
     NearDirect,
-    BaseUsdc {
-        nonce: U64,
-        max_priority_fee_per_gas: U128,
-        max_fee_per_gas: U128,
-        gas_limit: U64,
+    /// Cross-chain via NEAR Intents. The vault performs an ordinary NEP-141
+    /// transfer on NEAR to a one-time deposit address, and a solver delivers
+    /// the destination asset to `recipient` on the far chain, pricing that
+    /// chain's gas into the quote.
+    ///
+    /// No MPC signature, no derived address, no gas to fund, no nonce. A
+    /// cross-chain payment is a NEAR transfer that the budget tree already
+    /// knows how to check.
+    ///
+    /// Borsh tags enum variants by position. `NearDirect` must therefore stay
+    /// first, and any future variant must be appended rather than inserted:
+    /// renumbering would silently reinterpret every request already stored.
+    Intents {
+        /// The one-time NEAR address from the quote.
+        deposit_address: AccountId,
+        /// Nanosecond deadline after which the quote is refused.
+        quote_deadline_ns: U64,
+        /// Ed25519 over borsh(QuoteBinding), from the registered signer.
+        signature: Base64VecU8,
     },
 }
 
@@ -133,7 +151,9 @@ impl Route {
     pub fn rail(&self) -> &'static str {
         match self {
             Route::NearDirect => "near",
-            Route::BaseUsdc { .. } => "base",
+            // The dashboard already filters on this label; an Intents payment
+            // lands on the far chain, so it must not render as a NEAR one.
+            Route::Intents { .. } => "intents",
         }
     }
 }
@@ -209,6 +229,16 @@ pub enum ReasonCode {
     VaultPaused,
     NodeFrozen,
     NotAgent,
+    /// An Intents payment was attempted with no quote signer registered.
+    /// Refusing is the safe direction: without one, nothing binds the
+    /// deposit address to the allowlisted payee.
+    QuoteSignerUnset,
+    /// The quote's deadline has passed. Prices move and deposit addresses
+    /// expire, so a stale quote must not be honoured.
+    QuoteExpired,
+    /// The signature did not verify against the registered signer, or was
+    /// not 64 bytes.
+    QuoteBadSignature,
     DuplicateRequest,
     InvalidRequestId,
     InvalidAmount,
@@ -252,6 +282,9 @@ impl ReasonCode {
             VaultPaused => "VAULT_PAUSED",
             NodeFrozen => "NODE_FROZEN",
             NotAgent => "NOT_AGENT",
+            QuoteSignerUnset => "QUOTE_SIGNER_UNSET",
+            QuoteExpired => "QUOTE_EXPIRED",
+            QuoteBadSignature => "QUOTE_BAD_SIGNATURE",
             DuplicateRequest => "DUPLICATE_REQUEST",
             InvalidRequestId => "INVALID_REQUEST_ID",
             InvalidAmount => "INVALID_AMOUNT",
@@ -331,4 +364,47 @@ pub struct ConfigView {
     pub strict_allocation: bool,
     pub node_count: u32,
     pub clock_mode: String,
+}
+
+/// What a quote signer attests to.
+///
+/// A 1Click quote hands back a ONE-TIME deposit address. Money sent there is
+/// swapped and delivered to the payee named in the quote — but that address is
+/// unpredictable, so it can never appear on the vault's payee allowlist. The
+/// vault therefore checks the allowlist against the Base payee and then sends
+/// the funds somewhere else entirely, to an address it has no way to connect
+/// back to that payee.
+///
+/// If the agent supplied that address, the allowlist would be decorative: a
+/// compromised agent quotes a swap paying itself and the vault funds it, in
+/// budget, with every check passing. This struct is what closes that hole. A
+/// key the OWNER registered signs the binding between payee and deposit
+/// address, and the contract refuses any Intents payment without it.
+///
+/// Serialised with borsh for the signed message rather than concatenated as
+/// text. Borsh is length-prefixed, so no two different field sets can produce
+/// the same bytes; a plain concatenation would let `("alic", "ebob")` and
+/// `("alice", "bob")` sign the same message.
+#[near(serializers = [borsh])]
+#[derive(Clone, Debug)]
+pub struct QuoteBinding {
+    /// This vault. Without it, a signature is replayable against any other
+    /// vault that trusts the same signer.
+    pub vault: AccountId,
+    /// Ties the signature to one payment. `request_id` is already rejected as
+    /// a duplicate, so this makes each quote single-use for free.
+    pub request_id: String,
+    pub token: AccountId,
+    /// What leaves the vault on NEAR.
+    pub amount: U128,
+    /// The FINAL destination on the far chain, as checked against the
+    /// allowlist. The whole point of the signature is to bind this to the
+    /// deposit address below.
+    pub payee: String,
+    /// Where the vault actually sends the tokens — the one-time address the
+    /// quote returned.
+    pub deposit_address: AccountId,
+    /// Quotes go stale: prices move and deposit addresses expire. Past this,
+    /// the signature is refused.
+    pub deadline_ns: u64,
 }

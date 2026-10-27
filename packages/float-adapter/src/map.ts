@@ -41,8 +41,16 @@ export interface VaultRequest {
   memo: string;
   reserved_chain: number[];
   reserved_day: number;
-  /** Absent on requests stored before the Base rail existed. */
-  route?: "near_direct" | { base_usdc: unknown } | null;
+  /**
+   * Absent on requests stored before routes existed.
+   *
+   * `base_usdc` is retired along with the MPC rail, but it is still listed
+   * here: a vault deployed before the change has those requests in its
+   * state, and `list_requests` will keep returning them for as long as they
+   * are not purged. Dropping it from the type would make `railOf` report
+   * those as NEAR — quietly relabelling a cross-chain payment as a local one.
+   */
+  route?: "near_direct" | { base_usdc: unknown } | { intents: unknown } | null;
   status: string;
   reason_code: string;
   created_at_ns: string;
@@ -216,11 +224,16 @@ function nsToIso(ns: string): string {
  * NOT hardcoded to "near": a cross-chain payment rendered as a NEAR one is the
  * same class of bug as the "Open x402" badge — the UI stating something false
  * about where the money went, while every test passes. An unrecognised or
- * absent route reports "near", because requests stored before the Base rail
- * existed have no route field and were all NEAR.
+ * absent route reports "near", because requests stored before routes existed
+ * have no route field and were all NEAR.
  */
 export function railOf(route: VaultRequest["route"]): string {
-  if (route && typeof route === "object" && "base_usdc" in route) return "base";
+  if (route && typeof route === "object") {
+    if ("intents" in route) return "intents";
+    // Retired rail, still present in older stored requests. Reporting these
+    // as "near" would say a cross-chain payment settled locally.
+    if ("base_usdc" in route) return "base";
+  }
   return "near";
 }
 

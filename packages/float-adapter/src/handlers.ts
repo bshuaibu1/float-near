@@ -67,7 +67,12 @@ export interface AdapterConfig {
    * refusals happened" and "we have not looked there" render identically —
    * which is the confusion this feature exists to remove.
    */
-  blockedScan?: { from: number; to: number } | null;
+  blockedScan?: {
+    from: number;
+    to: number;
+    /** Spans inside from..to that were never read. Unknown, not empty. */
+    holes?: Array<{ from: number; to: number }>;
+  } | null;
 }
 
 /** One refusal, as recovered from a receipt outcome. */

@@ -93,3 +93,51 @@ a live deployed vault, because that needs a funded testnet account:
 Solana onboarding flows. They build and are unreachable in the NEAR flow. Left
 in place rather than deleted, since removing screens is outside a data-layer
 swap.
+
+## Refusals: where they come from
+
+A blocked payment is never stored in contract state, only emitted as a
+NEP-297 event. The adapter therefore follows the chain head and recovers them
+itself — on by default, no configuration needed.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BLOCKED_FOLLOW` | on | set `0` to disable following |
+| `BLOCKED_FOLLOW_INTERVAL_MS` | `10000` | seconds between ticks |
+| `BLOCKED_LOG` | `.demo/blocked-log.json` | where recovered refusals are kept |
+
+`GET /v1/dashboard` returns `blockedCoverage` with the block range examined
+**and** any gaps inside it. A gap means "nobody has looked here", which is not
+the same as "nothing happened" — do not render them identically.
+
+To fill a gap:
+
+```sh
+# into a SEPARATE file: the adapter is writing the live one, and both doing
+# load/modify/save against it loses records to a last-writer-wins race
+BLOCKED_LOG=.demo/backfill.json node scripts/scan-blocked.mjs --from <height>
+node scripts/merge-blocked.mjs .demo/backfill.json
+```
+
+Backfilling is slow by nature — roughly 2 RPC calls per block, and public
+endpoints throttle a sustained scan. The script paces itself, backs off on
+`429`, and checkpoints every 500 blocks, so an interrupted run resumes instead
+of starting over. See KNOWN-TRADEOFFS §12 for measured numbers.
+
+## Paying as a specific agent
+
+`POST /v1/pay` signs as whichever agent you name. The contract resolves the
+spending node from the **signer**, so this chooses which budget is charged:
+
+```jsonc
+{ "amount": "1.5", "recipient": "payee.testnet", "nodeId": 4 }
+{ "amount": "1.5", "recipient": "payee.testnet", "agent": "r2.float.me.testnet" }
+```
+
+Keys come from `NEAR_VAULT_AGENT_KEYS` (default `.float/agent-keys.json`, which
+`create-float` writes) and/or the single `NEAR_VAULT_AGENT_ID` /
+`NEAR_VAULT_AGENT_KEY` pair, which remains the default for requests that name
+no agent. If several agents are loaded and a request names none, the adapter
+returns `400` rather than guessing — picking arbitrarily would charge a budget
+nobody chose, and the payment would *succeed*, surfacing later as an
+inexplicable balance instead of an error.

@@ -18,10 +18,12 @@
  */
 
 import { createServer } from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { toBaseUnits, fromBaseUnits } from "@near-vault/mcp/amounts";
-import { newRequestId, requireAgentKey, viewAccessKeys, viewFunction } from "@near-vault/mcp";
-import { sendRequestPayment } from "@near-vault/mcp/sign";
+import { newRequestId, viewAccessKeys, viewFunction } from "@near-vault/mcp";
+import { buildRoute, sendRequestPayment, type RouteArg } from "@near-vault/mcp/sign";
+import { getQuote, signBinding, toBase64 } from "@near-vault/mcp/quote";
 import {
   planFreezeNode,
   planSetCooldown,
@@ -39,6 +41,8 @@ import {
   type AdapterConfig,
 } from "./handlers.js";
 import type { VaultNode } from "./map.js";
+import { AgentSelectionError, loadKeyring, selectAgent } from "./keyring.js";
+import { BlockedFollower, createRpc, emptyStore, type BlockedStore } from "./blocked-scan.js";
 
 const env = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
@@ -56,7 +60,60 @@ const env = {
   relayLedger: process.env.RELAY_LEDGER ?? ".demo/relay-ledger.json",
   // Refusals recovered from chain by scripts/scan-blocked.mjs.
   blockedLog: process.env.BLOCKED_LOG ?? ".demo/blocked-log.json",
+  // Several agents, so the payment path can exercise the hierarchy the
+  // dashboard draws. This is the file create-float writes.
+  agentKeysPath: process.env.NEAR_VAULT_AGENT_KEYS ?? ".float/agent-keys.json",
+  // Follow the chain for refusals. On by default: a refusal is never stored
+  // in contract state, so without this the only ones the dashboard can show
+  // are those this process happened to witness itself.
+  followBlocked: process.env.BLOCKED_FOLLOW !== "0",
+  followIntervalMs: Number(process.env.BLOCKED_FOLLOW_INTERVAL_MS ?? "10000"),
+  // Binds a payee to a one-time deposit address for the cross-chain rail.
+  // Absent by default: whoever holds it can redirect any Intents payment the
+  // budget allows, so it is opt-in and belongs to the operator.
+  quoteSignerKey: process.env.FLOAT_QUOTE_SIGNER_KEY,
 };
+
+const keyring = loadKeyring(env);
+
+/**
+ * JSON-RPC for the follower's block and chunk calls, with pacing and backoff.
+ *
+ * Deliberately not a bare fetch. Public endpoints rate-limit, and without
+ * retries every transient 429 became a PERMANENT gap in the coverage map,
+ * because a block that could not be read is recorded as unread. One load test
+ * left 33 fragmented holes of three to twenty blocks each — every one
+ * technically honest, and collectively useless, since nobody is going to
+ * backfill a five-block gap. A hole should mean "genuinely unavailable", not
+ * "the endpoint was briefly busy".
+ */
+const rpc = createRpc(env.rpcUrl, {
+  onThrottle: (ms) => console.log(`[blocked-follow] rate-limited, waiting ${ms}ms`),
+});
+
+function loadBlockedStore(): BlockedStore {
+  try {
+    if (!existsSync(env.blockedLog)) return emptyStore(env.vault);
+    const parsed = JSON.parse(readFileSync(env.blockedLog, "utf8"));
+    return {
+      vault: parsed.vault ?? env.vault,
+      scannedFrom: parsed.scannedFrom ?? null,
+      scannedTo: parsed.scannedTo ?? null,
+      holes: Array.isArray(parsed.holes) ? parsed.holes : [],
+      blocked: parsed.blocked ?? {},
+    };
+  } catch {
+    // A corrupt file must not stop the server, and must not be mistaken for
+    // "no refusals" — a null cursor makes the follower restart from the head
+    // rather than claim coverage it does not have.
+    return emptyStore(env.vault);
+  }
+}
+
+function saveBlockedStore(s: BlockedStore): void {
+  mkdirSync(dirname(env.blockedLog), { recursive: true });
+  writeFileSync(env.blockedLog, JSON.stringify(s, null, 2) + "\n");
+}
 
 if (!env.vault || !env.token) {
   console.error("NEAR_VAULT_CONTRACT and NEAR_VAULT_TOKEN are required");
@@ -106,7 +163,12 @@ const server = createServer(async (req, res) => {
     cfg.chainBlocked = parsed?.blocked ?? {};
     cfg.blockedScan =
       parsed && typeof parsed.scannedFrom === "number" && typeof parsed.scannedTo === "number"
-        ? { from: parsed.scannedFrom, to: parsed.scannedTo }
+        ? {
+            from: parsed.scannedFrom,
+            to: parsed.scannedTo,
+            // Without these the range is a claim about blocks nobody read.
+            holes: Array.isArray(parsed.holes) ? parsed.holes : [],
+          }
         : null;
   }
 
@@ -212,29 +274,108 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/v1/pay" && req.method === "POST") {
-      const creds = requireAgentKey(env);
       const body = await new Promise<string>((ok) => {
         let b = "";
         req.on("data", (d) => (b += d));
         req.on("end", () => ok(b));
       });
-      const { amount, recipient, memo = "" } = JSON.parse(body || "{}") as {
+      const {
+        amount,
+        recipient,
+        memo = "",
+        agent,
+        nodeId,
+        rail = "near",
+        destinationAsset,
+      } = JSON.parse(body || "{}") as {
         amount: string;
         recipient: string;
         memo?: string;
+        agent?: string;
+        nodeId?: number;
+        rail?: "near" | "intents";
+        destinationAsset?: string;
       };
+
+      // WHICH agent signs decides WHICH budget is charged — the contract
+      // resolves the node from the signer, not from the request body. So a
+      // bad selection is a 400, never a quietly-redirected payment.
+      let creds;
+      try {
+        creds = selectAgent(keyring, { agent, nodeId });
+      } catch (e) {
+        if (e instanceof AgentSelectionError) return send(400, { error: e.message });
+        throw e;
+      }
+
+      // ---- Cross-chain, if asked for.
+      //
+      // `amount` means what the PAYEE receives. For the intents rail what
+      // actually leaves the vault is the quote's amountIn — fees included —
+      // and that is the figure the budget tree is charged, so the hierarchy
+      // governs real outflow rather than a nominal number.
+      const requestId = newRequestId();
+      let route: RouteArg = "near_direct";
+      let amountIn = toBaseUnits(amount, env.decimals);
+
+      if (rail === "intents") {
+        if (!env.quoteSignerKey) {
+          // Deliberately a 400 with the reason, not a silent fallback to the
+          // NEAR rail. Quietly paying on the wrong chain would look like
+          // success and leave the payee unpaid.
+          return send(400, {
+            error:
+              "rail=intents requires FLOAT_QUOTE_SIGNER_KEY (32-byte hex). That key " +
+              "binds a payee to a one-time deposit address, so it belongs to the vault " +
+              "operator. Without it the cross-chain rail is closed.",
+          });
+        }
+        try {
+          const deadline = new Date(Date.now() + 20 * 60 * 1000);
+          const q = await getQuote({
+            amountOut: toBaseUnits(amount, env.decimals),
+            payee: recipient,
+            refundTo: env.vault,
+            destinationAsset,
+            deadline,
+          });
+          amountIn = q.amountIn;
+          const sk = Uint8Array.from(Buffer.from(env.quoteSignerKey.replace(/^0x/, ""), "hex"));
+          route = buildRoute("intents", {
+            depositAddress: q.depositAddress,
+            quoteDeadlineNs: q.deadlineNs.toString(),
+            signature: toBase64(
+              signBinding(
+                {
+                  vault: env.vault,
+                  requestId,
+                  token: env.token,
+                  amount: q.amountIn,
+                  payee: recipient,
+                  depositAddress: q.depositAddress,
+                  deadlineNs: q.deadlineNs,
+                },
+                sk,
+              ),
+            ),
+          });
+        } catch (e) {
+          return send(502, { error: `quote failed: ${(e as Error).message}` });
+        }
+      }
 
       const outcome = (await sendRequestPayment({
         rpcUrl: env.rpcUrl,
         vault: env.vault,
         agentId: creds.agentId,
-        agentKey: creds.agentKey,
-        requestId: newRequestId(),
+        agentKey: creds.secret,
+        requestId,
         token: env.token,
-        amount: toBaseUnits(amount, env.decimals),
+        amount: amountIn,
         recipient,
         memo,
         gasTgas: 100,
+        route,
       })) as { status?: string; reason_code?: string; request_id?: string; node_id?: number };
 
       // A BLOCKED outcome is never stored on-chain, so if the dashboard is to
@@ -271,6 +412,43 @@ const server = createServer(async (req, res) => {
     send(500, { error: (e as Error).message });
   }
 });
+
+// ---- Follow the chain for refusals.
+//
+// Refusals live only in NEP-297 events, so an adapter that does not watch the
+// chain can only ever show the ones it personally caused. Started before
+// listening so the first dashboard request already has a cursor.
+if (env.followBlocked) {
+  const follower = new BlockedFollower({
+    rpc,
+    vault: env.vault,
+    load: loadBlockedStore,
+    save: saveBlockedStore,
+    intervalMs: env.followIntervalMs,
+    onTick: ({ from, to, added, holes }) => {
+      // Silent when there is nothing to say; a per-tick line every 10s would
+      // bury anything that matters.
+      if (added || holes) {
+        console.log(
+          `[blocked-follow] blocks ${from}..${to}  +${added} refusal(s)` +
+            (holes ? `  ${holes} unreadable block(s)` : ""),
+        );
+      }
+    },
+    onSkip: ({ from, to }) => {
+      console.warn(
+        `[blocked-follow] BACKLOG TOO LARGE — blocks ${from}..${to} ` +
+          `(${to - from + 1}) were NOT scanned and are recorded as a gap. ` +
+          `Refusals in that span are unknown, not absent. ` +
+          `Fill it with: node scripts/scan-blocked.mjs --from ${from}`,
+      );
+    },
+  });
+  follower.start();
+  const shutdown = () => follower.stop();
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
 
 server.listen(env.port, () => {
   console.log(`float-adapter -> ${env.vault} on ${env.rpcUrl}`);

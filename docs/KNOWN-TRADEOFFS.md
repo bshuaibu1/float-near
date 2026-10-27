@@ -228,13 +228,77 @@ operator and is not custodial. It has NOT been demonstrated: the vault's
 derived address `0x75e2bc908d3eaf42c680404d7770b6b0ec0e7333` holds no ETH and
 no USDC.
 
-It also has a live limitation. The nonce is part of the SIGNED payload, and the
-caller supplies it. With a hardcoded 0 only the first such transaction can ever
-land; the rest are rejected as nonce-too-low **after their NEAR reservation has
-already been consumed**. Even reading the real nonce first does not fix the
-concurrent case, because two payments would be signed for the same nonce.
-Operator mode has no such problem — it reads its own nonce at send time, after
-authorization.
+#### The nonce defect — FIXED
+
+The nonce is part of the SIGNED payload and the caller used to supply it. With
+a hardcoded 0 only the first such transaction could ever land; the rest were
+rejected as nonce-too-low **after their NEAR reservation had already been
+consumed** — budget spent, nothing delivered. Reading the chain first does not
+fix it either: two payments in the same block read the same value and sign for
+the same nonce.
+
+`Route::BaseUsdc` keeps its `nonce` field, but the value is now DISCARDED and
+replaced with one the contract allocates monotonically before the request is
+persisted.
+
+Keeping the field was not cosmetic. `Route` is stored inside `PaymentRequest`,
+and all fifteen requests on the live vault are Base-routed with that field in
+their borsh bytes. Deleting it shifts every following byte, so those records
+would have failed to deserialise and `list_requests` — and the whole dashboard
+— would have broken the moment the new code was deployed. `serde(default)`
+lets new callers omit it while borsh keeps reading the old records as written.
+This was caught by checking the live vault's stored routes, not by the test
+suite, which passed throughout. It is the only place that
+sees every Base signature in a serial order, so it is the only place the
+allocation can be made without racing.
+
+Three consequences worth stating plainly:
+
+- **Allocation is optimistic.** The counter advances when a signature is
+  REQUESTED; the nonce only becomes real when somebody broadcasts the
+  transaction. A signature that is never sent leaves a gap, and an EVM gap
+  stalls every later transaction behind it.
+- **A failed signature reclaims its nonce, but only when it is still the most
+  recent allocation.** If a concurrent payment has already taken the next one,
+  rolling back would hand the same number out twice — the exact collision this
+  change removes. The gap stands instead, and `set_base_nonce` resyncs. Trading
+  a rare stall for a duplicate nonce would be a bad trade.
+- **The contract cannot read Base, so it cannot detect or repair a gap.** Only
+  the owner can compare against the real account. `set_base_nonce` is that
+  escape hatch, and moving the counter backwards is legitimate *and* dangerous:
+  if the skipped transactions are later broadcast, the reissued nonces collide.
+  The event records both values so the move is auditable.
+
+The relayer's authorisation gate had to change with it. That gate rebuilds the
+exact transaction from the stored request and refuses to move anything unless
+the signature recovers to the vault's derived address — and the nonce is part
+of that rebuild. The contract now records the signed nonce per request
+(`get_request_nonce`), under its own storage key rather than as a field on
+`PaymentRequest`, which would have changed the borsh layout of every record
+already on chain. The relayer treats a missing nonce as a hard stop: defaulting
+to 0 would rebuild the wrong transaction and reject a legitimate payment.
+
+Operator mode never had this problem — it reads its own nonce at send time,
+after authorization.
+
+#### What is still unproven
+
+Delivery itself. The derived address still holds no ETH, so `--mode vault` has
+never broadcast anything. The nonce is no longer the blocker; funding is.
+
+#### A coverage gap found while fixing this
+
+`Route::BaseUsdc` had **no unit tests at all** — removing a field from it broke
+nothing in `cargo test`. Its only coverage was the sandbox tier, which cannot
+even compile on Windows (`near-workspaces` fails its build script), so on this
+machine the Base rail was effectively untested. It now has unit coverage for
+allocation, reclaim, owner resync, and storage isolation.
+
+That gap also produced a false pass worth recording: the first two reclaim
+tests re-implemented the rule beside the real one, because the logic lived
+inline in a callback no unit test can reach. A mutation inverting the real
+condition survived all 90 tests. The decision is now a named function that both
+the callback and the tests call, and the same mutation fails immediately.
 
 ## 6. A config error no test could catch: chain id vs token address
 
@@ -321,3 +385,194 @@ is the part that varies, so a recorded run is the honest demo asset.
 save testnet tokens: per §1 it IS the per-agent rate limit, so shaving it
 would have quietly undercut the anti-griefing argument.
 
+
+## 10. The owner could not leave, and could not be replaced — FIXED
+
+Two absences that compounded into the worst failure this contract had, both
+found by auditing the design before building an onboarding wizard on top of it.
+
+**What was wrong.** `owner` was written once in `new` and never again: there
+was no transfer, no recovery, no second admin. Separately, the only route
+tokens could take out of the vault was `request_payment`, to an **allowlisted**
+recipient, under a daily cap. The owner had no withdrawal at all.
+
+Each is survivable alone. Together they are a trap:
+
+- Lose the owner key and the vault freezes in whatever configuration it held at
+  that instant — caps, recipients, freeze flags, all permanent — with the funds
+  still inside. If no agent was bound, or the node was frozen, or the owner was
+  never allowlisted as a recipient, the money is unreachable by anyone, for
+  ever.
+- Even with the key, recovering a deposit meant allowlisting yourself and
+  draining it through capped agent payments. A 10,000 USDC deposit under a
+  100/day cap is a hundred-day drip.
+
+**What was added.**
+
+- `propose_owner(Option<AccountId>)` / `accept_ownership()` — a two-step
+  handover. Two steps, not one, because a single `set_owner` taking immediate
+  effect would hand the vault to whatever string was typed, and a typo would
+  recreate exactly this unrecoverable state, instantly and irreversibly.
+  Requiring the nominee to accept proves the account exists and holds its keys
+  before any authority moves. `propose_owner(None)` cancels.
+- `withdraw(token, amount, receiver_id)` — owner-only, outside the budget
+  hierarchy. Caps bound what AGENTS may spend; applying them to the owner's own
+  exit is what created the drip. An owner who can already rewrite every cap
+  gains no new capability here, so there is no escalation — only a path that
+  should have existed from the start. Deliberately **not** gated on `paused`:
+  an escape hatch a pause can close is not an escape hatch.
+
+**Residual edges.**
+
+- Withdrawing can leave less on hand than outstanding reservations expect. Those
+  transfers then fail at the token contract and their reservations are released
+  by the existing `resolve_reservation` / `sweep_stuck_pending` machinery. No
+  accounting is corrupted; a payment simply does not complete.
+- The nominated owner is stored under its own storage key rather than as a
+  `Vault` field, so the borsh layout is unchanged and the live vault can be
+  upgraded in place with its tree, ledgers and payment history intact
+  (`scripts/upgrade-testnet.sh`). **Any future change that adds a struct field
+  loses this property and needs a migration.**
+
+## 11. The daily window is a cliff, not a rolling 24 hours — OPEN
+
+`today() = block_timestamp / day_len_ns` is a fixed window aligned to the Unix
+epoch. Two consequences a user will not expect from the words "daily budget":
+
+- It resets at **00:00 UTC**, not at the owner's local midnight.
+- It is a cliff. An agent may spend its full daily cap at 23:59 and the full cap
+  again at 00:01 — **two days of budget inside two minutes.**
+
+This is the classic fixed-window versus rolling-window tradeoff, and the fixed
+window is what makes the hot path O(1): one ledger key per (node, token, day),
+with no history to scan. A rolling window would need per-payment timestamps and
+a sweep on every check.
+
+Not fixed, because the cheap mitigation already exists and composes: `per_tx_cap`
+bounds any single payment and `cooldown_sec` bounds the rate, so an agent cannot
+convert the boundary into an unbounded burst — only into at most 2× its daily
+cap across it. Documented rather than silently left for a user to discover.
+
+## 12. Recovering refusals from chain, and what that costs — PARTLY OPEN
+
+A refused payment is never written to contract state (§2 explains why: storing
+it is the storage-griefing vector). It exists only as a NEP-297 event inside a
+receipt. So the single most important thing this product does is invisible to
+anything that was not watching when it happened.
+
+**What was built.** The adapter now follows the chain head and recovers
+refusals as they occur (`BlockedFollower`), and `scripts/scan-blocked.mjs`
+backfills older ranges. Both share one scanner, deliberately: there were
+briefly two copies of the event-parsing logic, and the copy that breaks
+silently is always the one that matters, because its output is an empty list
+that reads exactly like "no refusals happened".
+
+No indexer is involved. NearBlocks returns nothing at all for this testnet
+account — `{"txns":[]}` even for transaction hashes verified to exist — so
+everything comes from plain RPC and is reproducible by anyone.
+
+**Measured cost.** One chunk in ten carries any transaction, and an empty
+chunk's `tx_root` is the all-ones hash, so empties are skipped without a second
+call. Steady-state following is roughly 2 RPC calls per block. A 100-block
+range took 28 seconds, of which 4 blocks were unreadable on the first attempt.
+
+**The limitation, measured twice — the second time correcting the first.**
+A large backfill is NOT practical against a public endpoint.
+
+Scanning ~1,200 blocks while the follower was also running produced `HTTP 429`
+and killed the run outright. The script now paces requests, retries throttling
+with exponential backoff, and checkpoints every 500 blocks so a failure costs
+one batch rather than the whole run. Re-running the identical range then
+succeeded, absorbing five 429s along the way:
+
+| | |
+| --- | --- |
+| blocks | 1,200 |
+| wall clock | 1,045 s (17.4 min) |
+| chunks fetched | 565 |
+| empty chunks skipped | 11,435 (95%) |
+| rate-limit pauses | 5 |
+
+An earlier note here claimed ~80 minutes for the 17,000-block gap this project
+actually had. That was extrapolated from an UNPACED run which then got
+throttled, so it measured a speed the endpoint will not sustain. At the rate
+above — 0.87 s per block, pacing and backoff included — the real figure is
+**roughly 4.2 hours.** The corrected number is the one that matters, and it
+moves the conclusion from "slow" to "do not": the gap was left recorded rather
+than filled.
+
+The honest summary: **following the head is cheap, and backfilling deep
+history is not.** Production would use an indexer.
+
+**Consequences for coverage, and why gaps are recorded rather than hidden.**
+When the cursor falls further behind the head than `maxCatchupBlocks` (default
+5,000), the follower does not grind through the backlog — it records the span
+as a GAP and resumes at the head. The alternative, jumping silently, would
+report blocks nobody read as covered. Gaps are stored as ranges, surfaced on
+`/v1/dashboard` as `blockedCoverage.holes`, and logged loudly with the exact
+command to fill them. A reader must always be able to tell "no refusals
+happened here" from "nobody has looked here yet"; those are the same empty
+list otherwise, and that confusion is the entire thing this feature exists to
+remove.
+
+Running the backfill against the file the adapter is following is a
+lost-update race — both sides do load/modify/save. The script detects a
+recently-written store by mtime and refuses, pointing at
+`scripts/merge-blocked.mjs`, which folds a separate backfill in: refusals
+union by request id, coverage widens, and a span stops being a gap only if
+neither side failed to read it.
+
+## 13. Sub-agents: why delegation is owner-mediated, not agent-initiated
+
+The obvious feature is `spawn_child` — an agent creating its own sub-agent and
+handing down part of its budget. It is not built, and the reason is worth
+recording, because the blockers are deliberate design rather than oversight.
+
+**An agent cannot call it.** The restricted key from `create_agent_account` is
+`method_names = ["request_payment"]`, receiver-locked to the vault, and NEAR
+function-call keys cannot attach a deposit at all. The contract says why:
+
+> a key that could call `ft_transfer` directly would hold the vault's own
+> transfer authority and every budget check would be moot.
+
+Agent-initiated spawning means widening precisely the key the design is most
+careful about, and then having the vault fund sub-account creation out of its
+own NEAR — because the caller provably cannot.
+
+**Worse, it was unrecoverable.** `add_node` did `node_order.push` with no
+counterpart anywhere in the contract. MAX_NODES was a ONE-WAY budget: a buggy
+or compromised agent could consume all sixty-four slots permanently, and
+neither freezing it nor revoking its key would give any of them back.
+
+One genuine safety property already held, and is worth stating because it is
+what makes delegation sane at all: a payment charges **every ancestor** in the
+chain, so a child's spending is also charged to the agent above it. Spawning
+children therefore cannot increase total spending power — it only subdivides
+what the parent already has.
+
+### What was built instead
+
+- **`remove_node`** — MAX_NODES is now recoverable. Owner-only, and strict
+  about it: the node must be frozen (freezing is what stops new reservations
+  forming), childless (a descendant keeps it in `path`), not the root, and
+  free of open reservations across **today and yesterday** — a reservation
+  taken before midnight is still open after it, and checking only today would
+  miss exactly that case. The parent gets its allocation and child count back.
+
+  The node's ledgers are deliberately **not** deleted. Ids are never reused,
+  so the rows are inert; deleting them would be actively harmful, because a
+  surviving reservation releases via `pending.checked_sub` against a ledger
+  that `unwrap_or_default()` would resurrect as zero, underflow, and panic
+  inside a CALLBACK — stranding that reservation at every level of its chain.
+
+- **`MAX_DEPTH` 3 → 4**, so `root → team → agent → sub-agent` is expressible.
+  The cost is real and lands on the hot path: `chain` is path-plus-self and
+  every payment loops it three times, so a fourth level is roughly three extra
+  map reads and one extra write per payment. It remains a fixed-length walk,
+  which is the property that actually matters.
+
+The agent key is unchanged. Delegation is owner-mediated: the owner creates the
+sub-agent node and binds an account to it. Autonomous spawning stays open, and
+is now at least *possible* to build safely, since slots can be reclaimed — it
+would still need a pre-authorised per-node quota and a funding source that is
+not simply "the vault's balance, on an agent's say-so".

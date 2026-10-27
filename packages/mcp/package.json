@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "near-api-js": "^7.4.0",
     "zod": "^4.6.7"
   },
@@ -26,6 +28,10 @@
     ".": "./dist/index.js",
     "./amounts": "./dist/amounts.js",
     "./sign": "./dist/sign.js",
-    "./payloads": "./dist/payloads.js"
+    "./payloads": "./dist/payloads.js",
+    "./quote": {
+      "types": "./dist/quote.d.ts",
+      "import": "./dist/quote.js"
+    }
   }
 }

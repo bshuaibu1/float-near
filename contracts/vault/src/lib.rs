@@ -10,12 +10,11 @@
 
 pub mod types;
 
-mod evm;
 
 #[cfg(test)]
 mod tests;
 
-use near_sdk::json_types::{U128, U64};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{
     assert_one_yocto, env, ext_contract, near, AccountId, Allowance, BorshStorageKey, Gas,
@@ -84,38 +83,6 @@ pub const MAX_SUB_LABEL_LEN: usize = 32;
 pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 
 /// The `sign` entry point of the Chain Signatures MPC contract.
-#[ext_contract(ext_mpc)]
-#[allow(dead_code)]
-trait MpcSigner {
-    fn sign(&mut self, request: SignRequest) -> near_sdk::Promise;
-}
-
-/// What `v1.signer-prod.testnet` actually expects, read off its embedded ABI
-/// and confirmed by a live `sign` call on 2026-10-26.
-///
-/// The older `{payload: [u8;32], key_version}` shape still deserialises there
-/// via a documented backward-compatible alias, but it is DEPRECATED. This uses
-/// the current field names so the rail does not depend on a compatibility path
-/// that may be dropped.
-///
-/// `payload_v2` is the 32-byte hash as hex — and the whole design hinges on the
-/// vault computing that hash itself rather than accepting one.
-#[near(serializers = [json])]
-pub struct SignRequest {
-    pub payload_v2: Payload,
-    pub path: String,
-    pub domain_id: u64,
-}
-
-/// Externally tagged, which serialises to `{"Ecdsa": "<64 hex>"}`.
-///
-/// Only the ECDSA arm exists here: Base verifies secp256k1, and the signer's
-/// Eddsa arm would return a signature no EVM chain can check.
-#[near(serializers = [json])]
-pub enum Payload {
-    Ecdsa(String),
-}
-
 #[ext_contract(ext_ft)]
 #[allow(dead_code)]
 trait FungibleTokenCore {
@@ -308,6 +275,160 @@ impl Vault {
             }
         }
         id
+    }
+
+    // ---- The quote signer.
+    //
+    // An Intents payment sends funds to a one-time deposit address that can
+    // never be on the payee allowlist. Something has to vouch that paying
+    // that address pays the allowlisted payee, and the contract cannot check
+    // it — the correspondence only exists inside the solver's quote.
+    //
+    // So this is an EXPLICIT TRUSTED PRODUCER, named rather than implied.
+    // Whoever holds this key can bind any deposit address to any payee, which
+    // means they can redirect any Intents payment the budget allows. It
+    // should be the operator's key, kept off the machines agents run on. With
+    // no signer registered the Intents rail is simply closed.
+    //
+    // Stored under its own key, like the other additions, so the borsh layout
+    // of `Vault` is untouched.
+
+    const QUOTE_SIGNER_KEY: &'static [u8] = b"QUOTE_SIGNER";
+
+    fn read_quote_signer() -> Option<[u8; 32]> {
+        env::storage_read(Self::QUOTE_SIGNER_KEY).and_then(|b| b.try_into().ok())
+    }
+
+    /// Register (or with `None`, revoke) the ed25519 key that signs quotes.
+    ///
+    /// Revoking closes the Intents rail outright. That is the correct
+    /// response to a suspected key compromise, and it needs no other
+    /// coordination: with no signer, every Intents payment is refused.
+    #[payable]
+    pub fn set_quote_signer(&mut self, public_key: Option<Base64VecU8>) {
+        self.assert_owner();
+        match public_key {
+            None => {
+                env::storage_remove(Self::QUOTE_SIGNER_KEY);
+                env::log_str(
+                    r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"quote_signer_cleared","data":[{}]}"#,
+                );
+            }
+            Some(pk) => {
+                if pk.0.len() != 32 {
+                    fail(ReasonCode::InvalidConfig, "quote signer must be a 32-byte ed25519 key");
+                }
+                env::storage_write(Self::QUOTE_SIGNER_KEY, &pk.0);
+                env::log_str(
+                    r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"quote_signer_set","data":[{}]}"#,
+                );
+            }
+        }
+    }
+
+    /// The registered quote signer, if the Intents rail is open.
+    pub fn get_quote_signer(&self) -> Option<Base64VecU8> {
+        Self::read_quote_signer().map(|k| Base64VecU8(k.to_vec()))
+    }
+
+    /// Reclaim a node, returning its slot to the MAX_NODES budget.
+    ///
+    /// Why this had to exist before anything could spawn children. `add_node`
+    /// did `node_order.push` with no counterpart anywhere in the contract, so
+    /// MAX_NODES was a ONE-WAY budget: every node ever created consumed one of
+    /// sixty-four slots permanently. That is survivable while only the owner
+    /// can create nodes. It is not survivable the moment an agent can, because
+    /// a buggy or compromised agent exhausts the tree and nothing — not
+    /// freezing it, not revoking its key — ever gives those slots back.
+    ///
+    /// The preconditions are deliberately strict, because the failure mode of
+    /// getting this wrong is a wedged reservation rather than an error:
+    ///
+    /// - FROZEN. Freezing is what stops new reservations from forming, and
+    ///   the hot path checks `frozen` on every node in the chain. Without it,
+    ///   a payment could be reserved against this node between the emptiness
+    ///   check and the removal.
+    /// - CHILDLESS. A descendant keeps this node in its `path`, so removing a
+    ///   parent would leave children charging a level that no longer exists.
+    /// - NO PENDING, across today AND yesterday. A reservation outlives the
+    ///   call that made it; `RESERVATION_TTL` is an hour, so one taken before
+    ///   midnight can still be open after it. Checking only today would miss
+    ///   exactly that case.
+    /// - NOT THE ROOT. Removing it would leave a vault no payment can route
+    ///   through, unrecoverably.
+    ///
+    /// Note what is NOT done: the node's ledgers are left in place. They are
+    /// keyed by `(node, token, day)` and `next_node_id` only ever increments,
+    /// so the id can never be reused and the rows are inert. Deleting them
+    /// would be worse than useless — if any reservation did still reference
+    /// this node, its release does `pending.checked_sub(amount)` against a
+    /// ledger that `unwrap_or_default()` would resurrect as zero, underflow,
+    /// and panic in a CALLBACK. That reservation would then be stuck forever
+    /// at every level of its chain. Keeping the rows makes the dangerous case
+    /// merely wasteful instead.
+    #[payable]
+    pub fn remove_node(&mut self, node_id: NodeId) {
+        self.assert_owner();
+
+        let node = self.get_node(node_id);
+
+        let parent = match node.parent {
+            Some(p) => p,
+            None => fail(ReasonCode::InvalidConfig, "cannot remove the root"),
+        };
+        if node.child_count > 0 {
+            fail(ReasonCode::MaxChildren, "node still has children");
+        }
+        if !node.frozen {
+            fail(
+                ReasonCode::InvalidConfig,
+                "freeze the node first: freezing is what stops new reservations",
+            );
+        }
+
+        // Today and yesterday, because a reservation can outlive a day
+        // boundary. `today()` is a fixed window, so yesterday is today - 1.
+        let today = self.today();
+        for l in &node.limits {
+            for day in [today, today.saturating_sub(1)] {
+                let led = self
+                    .ledgers
+                    .get(&(node_id, l.token.clone(), day))
+                    .cloned()
+                    .unwrap_or_default();
+                if led.pending > 0 {
+                    fail(
+                        ReasonCode::LedgerInvariant,
+                        "node has an open reservation; sweep_stuck_pending first",
+                    );
+                }
+            }
+        }
+
+        // Give the parent back the allocation this node was holding, so a
+        // strict-mode tree can re-use the headroom.
+        for l in &node.limits {
+            self.bump_child_sum(parent, &l.token, l.daily_cap.0, 0);
+        }
+        if let Some(p) = self.nodes.get_mut(&parent) {
+            p.child_count = p.child_count.saturating_sub(1);
+        }
+
+        // Free the agent account binding, or the account could never be bound
+        // to another node and the key would be orphaned.
+        if let Some(acct) = node.account.clone() {
+            self.account_to_node.remove(&acct);
+        }
+
+        self.nodes.remove(&node_id);
+        self.node_order.retain(|id| *id != node_id);
+
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"node_removed","data":[{{"node_id":{},"parent":{},"freed_slots":{}}}]}}"#,
+            node_id,
+            parent,
+            MAX_NODES as usize - self.node_order.len()
+        ));
     }
 
     /// Strict mode re-checks containment in BOTH directions: a node may not
@@ -616,6 +737,127 @@ impl Vault {
         swept
     }
 
+    // ---- Ownership handover, and the owner's way out.
+    //
+    // Both were missing, and the two absences compounded into the worst
+    // failure this contract had. `owner` was written once in `new` and never
+    // again, and the only route tokens could take out of the vault was
+    // `request_payment` to an ALLOWLISTED recipient under a daily cap. So a
+    // lost owner key froze the configuration permanently with the funds still
+    // inside, and even an attentive owner could do no better than drip their
+    // own deposit back to themselves — and only if they had thought to
+    // allowlist themselves in advance.
+    //
+    // A note on where `pending_owner` lives. It sits under its own storage key
+    // rather than as a field on `Vault`, deliberately. Adding a struct field
+    // changes the borsh layout, so the already-deployed vault's state would
+    // fail to deserialize under the new code and would need a migration to
+    // survive. A separately-keyed value leaves the layout untouched, which
+    // means this can be deployed over the live vault with its tree, ledgers
+    // and payment history intact, and with no migration step to get wrong.
+
+    /// Raw storage key for the pending owner. Not a `StorageKey` variant,
+    /// because those derive collection prefixes and this is a single value.
+    const PENDING_OWNER_KEY: &'static [u8] = b"PENDING_OWNER";
+
+    fn read_pending_owner() -> Option<AccountId> {
+        env::storage_read(Self::PENDING_OWNER_KEY)
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok())
+    }
+
+    /// Nominate the next owner, or pass `None` to cancel a nomination.
+    ///
+    /// Two steps rather than one. A single `set_owner` taking effect
+    /// immediately would hand the vault to whatever string was typed, and a
+    /// typo would recreate exactly the unrecoverable state this exists to
+    /// remove — instantly, and with no way back. Requiring the nominee to call
+    /// `accept_ownership` proves the account exists and holds its keys before
+    /// any authority moves.
+    #[payable]
+    pub fn propose_owner(&mut self, new_owner: Option<AccountId>) {
+        self.assert_owner();
+        match new_owner {
+            None => {
+                env::storage_remove(Self::PENDING_OWNER_KEY);
+                env::log_str(
+                    r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"owner_proposal_cancelled","data":[{}]}"#,
+                );
+            }
+            Some(next) => {
+                // The same two rules `new` enforces. A vault that owned itself
+                // would make `assert_owner` unsatisfiable by any external
+                // caller, which is the brick this is here to prevent.
+                if next == env::current_account_id() {
+                    fail(ReasonCode::InvalidConfig, "owner must not be the vault");
+                }
+                if next == self.owner {
+                    fail(ReasonCode::InvalidConfig, "already the owner");
+                }
+                env::storage_write(Self::PENDING_OWNER_KEY, next.as_str().as_bytes());
+                env::log_str(&format!(
+                    r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"owner_proposed","data":[{{"pending_owner":"{next}"}}]}}"#
+                ));
+            }
+        }
+    }
+
+    /// Complete a handover. Callable only by the nominated account.
+    #[payable]
+    pub fn accept_ownership(&mut self) {
+        assert_one_yocto();
+        let caller = env::predecessor_account_id();
+        match Self::read_pending_owner() {
+            Some(pending) if pending == caller => {
+                let previous = self.owner.clone();
+                self.owner = caller;
+                env::storage_remove(Self::PENDING_OWNER_KEY);
+                env::log_str(&format!(
+                    r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"owner_changed","data":[{{"previous_owner":"{}","new_owner":"{}"}}]}}"#,
+                    previous, self.owner
+                ));
+            }
+            _ => fail(ReasonCode::NotOwner, "not the pending owner"),
+        }
+    }
+
+    pub fn get_pending_owner(&self) -> Option<AccountId> {
+        Self::read_pending_owner()
+    }
+
+    /// Move tokens out of the vault on the owner's authority alone.
+    ///
+    /// This deliberately bypasses the budget hierarchy. Caps exist to bound
+    /// what AGENTS may spend; applying them to the owner's own exit is what
+    /// turned a deposit into a hundred-day drip. An owner who can already
+    /// rewrite every cap in the tree gains no new capability by withdrawing
+    /// directly, so there is no escalation here — only a path that should
+    /// have existed from the start.
+    ///
+    /// Not gated on `paused`. Pausing stops agents; an escape hatch a pause
+    /// can close is not an escape hatch.
+    ///
+    /// Interaction with in-flight payments: withdrawing can leave less on hand
+    /// than outstanding reservations expect, in which case those transfers
+    /// fail at the token contract and their reservations are released by the
+    /// existing `resolve_reservation` / `sweep_stuck_pending` machinery. No
+    /// accounting is corrupted; a payment simply does not go through.
+    #[payable]
+    pub fn withdraw(&mut self, token: AccountId, amount: U128, receiver_id: AccountId) -> Promise {
+        self.assert_owner();
+        if amount.0 == 0 {
+            fail(ReasonCode::InvalidConfig, "amount must be positive");
+        }
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"owner_withdrawal","data":[{{"token":"{}","amount":"{}","receiver_id":"{}"}}]}}"#,
+            token, amount.0, receiver_id
+        ));
+        ext_ft::ext(token)
+            .with_attached_deposit(ONE_YOCTO)
+            .with_static_gas(GAS_FOR_FT_TRANSFER)
+            .ft_transfer(receiver_id, amount, Some("vault:owner-withdrawal".to_string()))
+    }
+
     #[payable]
     pub fn set_paused(&mut self, paused: bool) {
         self.assert_owner();
@@ -626,35 +868,6 @@ impl Vault {
     pub fn set_strict_allocation(&mut self, strict: bool) {
         self.assert_owner();
         self.strict_allocation = strict;
-    }
-
-    /// Opens (or re-points) the Base rail. Owner only.
-    ///
-    /// `usdc_address` is validated here rather than at signing time: it is the
-    /// `to` of every transaction this rail will ever sign, so a malformed value
-    /// would be a vault that signs garbage. Rejecting it at configuration time
-    /// means the hot path cannot fail on it.
-    #[payable]
-    pub fn set_base_config(&mut self, config: Option<BaseConfig>) {
-        self.assert_owner();
-        if let Some(c) = &config {
-            if evm::parse_evm_address(&c.usdc_address).is_none() {
-                fail(ReasonCode::InvalidEvmAddress, "usdc_address must be lowercase 0x + 40 hex");
-            }
-            if c.derivation_path.is_empty() || c.derivation_path.len() > 64 {
-                fail(ReasonCode::InvalidEvmAddress, "derivation_path must be 1..=64 chars");
-            }
-            // A zero ceiling would silently close the rail while the config
-            // still reads as open, so it is rejected rather than accepted as
-            // an accidental kill switch. Use `set_base_config(None)` to close.
-            if c.max_tx_fee_wei.0 == 0 {
-                fail(
-                    ReasonCode::FeeCeilingExceeded,
-                    "max_tx_fee_wei must be > 0; pass config: null to close the rail",
-                );
-            }
-        }
-        self.base_config = config;
     }
 
     pub fn get_base_config(&self) -> Option<BaseConfig> {
@@ -690,7 +903,8 @@ impl Vault {
 
         let gas_floor = match route {
             Route::NearDirect => MIN_GAS_FOR_DISPATCH,
-            Route::BaseUsdc { .. } => MIN_GAS_FOR_BASE_DISPATCH,
+            // A NEP-141 transfer; the cross-chain half is off-contract.
+            Route::Intents { .. } => MIN_GAS_FOR_DISPATCH,
         };
         if env::prepaid_gas() < gas_floor {
             // Checked before anything is charged. An under-funded dispatch that
@@ -736,40 +950,47 @@ impl Vault {
 
         // Rail-specific shape checks, AFTER the allowlist so an address that
         // is merely not allowed never reports as malformed.
-        let base_target = match &route {
-            Route::NearDirect => None,
-            Route::BaseUsdc { nonce: _, max_priority_fee_per_gas, max_fee_per_gas, gas_limit } => {
-                let Some(cfg) = self.base_config.clone() else {
-                    return blocked(&request_id, node_id, ReasonCode::BaseRailClosed);
-                };
-
-                // EIP-1559 validity: a transaction whose priority fee exceeds
-                // its max fee is malformed and Base would reject it. Refusing
-                // here means the vault never spends a signature on it.
-                if max_priority_fee_per_gas.0 > max_fee_per_gas.0 {
-                    return blocked(&request_id, node_id, ReasonCode::InvalidFeeFields);
-                }
-
-                // THE GAS CEILING. See BaseConfig::max_tx_fee_wei.
+        // Not a value any more: with the MPC rail gone there is nothing to
+        // resolve here, only a gate to pass.
+        match &route {
+            Route::NearDirect => {}
+            Route::Intents { deposit_address, quote_deadline_ns, signature } => {
+                // THE GATE THAT KEEPS THE ALLOWLIST MEANINGFUL.
                 //
-                // `checked_mul` and not `*`: `gas_limit` is caller-supplied and
-                // `max_fee_per_gas` is a u128, so the product can overflow. A
-                // wrapping multiply would turn an enormous fee into a small
-                // number and sail past the ceiling — the overflow IS the
-                // attack, so it is treated as exceeding the ceiling rather
-                // than as an arithmetic detail.
-                let worst_case_fee = u128::from(gas_limit.0).checked_mul(max_fee_per_gas.0);
-                match worst_case_fee {
-                    Some(fee) if fee <= cfg.max_tx_fee_wei.0 => {}
-                    _ => return blocked(&request_id, node_id, ReasonCode::FeeCeilingExceeded),
+                // The allowlist was checked above against `recipient` — the
+                // final payee on the far chain. But the money is about to go
+                // to `deposit_address`, a one-time address from a quote that
+                // can never appear on that list, and which the contract has
+                // no way to connect back to the payee.
+                //
+                // If an agent could choose it, the allowlist would be
+                // decorative: quote a swap paying yourself, and the vault
+                // funds it with every other check passing. So a key the OWNER
+                // registered must have signed the binding between the two.
+                let Some(signer) = Self::read_quote_signer() else {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteSignerUnset);
+                };
+                if env::block_timestamp() > quote_deadline_ns.0 {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteExpired);
                 }
-
-                match evm::parse_evm_address(recipient.as_str()) {
-                    Some(addr) => Some((cfg, addr)),
-                    None => return blocked(&request_id, node_id, ReasonCode::InvalidEvmAddress),
+                let binding = QuoteBinding {
+                    vault: env::current_account_id(),
+                    request_id: request_id.clone(),
+                    token: token.clone(),
+                    amount,
+                    payee: recipient.to_string(),
+                    deposit_address: deposit_address.clone(),
+                    deadline_ns: quote_deadline_ns.0,
+                };
+                let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+                let Ok(sig) = <[u8; 64]>::try_from(signature.0.as_slice()) else {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteBadSignature);
+                };
+                if !env::ed25519_verify(&sig, &msg, &signer) {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteBadSignature);
                 }
             }
-        };
+        }
 
         let now = env::block_timestamp();
         let last = self.last_paid_ns.get(&node_id).copied().unwrap_or(0);
@@ -865,64 +1086,25 @@ impl Vault {
                     ),
             ),
 
-            Route::BaseUsdc { nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit } => {
-                // `base_target` was resolved during validation, so both the
-                // config and the parsed address are already known good.
-                let (cfg, payee) = base_target.expect("validated above");
-
-                // THE POINT OF THIS WHOLE BRANCH.
-                //
-                // The contract does not accept a payload to sign. It builds
-                // the ERC-20 calldata and the EIP-1559 transaction from
-                // `payee` and `amount` — the exact values it just checked
-                // against every level of the budget tree and the allowlist —
-                // and signs the hash of its OWN construction.
-                //
-                // Accepting an opaque hash would make all of that decorative:
-                // a compromised agent would pass the hash of a transfer to its
-                // own address, or of `approve(attacker, MAX)`, and the budget
-                // check and the allowlist would both pass while the signature
-                // authorized something else entirely. `to`, `value` and `data`
-                // are therefore never caller-supplied.
-                let fields = evm::Eip1559Fields {
-                    chain_id: cfg.chain_id,
-                    nonce: nonce.0,
-                    max_priority_fee_per_gas: max_priority_fee_per_gas.0,
-                    max_fee_per_gas: max_fee_per_gas.0,
-                    gas_limit: gas_limit.0,
-                    // `to` is the TOKEN contract from owner-set config, not the
-                    // payee — for an ERC-20 transfer the payee lives in the
-                    // calldata. A caller cannot redirect this.
-                    to: evm::parse_evm_address(&cfg.usdc_address)
-                        .expect("validated in set_base_config"),
-                    data: evm::erc20_transfer_calldata(payee, amount.0),
-                };
-
-                PromiseOrValue::Promise(
-                    ext_mpc::ext(cfg.mpc_contract)
-                        // `sign` is PAYABLE: the signer asks for a deposit per
-                        // request to stop the network being spammed. Measured
-                        // on v1.signer-prod.testnet — 1 yocto is accepted. It
-                        // comes from the VAULT's balance, not the caller's,
-                        // because a function-call agent key cannot attach a
-                        // deposit at all. Omitting it made every live Base
-                        // payment fail, and the mock could not show that.
-                        .with_attached_deposit(ONE_YOCTO)
-                        .with_static_gas(GAS_FOR_MPC_SIGN)
-                        .sign(SignRequest {
-                            payload_v2: Payload::Ecdsa(evm::hex32(
-                                &evm::eip1559_sighash(&fields),
-                            )),
-                            path: cfg.derivation_path,
-                            domain_id: cfg.domain_id,
-                        })
-                        .then(
-                            Self::ext(env::current_account_id())
-                                .with_static_gas(GAS_FOR_SIGNATURE_CALLBACK)
-                                .on_signature_result(request_id),
-                        ),
-                )
-            }
+            // A cross-chain payment is an ordinary NEP-141 transfer to the
+            // quote's one-time deposit address. A solver delivers the far-chain
+            // asset to `recipient` and prices that chain's gas into the quote.
+            //
+            // No MPC signature, no derived address, no ETH to keep topped up,
+            // no nonce to allocate. It resolves through the same callback as
+            // the NEAR rail, so a failed transfer releases the reservation by
+            // exactly the same path.
+            Route::Intents { deposit_address, .. } => PromiseOrValue::Promise(
+                ext_ft::ext(token)
+                    .with_attached_deposit(ONE_YOCTO)
+                    .with_static_gas(GAS_FOR_FT_TRANSFER)
+                    .ft_transfer(deposit_address, amount, Some(format!("vault:{request_id}")))
+                    .then(
+                        Self::ext(env::current_account_id())
+                            .with_static_gas(GAS_FOR_TRANSFER_CALLBACK)
+                            .on_transfer_result(request_id),
+                    ),
+            ),
         }
     }
 
@@ -1017,17 +1199,6 @@ impl Vault {
     /// `Signed` is deliberately a distinct reason code from `Settled` — a
     /// reader of the ledger can tell which guarantee they have.
     #[private]
-    pub fn on_signature_result(&mut self, request_id: String) -> PaymentOutcome {
-        let succeeded = env::promise_results_count() == 1
-            && env::promise_result_checked(0, MAX_MPC_RESULT_LEN).is_ok();
-        self.resolve_reservation(
-            &request_id,
-            succeeded,
-            ReasonCode::Signed,
-            ReasonCode::SignatureFailed,
-        )
-    }
-
     // ---------------------------------------------------------------- views
 
     pub fn get_node(&self, node_id: NodeId) -> Node {

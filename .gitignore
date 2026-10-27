@@ -19,3 +19,10 @@ apps/dashboard/git
 
 # testnet demo agent keys - never commit
 .demo/
+
+# Secret-bearing. `.float/` holds agent private keys and the quote-signer
+# secret written by create-float. It also carries its own `.gitignore`, but
+# that file is only created when the wizard runs and can be deleted — this
+# entry is the one that does not depend on anything else being present.
+.float/
+.tmpcreds/
