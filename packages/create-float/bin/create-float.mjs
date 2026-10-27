@@ -193,6 +193,54 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
 
   const rl = YES ? null : createInterface({ input: process.stdin, output: process.stdout });
   try {
+    // ---- 0. Everything that can be known before a single question.
+    //
+    // These used to fail at step 5, after the plan was printed and confirmed
+    // and two accounts had already been created and funded. Finding out then
+    // that there is no contract to deploy leaves a half-built vault and real
+    // NEAR spent. Cheap checks belong before the bill, not after it.
+    step(0, "Preflight");
+
+    const wasm = findWasm();
+    if (!wasm) {
+      const plain = resolve(process.cwd(), "target/wasm32-unknown-unknown/release/vault.wasm");
+      throw new Error(
+        [
+          "no contract to deploy.",
+          "  Build it with:",
+          "    cargo install cargo-near --locked",
+          "    cd contracts/vault && cargo near build non-reproducible-wasm --no-default-features",
+          ...(existsSync(plain)
+            ? [
+                "",
+                "  NOTE: a plain-cargo build exists under target/wasm32-unknown-unknown/ and",
+                "  is deliberately NOT used. It links near-sdk's pure-Rust fallbacks, after",
+                "  which every contract panic arrives as 'unreachable opcode' and the reason",
+                "  codes this product's UX depends on are gone. It runs fine, and nothing",
+                "  warns you.",
+              ]
+            : []),
+        ].join("\n"),
+      );
+    }
+    ok(`contract ${(readFileSync(wasm).length / 1024).toFixed(0)} KB — ${wasm}`);
+
+    const credDir = join(
+      process.env.NEAR_CREDENTIALS_DIR ?? join(homedir(), ".near-credentials"),
+      NETWORK,
+    );
+    if (!existsSync(credDir)) {
+      throw new Error(
+        [
+          `no ${NETWORK} credentials at ${credDir}`,
+          "  Install near-cli-rs and log in:",
+          "    npm i -g near-cli-rs && near login",
+          "  create-float signs as you; it never asks for or stores a seed phrase.",
+        ].join("\n"),
+      );
+    }
+    ok(`credentials directory ${credDir}`);
+
     // ---- 1. Who is doing this, and can they sign?
     step(1, "Owner account");
     let owner = opt("--owner", null);
@@ -219,6 +267,26 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       // The contract refuses owner == vault, and a sub-account is the only
       // shape the owner can actually create.
       throw new Error(`the vault must be a sub-account of ${owner}, e.g. float.${owner}`);
+    }
+    // NEAR caps account ids at 64 characters. An IMPLICIT account is already
+    // exactly 64 hex characters, so `float.<implicit>` is 70 and the protocol
+    // rejects it outright — an implicit account can never own a vault. Caught
+    // here rather than as an opaque "invalid value" from the RPC after the
+    // bill has been confirmed.
+    if (vault.length > 64) {
+      const implicit = /^[0-9a-f]{64}$/.test(owner);
+      throw new Error(
+        [
+          `the vault account id "${vault}" is ${vault.length} characters; NEAR allows 64.`,
+          ...(implicit
+            ? [
+                `  "${owner}" is an IMPLICIT account — exactly 64 hex characters — so NO`,
+                "  sub-account of it can ever fit inside the limit. An implicit account",
+                "  cannot own a vault. Use a NAMED account such as yourname.near.",
+              ]
+            : ["  Use a shorter vault name, or a shorter owner account."]),
+        ].join("\n"),
+      );
     }
     // Defaulting mainnet to the TESTNET token would have configured a vault
     // to pay in something that does not exist there, failing only at the
@@ -354,14 +422,7 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
 
     // ---- 5. Contract.
     step(5, "Deploying the contract");
-    const wasm = findWasm();
-    if (!wasm) {
-      throw new Error(
-        "vault.wasm not found.\n" +
-          "  Build it with:  cd contracts/vault && cargo near build non-reproducible-wasm --no-default-features\n" +
-          "  (cargo-near, not plain cargo — a plain build silently destroys every panic message.)",
-      );
-    }
+    // `wasm` was resolved in the preflight, before anything was spent.
     const code = readFileSync(wasm);
     await vaultAcct.deployContract(code);
     ok(`deployed ${(code.length / 1024).toFixed(0)} KB from ${wasm}`);
