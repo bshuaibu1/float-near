@@ -12,6 +12,27 @@ import { XCHAIN_HEADROOM, xchainCeiling, xchainCap } from "../bin/xchain.mjs";
  * If these came from `desired * 1.02` the suite would stay green no matter how
  * wrong the headroom became.
  */
+/**
+ * Small sizes, where the SPREAD exceeds the bare 2% constant.
+ *
+ * These are in the suite because they nearly caused a wrong "fix". The spread
+ * is not asymptotic — it climbs sharply as the fixed part of a solver's cost
+ * dominates (5.89% at 0.05, 3.46% at 0.10), so XCHAIN_HEADROOM alone does not
+ * cover them. The conclusion that defaults were therefore unsafe was wrong:
+ * xchainCap rounds UP TO THE CENT, which contributes effective headroom that
+ * GROWS as the amount shrinks (20% at 0.05, 10% at 0.10, 4% at 0.25, 2% at and
+ * above 0.50). The derived cap covers every size measured.
+ *
+ * So the rounding is load-bearing rather than hygiene, and the pair of tests
+ * below says which part carries which: the cap covers all of these, and the
+ * bare constant covers only the ones at 0.50 and up.
+ */
+const SMALL = [
+  { desired: 0.05, charged: 52_943n },
+  { desired: 0.1, charged: 103_458n },
+  { desired: 0.25, charged: 255_004n },
+];
+
 const MEASURED = [
   // The MAINNET default tree's own amounts. This scale is the one that matters:
   // mainnet gets the SMALL tree (real money, "a total loss is a rounding
@@ -78,16 +99,36 @@ test("xchainCap rounds UP, never down", () => {
   assert.ok(xchainCap(0.01) > 0.01, "a sub-cent headroom must still round up");
 });
 
-test("the headroom exceeds the worst measured spread", () => {
-  // Stated as a property rather than hardcoding 1.52%: if a future measurement
-  // shows a worse spread and someone updates MEASURED without revisiting
-  // XCHAIN_HEADROOM, this is what notices.
+test("the BARE headroom clears the spread at 0.50 and above", () => {
+  // A property, not a hardcoded 1.52%: if a re-measure shows a worse spread and
+  // someone updates MEASURED without revisiting XCHAIN_HEADROOM, this notices.
   const worst = Math.max(
     ...MEASURED.map(({ desired, charged }) => Number(charged) / 1e6 / desired - 1),
   );
   assert.ok(
     XCHAIN_HEADROOM > worst,
-    `headroom ${XCHAIN_HEADROOM} does not clear the worst measured spread ` +
-      `${worst.toFixed(4)}. Raise it, or the largest payments at that size are refused.`,
+    `headroom ${XCHAIN_HEADROOM} does not clear the worst spread in MEASURED ` +
+      `(${worst.toFixed(4)}). Raise it, or payments at that size are refused.`,
   );
+});
+
+test("the derived cap covers small sizes too, which the bare 2% does NOT", () => {
+  // The pair that shows ceil-to-cent is load-bearing. Change xchainCap's
+  // rounding to Math.round or Math.floor and the first assertion breaks for
+  // 0.05 and 0.10 — amounts the constant alone cannot cover.
+  for (const { desired, charged } of SMALL) {
+    const cap = BigInt(Math.round(xchainCap(desired) * 1e6));
+    assert.ok(
+      cap >= charged,
+      `cap ${cap} for ${desired} does not cover the ${charged} charged — the ` +
+        `cent-rounding that normally carries small sizes has been weakened`,
+    );
+    const bare = BigInt(Math.round(desired * (1 + XCHAIN_HEADROOM) * 1e6));
+    assert.ok(
+      bare < charged,
+      `${desired} is listed as a size the bare ${XCHAIN_HEADROOM} cannot cover, but ` +
+        `${bare} now covers ${charged}. The curve has flattened — re-measure, and ` +
+        `move this row into MEASURED deliberately rather than by accident.`,
+    );
+  }
 });

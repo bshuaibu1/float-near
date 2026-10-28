@@ -35,6 +35,43 @@ if (!existsSync(SRC)) {
   process.exit(1);
 }
 
+// ---- interrogate the artifact BEFORE shipping it, not after.
+//
+// deploy-testnet.sh does this for what it deploys, reading clock_mode back off
+// chain rather than trusting the build flags. The same reasoning applies here
+// and was missing: this script would have copied ANY wasm at that path into a
+// published package.
+//
+// Two things make that a real hazard rather than a theoretical one.
+// scripts/build-wasm.sh deliberately builds the vault WITH --features
+// test-clock, and a test-clock contract exposes set_day_len_ns, which lets the
+// owner shrink the budget window to 100ms — a one-second "day" refills a daily
+// cap a thousand times an hour. And a plain `cargo build` produces a wasm that
+// runs but loses every panic message, destroying this contract's reason codes.
+// Both are silent: the artifact works, and the damage shows up later.
+const srcBytes = readFileSync(SRC);
+const fails = [];
+if (srcBytes.includes(Buffer.from("set_day_len_ns"))) {
+  fails.push(
+    "it exposes set_day_len_ns, so it was built WITH --features test-clock. " +
+      "That lets the owner shrink a 'day' to milliseconds. Rebuild with " +
+      "--no-default-features.",
+  );
+}
+if (!srcBytes.includes(Buffer.from("panic_utf8"))) {
+  fails.push(
+    "it does not import panic_utf8, so it was NOT built by cargo-near. Every " +
+      "panic would arrive as 'unreachable opcode' with the reason code gone. " +
+      "Use `cargo near build`, never plain `cargo build --target wasm32-...`.",
+  );
+}
+if (fails.length) {
+  console.error(
+    [`bundle-wasm: REFUSING to ship ${SRC}`, "", ...fails.map((f) => `  - ${f}`)].join("\n"),
+  );
+  process.exit(1);
+}
+
 mkdirSync(DEST_DIR, { recursive: true });
 copyFileSync(SRC, DEST);
 

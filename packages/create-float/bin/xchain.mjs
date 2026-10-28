@@ -23,7 +23,11 @@
  * USDC. The spread converges to ~1.03% and is WORST at small sizes, because
  * most of it is the 100 bps slippageTolerance held as headroom rather than fee:
  *
+ *     deliver   0.050000 -> charged   0.052943   (5.89%)  <- see the caveat
+ *     deliver   0.100000 -> charged   0.103458   (3.46%)  <- see the caveat
+ *     deliver   0.250000 -> charged   0.255004   (2.00%)  <- exactly at the limit
  *     deliver   0.500000 -> charged   0.507579   (1.52%)
+ *     deliver   1.000000 -> charged   1.012733   (1.27%)
  *     deliver   9.890000 -> charged   9.994343   (fits a 10 cap)
  *     deliver   9.900000 -> charged  10.004446   (does NOT)
  *     deliver  10.000000 -> charged  10.105478   (1.05%)
@@ -31,8 +35,31 @@
  *     deliver  60.000000 -> charged  60.620733
  *     deliver 100.000000 -> charged 101.032936   (1.03%)
  *
- * 2% is deliberately ABOVE that worst case rather than near the converged
- * figure. Under-reserving produces a refused payment; over-reserving costs
+ * THE 2% ALONE DOES NOT COVER SMALL SIZES, and the cent-rounding in
+ * xchainCap() is what does. An earlier version of this comment claimed 2% was
+ * "above the measured worst case" on the strength of 0.50 being the smallest
+ * size measured; extending the measurement downward showed the spread is not
+ * asymptotic but climbs as the fixed part of a solver's cost dominates.
+ *
+ * Measured against the derived cap rather than the raw constant:
+ *
+ *     deliver  cap    effective headroom   spread   cap covers   bare 2% covers
+ *       0.05   0.06          20.00%         5.89%       yes            NO
+ *       0.10   0.11          10.00%         3.46%       yes            NO
+ *       0.25   0.26           4.00%         2.00%       yes            NO
+ *       0.50   0.51           2.00%         1.52%       yes            yes
+ *       1.00   1.02           2.00%         1.27%       yes            yes
+ *     100.00 102.00           2.00%         1.03%       yes            yes
+ *
+ * Rounding UP to the cent therefore contributes headroom that GROWS as the
+ * amount shrinks, which is exactly the shape the spread needs. That makes the
+ * rounding load-bearing rather than hygiene, and
+ * "the derived cap covers small sizes too, which the bare 2% does NOT" in
+ * test/xchain.test.mjs is what stops someone relaxing it to Math.round.
+ *
+ * Within the range where the constant does the work (0.50 and up) 2% is
+ * deliberately above the worst case rather than near the converged figure:
+ * under-reserving produces a refused payment, while over-reserving costs
  * nothing unless a payment is actually that large.
  *
  * NOT A PROTOCOL CONSTANT. Nothing validates against it, no contract reads it,
