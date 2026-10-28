@@ -120,6 +120,32 @@ which this vault has, since nodes, ledgers and requests are per-vault — so
 "zero onboarding cost" is too strong. The right claim is that the *code* stake
 goes away; the state stake does not. Measure before quoting a number.
 
+`scripts/measure-global-contract.sh` is the experiment, ready to run. It is
+**differential on purpose**, because the V2 claim is not "referencing is cheap"
+but "referencing does not scale with code size":
+
+- publishes a 49-byte module and a 5,122-byte one (identical but for a wasm
+  custom section, so size is the only variable) as global contracts;
+- deploys each normally to one fresh account, and references each from another;
+- compares `storage used` across the four.
+
+The control is what makes it readable: the two normal deploys must differ by
+the padding, which demonstrates a normal deploy charges per code byte. Then if
+the two *referencing* accounts show the same storage, the user's cost is
+size-independent and the vault's 273.7 KiB code stake genuinely disappears. If
+instead they differ by the padding too, §4's premise is wrong and this section
+needs rewriting rather than ticking.
+
+The instrument is 49 bytes rather than the real vault deliberately: a global
+deploy of 280,249 bytes at the 10x rate is ~28 NEAR burned, and an action's
+cost does not depend on what the code does.
+
+Not yet run here — issuing `DeployGlobalContractAction` was blocked by this
+environment's command-approval layer, which could not classify
+`near contract deploy-as-global`. Nothing about the protocol or the toolchain
+blocks it. Until it runs, treat every onboarding-cost number in this file as
+arithmetic from the NEP, not as measurement.
+
 ## 5. If this becomes V2
 
 The sequencing that follows from the above, not a commitment:
