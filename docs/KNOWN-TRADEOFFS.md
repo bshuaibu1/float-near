@@ -759,3 +759,52 @@ sub-agent node and binds an account to it. Autonomous spawning stays open, and
 is now at least *possible* to build safely, since slots can be reclaimed — it
 would still need a pre-authorised per-node quota and a funding source that is
 not simply "the vault's balance, on an agent's say-so".
+
+## 13. A cross-chain payment needs a NEAR-side registration the design does not mention
+
+**Measured on mainnet 2026-10-28**, receipt
+`4oLJy4hr4AB9TLrLZZkAzUETj34mMTyZBCU518etHCp2`:
+
+```
+Smart contract panicked: The account 61c81429…7c0d is not registered
+```
+
+Every authorisation step passed — the quote signature verified, the agent
+signature verified, the payee allowlist matched, the budget reserved — and the
+NEP-141 `ft_transfer` then failed, because 1Click's deposit address is a FRESH
+IMPLICIT ACCOUNT with no storage balance on the token.
+
+The contract behaved exactly as designed: `TRANSFER_FAILED`, reservation
+released, `executed 0.000000`, `pending 0.000000`, vault balance unchanged at
+`1.000000`. The failure cost one quote and 0.00013 NEAR of gas. Worth stating
+plainly, because this is the path that most needed to fail safely and did.
+
+**There is no way around the registration.** Measured against the live API:
+
+| attempt | result |
+| --- | --- |
+| `depositType: ORIGIN_CHAIN` | fresh implicit account per quote |
+| `depositType: INTENTS` | fresh implicit account per quote |
+| `depositMode: MEMO` | HTTP 400 for this asset pair |
+
+`MEMO` is the mode that would let a deposit ride on an already-registered
+shared address with a memo discriminator, and it is unavailable here. So the
+sender must `storage_deposit` the one-time address first.
+
+**The standing cost:** 0.00125 NEAR per cross-chain payment — both the `min`
+and `max` of `storage_balance_bounds` — paid by the OPERATOR, not the vault,
+and unrecoverable, since nobody will unregister a single-use address to reclaim
+it. At roughly 0.003 USD it does not move the economics of a 0.50 payment, but
+it means the cross-chain rail is **two NEAR transactions, not one**, and the
+second is not optional.
+
+**Why the testnet rehearsal could not have caught it.**
+`scripts/intents-dryrun.mjs` says in its own header that its deposit address is
+"an account we control standing in for a one-time quote address". An account we
+control is registered. The absence of the counterparty was documented; this
+consequence of it was not — the stand-in differed from the real thing in
+precisely the property that mattered, and nothing flagged that the substitution
+was load-bearing.
+
+Handled in `scripts/intents-pay.mjs::ensureRegistered`, which registers before
+anything is signed, so a failure happens while the quote is still only a quote.

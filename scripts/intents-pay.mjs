@@ -323,6 +323,56 @@ async function quote() {
   return { inAmt, perTx, available: BigInt(lim.available), bal };
 }
 
+/**
+ * Register the one-time deposit address on the token, or the transfer dies.
+ *
+ * PROVEN on mainnet, from the receipt of 4oLJy4hr4AB9TLrLZZkAzUETj34mMTyZBCU518etHCp2:
+ *
+ *     Smart contract panicked: The account 61c81429...7c0d is not registered
+ *
+ * Every authorisation step had passed — both signatures verified, the allowlist
+ * matched, the budget reserved — and then the NEP-141 `ft_transfer` failed
+ * because 1Click's deposit address is a FRESH IMPLICIT ACCOUNT that does not
+ * exist and has no storage balance on the token. The vault handled it correctly:
+ * TRANSFER_FAILED, reservation released, balance untouched.
+ *
+ * Neither `depositType` avoids it. ORIGIN_CHAIN and INTENTS both return a new
+ * implicit account per quote, and `depositMode: "MEMO"` — which would let a
+ * deposit ride on an already-registered shared address — returns HTTP 400 for
+ * this asset pair. So registering is the only path.
+ *
+ * WHAT IT COSTS, because this is a standing cost and not a one-off: 0.00125
+ * NEAR per payment, which is both the min and the max of
+ * storage_balance_bounds, paid by the OPERATOR rather than the vault, and
+ * unrecoverable — the address is single-use, so nobody will ever unregister it
+ * to reclaim the deposit. At ~0.003 USD it does not change the economics of a
+ * 0.50 payment, but it is a real per-payment NEAR-side transaction that the
+ * cross-chain rail requires and that nothing in the design documents.
+ *
+ * This is exactly the hole scripts/intents-dryrun.mjs names in its own header:
+ * its deposit address is "an account we control standing in for a one-time
+ * quote address". A stand-in we control is registered, so the testnet rehearsal
+ * could not have caught this. The counterparty's absence was documented; this
+ * consequence of it was not.
+ */
+async function ensureRegistered(acct, depositAddress) {
+  const bal = await ftView("storage_balance_of", { account_id: depositAddress });
+  if (bal) {
+    console.log("  deposit address already registered on the token");
+    return;
+  }
+  const bounds = await ftView("storage_balance_bounds");
+  console.log(`  registering the deposit address (${(Number(bounds.min) / 1e24).toFixed(5)} NEAR, unrecoverable)`);
+  await acct.callFunction({
+    contractId: TOKEN, methodName: "storage_deposit",
+    args: { account_id: depositAddress, registration_only: true },
+    gas: 30n * TGAS, deposit: BigInt(bounds.min),
+  });
+  const after = await ftView("storage_balance_of", { account_id: depositAddress });
+  if (!after) throw new Error("registration did not take — refusing to send into a void");
+  console.log("  registered");
+}
+
 async function pay() {
   const s = load();
   if (!s.agentSecret) throw new Error("run keygen first");
@@ -353,6 +403,11 @@ async function pay() {
   console.log(`  depositAddress : ${q.depositAddress}`);
   console.log(`  amountIn       : ${usdc(amount)}`);
   console.log(`  quote deadline : ${q.deadlineNs}`);
+
+  // Register BEFORE signing anything. The signature binds this exact deposit
+  // address, so a failure here must happen while the quote is still just a
+  // quote — not after a signed payment is already in flight.
+  await ensureRegistered(ownerAccount(), q.depositAddress);
 
   const nonce = Number(await view("get_virtual_agent_nonce", { public_key: s.agentPublic }));
   const nowNs = BigInt((await provider.viewBlock({ finality: "final" })).header.timestamp);
