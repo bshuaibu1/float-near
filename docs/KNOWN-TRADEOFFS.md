@@ -1,44 +1,70 @@
 # Known tradeoffs and residual edges
 
-Measured on testnet 2026-10-26 against `v2.floatvault-12329.testnet` and
-`v1.signer-prod.testnet`. Numbers here are observations, not estimates; where
-something is reasoned rather than measured it says so.
+Numbers here are observations, not estimates; where something is reasoned
+rather than measured it says so.
 
-This file is the source for the README's limitations section. It is kept
-separate so the numbers can be updated without rewriting prose.
+Measured on testnet 2026-10-26 against `v2.floatvault-12329.testnet`, and for
+the virtual-agent rail on 2026-10-28 against `v4.floatv4.testnet`.
+
+**The MPC/Base rail was REMOVED on 2026-10-28.** `Route` now has only
+`NearDirect` and `Intents`, and a cross-chain payment is an ordinary NEP-141
+transfer to a NEAR Intents solver's deposit address — no MPC signature, no
+derived address, no nonce. Sections 3, 5 and 6 below are retained as a
+historical record: the measurements and the postmortems cost real chain
+observation to produce and the lessons outlived the rail. They do **not**
+describe reachable behaviour. Where they name a removed API they do so in the
+past tense, to explain what was measured; the operational detail of how to use
+those APIs has been cut.
+
+Section numbers are stable and deliberately non-contiguous (7 and 8 were
+already absent). `packages/float-adapter/src/blocked-scan.ts` cites §2 and
+`docs/RUNNING.md` cites §12, so sections are never renumbered.
+
+This file is intended as the source for a README limitations section, kept
+separate so the numbers can be updated without rewriting prose. (There is no
+README in the repo yet — as of 2026-10-28 this doc is the only place these
+limitations are written down.)
 
 ---
 
-## 1. Who pays for a Base-rail payment
+## 1. Who pays for a payment, and why the key allowance is the rate limit
 
-The intuition that "the vault is the predecessor on the signer call, so the
-vault pays the gas" is **wrong**, and it is worth stating why because it
+The intuition that "the vault is the predecessor on the cross-contract call, so
+the vault pays the gas" is **wrong**, and it is worth stating why because it
 changes which mitigations are needed.
 
 On NEAR the transaction *signer* prepays gas for the entire receipt chain the
-transaction spawns. The agent attaches 280 Tgas; that funds the vault's
-execution, the cross-contract `sign` call, and the callback. Measured from the
-agent key's remaining allowance:
+transaction spawns — the vault's execution, any cross-contract call, and the
+callback. NEAR reserves the FULL prepaid amount against the signer up front and
+refunds the unused remainder, which is why an agent key needs working capital
+sized to prepaid gas rather than to expected burn (see
+`MIN_AGENT_KEY_ALLOWANCE`).
+
+The consequence is the durable one: the function-call key allowance is a **hard
+per-agent gas budget that NEAR enforces for free**. When the key's allowance is
+exhausted the key stops working entirely and the owner must consciously top it
+up. That is the per-agent rate limit, already present, not something to add.
+
+Measured cost per payment, for order of magnitude — **taken on the removed Base
+rail (2026-10-26) and not re-measured since**, so treat the mechanism as
+current and the figures as historical:
 
 | Action | Allowance before | after | cost |
 | --- | --- | --- | --- |
-| One Base payment, including the MPC `sign` call | 0.5 N | 0.4985340624371167 N | **0.00146594 N** |
-| One blocked attempt (refused before the signer) | 0.5 N | — | **~0.00024578 N** |
+| One payment, including a cross-contract signing call | 0.5 N | 0.4985340624371167 N | **0.00146594 N** |
+| One blocked attempt (refused before the external call) | 0.5 N | — | **~0.00024578 N** |
 
-So the function-call key allowance is a **hard per-agent gas budget that NEAR
-enforces for free**: at 0.5 N an agent can make roughly 341 Base payments
-before its key stops working entirely and the owner must consciously top it
-up. That is the per-agent rate limit, already present, not something to add.
-
-What the vault itself pays per signature is **1 yoctoNEAR** — the deposit the
-signer requires. Measured: the vault's balance moved by exactly `-1` yocto
-across one Base payment. Draining 1 NEAR this way takes 10^24 requests. This is
-not a vector.
+At that cost 0.5 N funded roughly 341 payments. What is measured on the current
+rail is gas *burn* rather than allowance draw: 7.85 TGas at tree depth 1 and
+9.28 TGas at `MAX_DEPTH`, against a 50 TGas floor — see `MIN_GAS_FOR_DISPATCH`.
+Note these are different units and the two are not directly comparable.
 
 ## 2. The real resource vector is STORAGE, not gas
 
 Each stored request consumes vault storage, and NEAR stakes the vault's own
-balance against it. Measured across one Base payment:
+balance against it. The mechanic is rail-independent; the byte count below was
+measured across one Base-rail payment in 2026-10-26 and the `Route` enum has
+changed shape since, so treat it as indicative rather than exact:
 
 ```
 storage_usage  251948 -> 252307   = +359 bytes
@@ -81,51 +107,37 @@ vault's storage stake. Neither is implemented. The project ships with the key
 allowance as the bound, which is a real bound but a coarse one — an owner who
 funds a key generously is also raising the storage ceiling that key can reach.
 
-## 3. Gas ceiling on the Base rail — CLOSED
+## 3. Gas ceiling on the Base rail — REMOVED WITH THE RAIL
 
-This was a genuine hole and is now fixed; recorded here because the reasoning
-matters more than the fix.
+The hole: the budget tree constrained USDC but said nothing about the native
+ETH the vault's derived Base address held to pay gas, and the agent supplied
+`max_fee_per_gas` and `gas_limit`. An inflated pair yielded a *validly signed*
+transaction that burned that ETH — the leash held on the token and leaked on
+the fee. `BaseConfig::max_tx_fee_wei` closed it with a ceiling on the
+**product**, not on each field, because 20 gwei and 30M gas are each ordinary
+but together are 0.6 ETH.
 
-The budget tree constrains USDC. It says nothing about the native ETH the
-vault's derived Base address must hold to pay for gas — and the agent supplies
-`max_fee_per_gas`, `max_priority_fee_per_gas` and `gas_limit`. Without a
-ceiling, an inflated pair yields a *validly signed* transaction that burns that
-ETH. The leash would hold on the token and leak on the fee. This was the only
-path by which an agent could move value outside the budget.
+Unreachable since the rail's removal: there is no signing path, so no agent-
+supplied fee fields. The detail is cut rather than kept current.
 
-`BaseConfig::max_tx_fee_wei` is now a hard ceiling, owner-set, and the rail
-refuses `FEE_CEILING_EXCEEDED` before anything is charged and before the signer
-is reached.
+**The lesson that outlived it** lives in `docs/MUTATIONS.md` (the Base-ceiling
+M26): the first overflow test passed against a `wrapping_mul` and had to be
+rewritten with inputs that wrap to zero — the mutation survived because the
+TEST was weak, not because the guard was strong. That generalises to any
+overflow guard and is why a surviving mutation is investigated rather than
+explained away.
 
-The ceiling is on the **product**, not on each field. The most a 1559
-transaction can ever cost is `gas_limit * max_fee_per_gas`; the network charges
-`gas_used * (base_fee + min(priority, max_fee - base_fee))`, which is always
-less than or equal to that. Capping the fields independently would leave their
-product unbounded in combination — 20 gwei is an ordinary gas price and 30M is
-an ordinary block gas limit, but together they are 0.6 ETH.
-
-Live config uses 0.01 ETH. A normal transfer is 100,000 gas x 20 gwei = 0.002
-ETH, so that allows a 5x fee spike while bounding the worst case well below any
-sane gas balance.
-
-`max_tx_fee_wei = 0` is rejected rather than accepted, because a zero ceiling
-would close the rail while the config still read as open. Use
-`set_base_config(null)` to close it deliberately.
-
-A priority fee above the max fee is also refused (`INVALID_FEE_FIELDS`): that
-transaction is malformed under EIP-1559 and Base would reject it, so the vault
-should not spend a signature request on it.
-
-See `docs/MUTATIONS.md` M26/M27 — including the fact that the first version of
-the overflow test passed against a `wrapping_mul` and had to be rewritten with
-inputs that wrap to zero.
+One piece of residue worth knowing: the `BaseConfig` struct still exists in
+`types.rs` and the vault still stores `base_config: Option<BaseConfig>` with a
+`get_base_config()` getter — but the setter was removed with the rail, so the
+field is permanently `None` on every vault and nothing dispatches on it.
 
 ## 4. A stuck reservation
 
-If the signature or transfer callback itself panics or runs out of gas, NEAR
-rolls back only that callback's receipt — the `pending` charge taken in the
-dispatching receipt survives. The budget stays reserved at every level of the
-chain until something releases it.
+If the transfer callback itself panics or runs out of gas, NEAR rolls back only
+that callback's receipt — the `pending` charge taken in the dispatching receipt
+survives. The budget stays reserved at every level of the chain until something
+releases it.
 
 Bounded honestly:
 
@@ -162,14 +174,25 @@ A swept request also becomes terminal and therefore purgeable. Before the sweep
 existed, `purge_settled` could never reclaim a stuck request's storage, because
 it takes only terminal requests.
 
-## 5. What the contract proves about Base, and what it does not
+## 5. What the contract proved about Base, and what it did not — HISTORICAL
 
-A successful `sign` promise proves the vault obtained a signature over a
-transaction it built itself. It does **not** prove that the transaction was
-relayed, included, or that USDC moved. Relaying is off-chain and the contract
-cannot observe it. This is why `SIGNED` is a distinct reason code from
-`SETTLED`, and why the dashboard shows `signed` rather than `success` for that
+> The Base rail was removed on 2026-10-28. This section is kept because the
+> measurements below were taken against real chains and cannot be
+> reconstructed, and because the custodial-delivery distinction is the kind of
+> claim that gets repeated long after the code is gone. Nothing here is
+> reachable now.
+
+A successful `sign` promise proved the vault obtained a signature over a
+transaction it built itself. It did **not** prove that the transaction was
+relayed, included, or that USDC moved. Relaying was off-chain and the contract
+could not observe it. That is why `SIGNED` was a distinct reason code from
+`SETTLED`, and why the dashboard showed `signed` rather than `success` for that
 rail.
+
+The durable principle: **a signature is authority, not delivery.** Any future
+rail that ends in an off-chain hand-off needs the same two-state distinction,
+and the Intents rail inherits it — a NEP-141 transfer to a solver's deposit
+address proves the deposit, not the far-chain delivery.
 
 ### Operator-facilitated delivery — DEMONSTRATED on testnet 2026-10-26
 
@@ -214,93 +237,72 @@ could decline to deliver — delivery is a promise backed by the operator, not b
 the chain. Describe it as operator-facilitated. It is not trustless and must
 not be presented as such.
 
-What keeps it honest is the authorization gate: the relayer rebuilds the
-transaction from the request the CONTRACT stored and refuses to move anything
-unless the MPC signature over that rebuild recovers to the vault's derived
-address. So the operator can fail to pay, but cannot be directed to pay someone
-the vault did not authorize. Tested in both directions — a mismatched signature
-recovers to a different address and is refused.
+What kept it honest was the authorization gate: the relayer rebuilt the
+transaction from the request the CONTRACT stored and refused to move anything
+unless the MPC signature over that rebuild recovered to the vault's derived
+address. So the operator could fail to pay, but could not be directed to pay
+someone the vault did not authorize. Tested in both directions — a mismatched
+signature recovered to a different address and was refused.
 
-### Vault-signed delivery — still UNPROVEN
+The transferable idea: when an off-chain actor performs delivery, bind it to
+what the *contract* stored rather than to what the caller passes, so the actor
+can refuse but cannot redirect. The Intents rail applies the same shape by
+binding the solver's deposit address to the payee with a registered signature.
 
-`--mode vault` broadcasts the MPC-signed transaction itself, which needs no
-operator and is not custodial. It has NOT been demonstrated: the vault's
-derived address `0x75e2bc908d3eaf42c680404d7770b6b0ec0e7333` holds no ETH and
-no USDC.
+### Vault-signed delivery — NEVER PROVEN, now removed
 
-#### The nonce defect — FIXED
+`--mode vault` would have broadcast the MPC-signed transaction itself, needing
+no operator and not custodial. It was never demonstrated: the vault's derived
+address `0x75e2bc908d3eaf42c680404d7770b6b0ec0e7333` never held ETH or USDC,
+and the rail was removed before it was funded. The non-custodial version of
+this path was therefore never shown to work — worth recording, because the
+custodial run above is sometimes remembered as having proved more than it did.
 
-The nonce is part of the SIGNED payload and the caller used to supply it. With
-a hardcoded 0 only the first such transaction could ever land; the rest were
-rejected as nonce-too-low **after their NEAR reservation had already been
-consumed** — budget spent, nothing delivered. Reading the chain first does not
-fix it either: two payments in the same block read the same value and sign for
-the same nonce.
+#### Two lessons from the nonce work that outlived the rail
 
-`Route::BaseUsdc` keeps its `nonce` field, but the value is now DISCARDED and
-replaced with one the contract allocates monotonically before the request is
-persisted.
+The EVM nonce handling itself is gone — `Route::BaseUsdc`, `set_base_nonce` and
+`get_request_nonce` no longer exist, and the Intents rail has no nonce to
+allocate. Two findings from that work generalise and are the reason this
+subsection survives at all.
 
-Keeping the field was not cosmetic. `Route` is stored inside `PaymentRequest`,
-and all fifteen requests on the live vault are Base-routed with that field in
-their borsh bytes. Deleting it shifts every following byte, so those records
-would have failed to deserialise and `list_requests` — and the whole dashboard
-— would have broken the moment the new code was deployed. `serde(default)`
-lets new callers omit it while borsh keeps reading the old records as written.
-This was caught by checking the live vault's stored routes, not by the test
-suite, which passed throughout. It is the only place that
-sees every Base signature in a serial order, so it is the only place the
-allocation can be made without racing.
+**1. Removing a field from a stored enum breaks every record already on chain.**
+`Route` is stored inside `PaymentRequest`. All fifteen requests on the live
+vault carried a `nonce` field in their borsh bytes; deleting it shifts every
+following byte, so those records would have failed to deserialise and
+`list_requests` — and the whole dashboard — would have broken the moment the
+new code deployed. The field was kept and its value discarded instead, with
+`serde(default)` letting new callers omit it while borsh kept reading old
+records as written.
 
-Three consequences worth stating plainly:
+This was caught by **checking the live vault's stored routes, not by the test
+suite, which passed throughout.** A unit test builds its own fixtures and so
+can never see a layout mismatch against records written by older code. This is
+why `Route` in `types.rs` still carries its comment that borsh tags variants by
+position, that `NearDirect` must stay first, and that new variants are appended
+rather than inserted.
 
-- **Allocation is optimistic.** The counter advances when a signature is
-  REQUESTED; the nonce only becomes real when somebody broadcasts the
-  transaction. A signature that is never sent leaves a gap, and an EVM gap
-  stalls every later transaction behind it.
-- **A failed signature reclaims its nonce, but only when it is still the most
-  recent allocation.** If a concurrent payment has already taken the next one,
-  rolling back would hand the same number out twice — the exact collision this
-  change removes. The gap stands instead, and `set_base_nonce` resyncs. Trading
-  a rare stall for a duplicate nonce would be a bad trade.
-- **The contract cannot read Base, so it cannot detect or repair a gap.** Only
-  the owner can compare against the real account. `set_base_nonce` is that
-  escape hatch, and moving the counter backwards is legitimate *and* dangerous:
-  if the skipped transactions are later broadcast, the reissued nonces collide.
-  The event records both values so the move is auditable.
+**2. A mutation survived all 90 tests because the logic sat where no test could
+reach it.** The nonce-reclaim rule lived inline in a callback, so the first two
+reclaim tests re-implemented the rule beside the real one and asserted against
+their own copy. Inverting the real condition changed nothing. The fix was to
+extract the decision into a named function that both the callback and the tests
+call, after which the same mutation failed immediately. A test that
+re-implements the logic it is checking tests only itself.
 
-The relayer's authorisation gate had to change with it. That gate rebuilds the
-exact transaction from the stored request and refuses to move anything unless
-the signature recovers to the vault's derived address — and the nonce is part
-of that rebuild. The contract now records the signed nonce per request
-(`get_request_nonce`), under its own storage key rather than as a field on
-`PaymentRequest`, which would have changed the borsh layout of every record
-already on chain. The relayer treats a missing nonce as a hard stop: defaulting
-to 0 would rebuild the wrong transaction and reject a legitimate payment.
+A related coverage note: `Route::BaseUsdc` had **no unit tests at all** —
+removing a field from it broke nothing in `cargo test`. Its only coverage was
+the sandbox tier, which still cannot compile on Windows (`near-workspaces`
+fails its build script for want of a Windows sandbox binary), so on this
+machine that rail was effectively untested. Any rail whose only coverage is a
+tier that does not run on the developer's machine is untested in practice.
 
-Operator mode never had this problem — it reads its own nonce at send time,
-after authorization.
+## 6. A config error no test could catch: chain id vs token address — HISTORICAL
 
-#### What is still unproven
-
-Delivery itself. The derived address still holds no ETH, so `--mode vault` has
-never broadcast anything. The nonce is no longer the blocker; funding is.
-
-#### A coverage gap found while fixing this
-
-`Route::BaseUsdc` had **no unit tests at all** — removing a field from it broke
-nothing in `cargo test`. Its only coverage was the sandbox tier, which cannot
-even compile on Windows (`near-workspaces` fails its build script), so on this
-machine the Base rail was effectively untested. It now has unit coverage for
-allocation, reclaim, owner resync, and storage isolation.
-
-That gap also produced a false pass worth recording: the first two reclaim
-tests re-implemented the rule beside the real one, because the logic lived
-inline in a callback no unit test can reach. A mutation inverting the real
-condition survived all 90 tests. The decision is now a named function that both
-the callback and the tests call, and the same mutation fails immediately.
-
-## 6. A config error no test could catch: chain id vs token address
+> The specific misconfiguration is moot: the Base rail is gone and
+> `base_config` is permanently `None`. Kept because the *class* of error is
+> live for any owner-set external fact, including the Intents rail's solver and
+> token addresses, and because the only way it was ever found was asking an
+> external chain.
 
 Found while costing out the relayer, not by any test.
 
@@ -324,15 +326,22 @@ only matters to a *relayed* transaction, which is precisely the thing this
 project does not do. It is a configuration fact about the outside world, and
 the only way to check it was to ask the outside world.
 
-Fixed in the live config and in the test fixture — the fixture does not care
-about the value, but a repo that shows a mainnet address beside a testnet chain
-id teaches the wrong pairing to whoever copies it next.
+It was fixed in the live config and in the test fixture at the time — the
+fixture did not care about the value, but a repo that shows a mainnet address
+beside a testnet chain id teaches the wrong pairing to whoever copies it next.
 
-The general shape: `max_tx_fee_wei`, `chain_id`, `usdc_address`,
-`derivation_path` and `domain_id` are all owner-set facts about an external
-chain. The contract validates their SHAPE (lowercase 20-byte hex, non-zero
-ceiling) and cannot validate their TRUTH. Anyone deploying this must check the
-token address against the chain id they are using.
+**The general shape, which is still live.** Any owner-set address, chain id,
+token contract or endpoint is a fact about the outside world. The contract can
+validate its SHAPE — lowercase 20-byte hex, non-zero ceiling, well-formed
+account id — and **cannot validate its TRUTH**. No unit test can either, because
+the external system is mocked and the contract's own notion of correctness ("I
+authorized what I signed") is satisfied by a wrong address just as well as a
+right one.
+
+That applies now to the Intents rail's token contracts and solver deposit
+addresses exactly as it applied to `chain_id` and `usdc_address` before. The
+only check is to ask the external system, from outside the test suite, before
+trusting the pairing.
 
 ## 9. Exact concurrency, measured on testnet
 
