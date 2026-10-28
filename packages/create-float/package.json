@@ -4,7 +4,8 @@
   "description": "One command to stand up a Float vault on NEAR testnet: account, contract, budget tree, agent keys, and client config.",
   "type": "module",
   "bin": {
-    "create-float": "./bin/create-float.mjs"
+    "create-float": "bin/create-float.mjs",
+    "float-exit": "bin/float-exit.mjs"
   },
   "files": [
     "bin/",

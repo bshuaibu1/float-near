@@ -178,9 +178,20 @@ function findWasm() {
   // needs no Rust toolchain. The target/ paths are the repo-local fallback for
   // development.
   //
-  // Only ever cargo-near output. It is the supported build path and emits the
-  // checksum used to verify a deployment; a plain
-  // `cargo build --target wasm32-unknown-unknown` artifact is not searched.
+  // Only ever cargo-near output. A plain
+  // `cargo build --target wasm32-unknown-unknown` produces a wasm that RUNS
+  // but selects near-sdk's pure-Rust fallbacks by cfg:
+  //   #[cfg(near)]                 -> real host functions (cargo-near)
+  //   #[cfg(target_family="wasm")] -> fallbacks, "not for on-chain use"
+  // so env::panic_str never reaches the host panic_utf8 and every reason code
+  // becomes "unreachable opcode". That path is therefore not searched.
+  //
+  // NOTE on verifying this: counting wasm imports does NOT distinguish the two
+  // builds — near-sdk declares the same extern block either way, so both show
+  // all 40 env functions. The difference is which implementation is linked
+  // behind env::*. A test that returns "identical" here has not refuted
+  // anything; it has only failed to discriminate. Deploy both and trigger a
+  // panic, or count call sites to the imported index.
   const candidates = [
     join(HERE, "..", "res", "vault.wasm"),
     resolve(process.cwd(), "target", "near", "vault", "vault.wasm"),
@@ -331,12 +342,38 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
         console.log(`    ${C.dim("They contend on purpose — that contention is the thing to watch.")}`);
       }
     }
-    console.log(`\n    ${C.dim("cost")}`);
-    console.log(`      vault funding        ${fmtNear(VAULT_FUNDING)} NEAR`);
+    // NEAR storage is a REFUNDABLE DEPOSIT, not a fee — it locks 1e19 yocto per
+    // byte for as long as the data occupies the chain, and returns it when the
+    // account is deleted. Printing a single "total" made a 4.10 NEAR deposit
+    // read like a 4.10 NEAR purchase, which is the single largest piece of
+    // felt onboarding friction and is not even true. Split it, and derive the
+    // staked figure from the artifact being deployed rather than hardcoding it.
+    const codeStake = BigInt(readFileSync(wasm).length) * 10n ** 19n;
+    const agentTotal = AGENT_COST * BigInt(agents.length);
+    const agentStake = AGENT_STORAGE * BigInt(agents.length);
+    const agentFloat = AGENT_KEY_ALLOWANCE * BigInt(agents.length);
+    const vaultIdle = VAULT_FUNDING - codeStake;
+
+    console.log(`\n    ${C.dim("cost — almost all of this is a deposit, not a fee")}`);
     console.log(
-      `      ${agents.length} agent accounts     ${fmtNear(AGENT_COST * BigInt(agents.length))} NEAR  ${C.dim(`(${fmtNear(AGENT_COST)} each)`)}`,
+      `      contract storage     ${fmtNear(codeStake)} NEAR  ${C.dim(`refundable — ${(Number(readFileSync(wasm).length) / 1024).toFixed(0)} KB staked at 1 NEAR/100 KB`)}`,
     );
-    console.log(`      ${C.b("total")}                ${C.b(fmtNear(total))} NEAR`);
+    console.log(`      vault balance        ${fmtNear(vaultIdle)} NEAR  ${C.dim("refundable — stakes budget-tree state")}`);
+    if (agents.length) {
+      console.log(
+        `      ${agents.length} agent accounts     ${fmtNear(agentTotal)} NEAR  ${C.dim(`${fmtNear(agentStake)} staked + ${fmtNear(agentFloat)} gas float, both refundable`)}`,
+      );
+    }
+    console.log(`      ${C.b("you send")}             ${C.b(fmtNear(total))} NEAR`);
+    console.log(
+      `      ${C.dim("burned")}               ${C.dim("~0.02 NEAR of gas — the only part that does not come back")}`,
+    );
+    console.log(
+      `\n    ${C.dim(`Recover it with:  npx -p @near-vault/create-float float-exit --owner ${owner}`)}`,
+    );
+    console.log(
+      `    ${C.dim("That withdraws tokens, deletes the accounts, and refunds you.")}`,
+    );
 
     // getBalance() returns a bigint of yoctoNEAR, NOT an object. Reading it as
     // `{available}` yields undefined, which coerces to a balance of zero and
