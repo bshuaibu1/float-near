@@ -207,17 +207,18 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       throw new Error(
         [
           "no contract to deploy.",
-          "  Build it with:",
-          "    cargo install cargo-near --locked",
-          "    cd contracts/vault && cargo near build non-reproducible-wasm --no-default-features",
+          "  Build it with cargo-near, from the crate directory:",
+          "    cd contracts/vault && cargo near build non-reproducible-wasm --no-abi",
+          "",
+          "  --no-abi is required on Windows: the ABI pass builds the contract as a",
+          "  native DLL and near-sdk's host functions have no implementation off-wasm,",
+          "  so it fails to link with ~52 unresolved externals.",
           ...(existsSync(plain)
             ? [
                 "",
-                "  NOTE: a plain-cargo build exists under target/wasm32-unknown-unknown/ and",
-                "  is deliberately NOT used. It links near-sdk's pure-Rust fallbacks, after",
-                "  which every contract panic arrives as 'unreachable opcode' and the reason",
-                "  codes this product's UX depends on are gone. It runs fine, and nothing",
-                "  warns you.",
+                "  NOTE: a plain-cargo artifact exists under target/wasm32-unknown-unknown/",
+                "  and is not used. cargo-near is the supported path and emits the stripped",
+                "  binary plus the checksum used to verify a deployment.",
               ]
             : []),
         ].join("\n"),
