@@ -839,3 +839,47 @@ balance BEFORE paying, because the balance afterwards was 0.501935 for a
 0.500000 payment — 0.001935 was already there, and without a before-picture
 that is indistinguishable from a short fill. All three guard branches were
 exercised (bad method, wide range, bad host) rather than assumed.
+
+### 13b. The slippage reserve is REFUNDED, and the budget is not credited back
+
+Found while pricing the second payment: the vault's USDC balance had RISEN
+between payments, `0.492421` -> `0.497497`.
+
+Evidence, all independent reads:
+
+| fact | value |
+| --- | --- |
+| vault after payment 1 settled | `492421` |
+| vault before payment 2 | `497497` |
+| delta | **+5076** |
+| quote 1 `amountIn - minAmountIn` | `507579 - 502503` = **5076** (exact) |
+| owner balance | `10817454`, unchanged — not the source |
+| deposit address `4fac8206…` | `0` — swept by the solver |
+
+1Click quotes `amountIn` including a 100 bps `slippageTolerance` held as
+headroom. The solver took `minAmountIn` and refunded the remainder to
+`refundTo`, which both production callers set to the vault
+(`mcp/src/server.ts:208`). So **delivering 0.500000 cost 0.502503 net, a 0.50%
+effective spread, not the 1.52% the quote implies.**
+
+**The cap must still be sized on `amountIn`.** That is what actually leaves the
+vault, and the per-tx check runs before any refund exists. The sizing in
+`xchain.mjs` is correct as it stands; the measured spreads there are gross, and
+that is the right basis for a ceiling.
+
+**But the budget ledger charges gross and is never credited.** Node 0 shows
+`executed 0.507579` and `available 1.532421` after a payment that truly cost
+`0.502503`. The refund arrives as an ordinary inbound NEP-141 transfer that the
+contract cannot attribute to any request — there is no correlation id on a token
+transfer — so crediting it would mean guessing. Charging gross is the safe
+direction.
+
+The consequence is that a day of cross-chain payments consumes roughly 1% more
+daily budget than it truly spends, and the overcharge grows with the number of
+payments rather than their size. At the current caps that is immaterial. It
+would matter for a node doing many small cross-chain payments against a tight
+daily cap, and the honest framing for an operator is that a daily cap bounds
+GROSS outflow, which is what a cap should do, not net cost.
+
+Not a defect. Recorded because "executed" reads like "spent" and here it is
+measurably larger.
