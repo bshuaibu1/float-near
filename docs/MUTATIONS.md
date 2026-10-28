@@ -21,10 +21,19 @@ Protocol for every row:
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline, measured 2026-10-28: **95 unit + 20 sandbox = 115 passed, 0 failed.**
-The sandbox 20 are 2 concurrency + 1 keys + 7 sandbox + 8 virtual_agent + 2
-panic_reason_codes (the last two need scripts/m21-plain-vs-cargo-near.sh; they
-skip LOUDLY rather than silently if its artifacts are absent).
+Baseline, measured 2026-10-28: **100 unit (production layout) / 98 unit
+(test-clock) + 24 sandbox.** Both unit runs are REQUIRED and neither subsumes
+the other: the production and test-clock state layouts differ by 8 bytes
+(`day_len_ns_override`), so the migration's real-bytes tests can only run
+without the feature and are skipped with it.
+
+    cargo test -p vault                        100 passed
+    cargo test --features test-clock -p vault   98 passed
+
+The sandbox 24 are 2 concurrency + 1 keys + 7 sandbox + 8 virtual_agent +
+4 migration + 2 panic_reason_codes (those last two need
+scripts/m21-plain-vs-cargo-near.sh; they skip LOUDLY rather than silently if
+its artifacts are absent).
 (The earlier "33 unit + 9 sandbox" line predates the virtual-agent rail and the
 removal of the MPC/Base rail's `chain_signatures.rs`.)
 
@@ -326,6 +335,51 @@ revert itself rests on the live testnet run of 2026-10-28 against
 `get_virtual_agent_nonce` was unchanged afterwards, so the payload remained
 replayable. Making that directly observable needs a real receipt; queued
 below.
+
+---
+
+### M30 — drop `#[private]` from `migrate`: **EXECUTED**, gap closed
+
+`a8f8c14` added `migrate` and recorded `#[private]` as deliberately **not
+covered**: "near-sdk emits that check into the wasm export, so a native unit
+test never crosses it and a should_panic test fails rather than passes. It needs
+the sandbox tier, which has no Windows binary — a known gap, not a passing
+test." The diagnosis was exactly right. The premise is no longer true:
+`scripts/wsl-sandbox.sh` runs the tier under WSL.
+
+- **Edit:** `contracts/vault/src/lib.rs`, remove `#[private]` from `migrate`.
+- **Predicted:** `a_stranger_cannot_call_migrate` and
+  `even_the_owner_cannot_call_migrate` red; the self-call control and the
+  `get_base_config` row unaffected.
+- **Actual:** ✅ **2 failed, 2 passed** — exact match.
+
+**What the mutation revealed, which is the reason the test asserts a specific
+message.** With `#[private]` gone, the stranger's call still fails — with
+`Smart contract panicked: Cannot deserialize the contract state.` It is stopped
+only by the legacy layout failing to parse, not by access control. A test that
+merely asserted "a stranger cannot call migrate" would have **survived M30**
+while the access control was gone.
+
+And that masking is not safe in the one case that matters. `migrate` exists to
+run against state that IS the legacy layout — so on a pre-migration vault the
+deserialize **succeeds**, and without `#[private]` any account could call
+`migrate` and overwrite state through the shadow struct. The only thing that
+makes the mutation look harmless in a test is that the fixture vault is already
+migrated. Same shape as M26: layered defence, bad oracle.
+
+Covered by `contracts/integration-tests/tests/migration.rs` (4 tests), which
+pairs the two rejection tests with a self-call control. The control is load
+bearing: it shows `Contract::call` satisfies predecessor == current and fails on
+deserialize instead, which is what proves the private check — rather than some
+unrelated failure — is what rejects the stranger.
+
+One process note. The first run of these tests reported **4 failed, all
+`MethodResolveError(MethodNotFound)` for `migrate`** — because `wsl-sandbox.sh
+one` does not rebuild, and `res/vault_test_clock.wasm` predated `a8f8c14`. The
+tests were correct and the binary was stale. This is the failure the protocol's
+step 3 warns about, met from the other direction: not "the mutation is missing
+from the binary" but "the FEATURE is missing from the binary". Use `mut`, which
+pairs the rebuild with the run.
 
 ---
 

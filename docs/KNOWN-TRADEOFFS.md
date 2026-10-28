@@ -151,6 +151,35 @@ Two measured facts about upgradeability, both from RPC `view_state` on
   code before the Base rail was touched. It must be redeployed, not upgraded.
   Its 15 stored requests match the count recorded in §5.
 
+**The migration has now been EXECUTED against a live vault**, not only against
+its bytes. `v4.floatv4.testnet` was carrying real state from that morning's
+round-trip — 4 nodes, a bound virtual agent at nonce 4, 4 stored requests, a
+populated ledger — and was upgraded via `scripts/upgrade-testnet.sh` with
+`migrate` as the init call in the same transaction (tx
+`HdAbUULJWwdoW2C11deVEGBqmJX8e2ZBPf5duUHrJyMw`). What survived, checked after:
+
+| | before | after |
+| --- | --- | --- |
+| owner / paused / strict | floatv4.testnet / false / false | unchanged |
+| nodes (ids + labels) | 4 | 4, identical |
+| stored requests (ids) | 4 | 4, identical |
+| ledger, node 0 | executed 5,500,000 · pending 0 | identical |
+| virtual-agent nonce | 4 | 4 |
+| virtual-agent → node | 0 | 0 |
+| `get_base_config` | present | `MethodNotFound` |
+
+Then the decisive functional check, because state that READS correctly but
+cannot transact is still a broken vault: a signed virtual-agent payment settled
+on the migrated contract — `SETTLED`, nonce 4 → 5, payee +1,000,000, 7.87 Tgas
+against 7.85 before. No regression.
+
+Note what the generic verifier could NOT tell us. `scripts/verify-upgrade.mjs`
+predates virtual agents, so it compares the tree, requests, config and clock but
+says nothing about `pubkey_to_node`/`pubkey_to_nonce` — precisely the newest
+fields, and the ones a layout shift is most likely to damage. Those rows above
+were checked by hand. A verifier is only as current as the state it knows about,
+and a passing verifier is not a statement about the fields it never reads.
+
 ## 4. A stuck reservation
 
 If the transfer callback itself panics or runs out of gas, NEAR rolls back only
