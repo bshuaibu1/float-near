@@ -2028,6 +2028,94 @@ fn a_rejected_signed_payload_still_burns_its_nonce() {
     );
 }
 
+/// The companion to `a_rejected_signed_payload_still_burns_its_nonce`, and
+/// the LIMIT of that guarantee: the burn only binds payloads that reach
+/// dispatch. The gas floor is enforced with `fail`, which panics rather than
+/// returning an outcome, so the receipt — `pubkey_to_nonce.insert` included —
+/// reverts and the signature stays usable.
+///
+/// That is the behaviour we want. If an under-gassed submission consumed the
+/// nonce, a malicious relayer could destroy an agent's signed payloads at
+/// will by submitting them below the floor. A panic means nothing happened,
+/// so a retry at adequate gas is correct.
+///
+/// WHAT THIS TEST PINS, AND WHAT IT CANNOT. It pins the mechanism: that the
+/// path panics instead of returning `blocked`. Swapping that `fail` for a
+/// `return blocked(.., InsufficientGas)` is precisely the change that would
+/// open the griefing vector, and it is precisely what this test catches.
+/// The revert itself is NOT observable here — it is a NEAR runtime property,
+/// and an unwinding panic does not roll back a unit test's in-memory `self`
+/// (the insert sits BEFORE the floor check, so this process's copy of the
+/// counter does advance). The revert was verified live on testnet 2026-10-28
+/// against `v4.floatv4.testnet`: a submission one TGas under the floor
+/// panicked with INSUFFICIENT_GAS and left `get_virtual_agent_nonce`
+/// unchanged, so the payload remained replayable.
+#[test]
+#[should_panic(expected = "INSUFFICIENT_GAS")]
+fn an_under_gassed_signed_payload_panics_rather_than_consuming_its_nonce() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&sk));
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-g", &tok(), usdc(100).0, &payee(), "", &route);
+
+    // One TGas under the floor. Everything else about this payload is valid —
+    // fresh nonce, good signature, allowlisted payee — so gas is the only
+    // reason it can fail.
+    testing_env!(ctx(stranger(), ZERO, 0)
+        .prepaid_gas(Gas::from_tgas(MIN_GAS_FOR_DISPATCH.as_tgas() - 1))
+        .build());
+    let _ = v.request_payment_signed(
+        "va-g".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig,
+    );
+}
+
+/// The other side of the gas boundary. The identical payload at EXACTLY the
+/// floor dispatches, which pins the comparator direction: `<`, not `<=`. A
+/// floor that rejected its own boundary value would turn adequately-gassed
+/// submissions into panics.
+#[test]
+fn a_signed_payload_at_exactly_the_gas_floor_dispatches() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&sk));
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-g2", &tok(), usdc(100).0, &payee(), "", &route);
+
+    testing_env!(ctx(stranger(), ZERO, 0)
+        .prepaid_gas(MIN_GAS_FOR_DISPATCH)
+        .build());
+    assert_dispatched(v.request_payment_signed(
+        "va-g2".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig,
+    ));
+}
+
 /// Unbinding must not reset the replay guard. If it did, an owner could
 /// unbind and rebind a key to make every signature it ever produced valid
 /// again.

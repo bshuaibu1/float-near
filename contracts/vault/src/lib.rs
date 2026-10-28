@@ -940,7 +940,10 @@ impl Vault {
     /// precisely the absence of one.
     ///
     /// Costs ~0.001 NEAR of state rather than the 0.55 NEAR a real sub-account
-    /// locks, and nothing is stranded — unbinding reclaims the state.
+    /// locks. Unbinding reclaims the `pubkey_to_node` mapping (82 bytes); the
+    /// `pubkey_to_nonce` entry (86 bytes, roughly half the total) is retained
+    /// on purpose and is never reclaimed — see `unbind_virtual_agent` for why
+    /// dropping it would reopen the replay guard.
     #[payable]
     pub fn bind_virtual_agent(&mut self, node_id: NodeId, public_key: PublicKey) {
         self.assert_owner();
@@ -1065,7 +1068,16 @@ impl Vault {
         // `blocked` outcome or yield a Promise, and a nonce consumed only on
         // the success path would leave a rejected-but-validly-signed payload
         // replayable. Burning here means one signature is worth at most one
-        // attempt, which is the guarantee a relayer-submitted payload needs.
+        // attempt *that reaches dispatch*, which is the guarantee a
+        // relayer-submitted payload needs.
+        //
+        // Scoped deliberately: a path that PANICS rather than returning —
+        // notably `dispatch_payment`'s `InsufficientGas` floor — reverts this
+        // insert along with the rest of the receipt, so the nonce survives and
+        // the payload stays replayable. That is the behaviour we want. If an
+        // under-gassed submission burned the nonce, a malicious relayer could
+        // destroy an agent's signed payloads by deliberately under-gassing
+        // them. A panic means nothing happened, so a retry is correct.
         self.pubkey_to_nonce.insert(public_key, nonce);
 
         self.dispatch_payment(node_id, request_id, token, amount, recipient, memo, route)
