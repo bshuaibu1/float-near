@@ -154,7 +154,7 @@ Two measured facts about upgradeability, both from RPC `view_state` on
 **The migration has now been EXECUTED against a live vault**, not only against
 its bytes. `v4.floatv4.testnet` was carrying real state from that morning's
 round-trip — 4 nodes, a bound virtual agent at nonce 4, 4 stored requests, a
-populated ledger — and was upgraded via `scripts/upgrade-testnet.sh` with
+populated ledger — and was upgraded via `scripts/upgrade-vault.sh` with
 `migrate` as the init call in the same transaction (tx
 `HdAbUULJWwdoW2C11deVEGBqmJX8e2ZBPf5duUHrJyMw`). What survived, checked after:
 
@@ -488,7 +488,7 @@ Each is survivable alone. Together they are a trap:
 - The nominated owner is stored under its own storage key rather than as a
   `Vault` field, so the borsh layout is unchanged and the live vault can be
   upgraded in place with its tree, ledgers and payment history intact
-  (`scripts/upgrade-testnet.sh`). **Any future change that adds a struct field
+  (`scripts/upgrade-vault.sh`). **Any future change that adds a struct field
   loses this property and needs a migration.**
 
 ## 11. The daily window is a cliff, not a rolling 24 hours — OPEN

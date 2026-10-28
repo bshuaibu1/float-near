@@ -35,15 +35,60 @@
 # this script telling you the vault is ALREADY migrated — re-run with
 # NO_MIGRATE=1 for a layout-compatible upgrade.
 #
+# ---- NETWORK is a parameter, and this file is no longer called
+# ---- upgrade-testnet.sh.
+#
+# It hardcoded the testnet network-config in BOTH deploy branches while taking
+# the vault account as a variable. Pointing it at a mainnet vault therefore
+# looked like it would work and silently addressed a testnet account of the
+# same name — which for float.test015.near does not exist, so it would have
+# failed, but for any name that exists on both networks it would have deployed
+# to the wrong chain. The name said testnet and one of the two things it needed
+# to know was a variable; that is the inconsistency.
+#
+# verify-upgrade.mjs defaults to a TESTNET rpc independently, so the network
+# has to be threaded into the verifier too. Missing that gives the worst
+# outcome available here: a real mainnet deploy followed by a green verdict
+# obtained by reading a different chain.
+#
 # Usage:
-#   VAULT=v4.floatv4.testnet bash scripts/upgrade-testnet.sh
-#   NO_MIGRATE=1 VAULT=... bash scripts/upgrade-testnet.sh   # no field change
+#   VAULT=v4.floatv4.testnet bash scripts/upgrade-vault.sh
+#   NO_MIGRATE=1 VAULT=... bash scripts/upgrade-vault.sh      # no field change
+#   NETWORK=mainnet CONFIRM_MAINNET=1 NO_MIGRATE=1 VAULT=float.test015.near #     bash scripts/upgrade-vault.sh
 #
 # Requires: near-cli-rs, cargo-near, and a key for VAULT in the legacy keychain.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${VAULT:?set VAULT to the existing vault account}"
+
+NETWORK="${NETWORK:-testnet}"
+case "$NETWORK" in
+  testnet) DEFAULT_RPC="https://test.rpc.fastnear.com" ;;
+  mainnet)
+    DEFAULT_RPC="https://free.rpc.fastnear.com"
+    # An explicit second key for real money. Every other guard here protects
+    # against the wrong STATE; this one protects against the wrong CHAIN, which
+    # no amount of state verification detects.
+    [ "${CONFIRM_MAINNET:-0}" = "1" ] || {
+      echo "FATAL: NETWORK=mainnet needs CONFIRM_MAINNET=1." >&2
+      echo "       This deploys over a live vault holding real funds." >&2
+      exit 1
+    }
+    ;;
+  *) echo "FATAL: NETWORK must be testnet or mainnet, got '$NETWORK'" >&2; exit 1 ;;
+esac
+
+# The account suffix and the network must agree. A `.near` account on testnet or
+# a `.testnet` account on mainnet is a typo in one of the two variables, and
+# both reach the deploy as a perfectly well-formed request.
+case "$NETWORK:$VAULT" in
+  testnet:*.near)    echo "FATAL: $VAULT looks like a mainnet account but NETWORK=testnet" >&2; exit 1 ;;
+  mainnet:*.testnet) echo "FATAL: $VAULT looks like a testnet account but NETWORK=mainnet" >&2; exit 1 ;;
+esac
+
+export NEAR_VAULT_RPC_URL="${NEAR_VAULT_RPC_URL:-$DEFAULT_RPC}"
+echo "==> network: $NETWORK   vault: $VAULT   rpc: $NEAR_VAULT_RPC_URL"
 
 command -v near >/dev/null || { echo "near CLI not found" >&2; exit 1; }
 command -v cargo-near >/dev/null || {
@@ -107,13 +152,13 @@ if [ "${NO_MIGRATE:-0}" = "1" ]; then
   echo "    Only correct when this build does NOT change the borsh layout of Vault."
   near contract deploy "$VAULT" use-file "$WASM" \
     without-init-call \
-    network-config testnet sign-with-legacy-keychain send
+    network-config "$NETWORK" sign-with-legacy-keychain send
 else
   echo "==> deploying to $VAULT with migrate() in the same transaction"
   near contract deploy "$VAULT" use-file "$WASM" \
     with-init-call migrate json-args '{}' \
     prepaid-gas '100.0 Tgas' attached-deposit '0 NEAR' \
-    network-config testnet sign-with-legacy-keychain send
+    network-config "$NETWORK" sign-with-legacy-keychain send
 fi
 
 # ---- 4. Prove it.

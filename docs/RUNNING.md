@@ -37,7 +37,7 @@ calls, reading from NEAR vault views.
 v3 is not broken and was not replaced in place. It runs code that matches its
 own state, so it answers every view call today. What it cannot do is accept an
 upgrade: its 284 state bytes have no `pubkey_to_node`/`pubkey_to_nonce`, so
-`migrate` cannot read them and `scripts/upgrade-testnet.sh` will abort
+`migrate` cannot read them and `scripts/upgrade-vault.sh` will abort
 atomically rather than brick it. Retiring it is a redeploy, not an upgrade, and
 needs its own full-access key — which is held by whoever created it, not by the
 `floatv4` keys the rest of this doc assumes.
