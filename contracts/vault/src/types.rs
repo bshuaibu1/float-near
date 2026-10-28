@@ -273,6 +273,20 @@ pub enum ReasonCode {
     UnknownNode,
     InsufficientGas,
     LedgerInvariant,
+    // virtual agents
+    //
+    // APPENDED, not inserted. Borsh tags enum variants by position and a
+    // ReasonCode is stored inside every PaymentRequest, so renumbering would
+    // silently reinterpret the reason on every request already on chain.
+    /// The signing key is not bound to any node.
+    NotVirtualAgent,
+    /// The signature did not verify against the bound key, or was not 64 bytes.
+    BadAgentSignature,
+    /// The nonce is not strictly greater than the highest already consumed by
+    /// this key. This is the replay guard; see StorageKey::PubkeyToNonce.
+    NonceNotFresh,
+    /// The signed payload's deadline has passed.
+    AgentSignatureExpired,
 }
 
 impl ReasonCode {
@@ -317,6 +331,10 @@ impl ReasonCode {
             UnknownNode => "UNKNOWN_NODE",
             InsufficientGas => "INSUFFICIENT_GAS",
             LedgerInvariant => "LEDGER_INVARIANT",
+            NotVirtualAgent => "NOT_VIRTUAL_AGENT",
+            BadAgentSignature => "BAD_AGENT_SIGNATURE",
+            NonceNotFresh => "NONCE_NOT_FRESH",
+            AgentSignatureExpired => "AGENT_SIGNATURE_EXPIRED",
         }
     }
 }
@@ -385,6 +403,45 @@ pub struct ConfigView {
 /// text. Borsh is length-prefixed, so no two different field sets can produce
 /// the same bytes; a plain concatenation would let `("alic", "ebob")` and
 /// `("alice", "bob")` sign the same message.
+/// What a VIRTUAL AGENT signs to authorize one payment.
+///
+/// A virtual agent has no NEAR account. It holds only a keypair, signs this
+/// struct off-chain, and hands the signature to a relayer that submits it. The
+/// relayer pays the gas and is NOT trusted: every field it could tamper with
+/// is covered here.
+///
+/// Borsh, not text concatenation, for the same reason as QuoteBinding: borsh
+/// is length-prefixed, so no two different field sets produce the same bytes.
+///
+/// WHY EACH FIELD IS PRESENT — every one of these closes an attack:
+///
+/// * `vault` — without it a signature is replayable against any other vault
+///   that has bound the same key.
+/// * `nonce` — THE replay guard. Must be strictly greater than the highest
+///   this key has consumed. `request_id` cannot serve this role: terminal
+///   requests are purged by `sweep_stuck_pending`, which frees the id for
+///   reuse. Under `request_payment` that is harmless because NEAR's
+///   per-transaction nonce prevents replay in the protocol; for a detached
+///   signature it is a repeatable drain.
+/// * `deadline_ns` — bounds how long a leaked or withheld signature is worth
+///   anything. A relayer that sits on a payload cannot fire it next month.
+/// * `route` — a relayer could otherwise take a signature authorizing a cheap
+///   on-NEAR transfer and resubmit it as a cross-chain Intents payment.
+/// * `token`, `amount`, `recipient`, `memo` — the payment itself.
+#[near(serializers = [borsh])]
+#[derive(Clone, Debug)]
+pub struct VirtualAgentBinding {
+    pub vault: AccountId,
+    pub nonce: u64,
+    pub deadline_ns: u64,
+    pub request_id: String,
+    pub token: AccountId,
+    pub amount: U128,
+    pub recipient: AccountId,
+    pub memo: String,
+    pub route: Route,
+}
+
 #[near(serializers = [borsh])]
 #[derive(Clone, Debug)]
 pub struct QuoteBinding {

@@ -1853,3 +1853,432 @@ fn a_signature_from_the_typescript_signer_verifies() {
         "verification accepted a tampered message",
     );
 }
+
+// =====================================================================
+// Virtual agents.
+//
+// A virtual agent has no NEAR account: it signs a payload off-chain and a
+// relayer submits it. That moves authentication out of the protocol and into
+// this contract, so the tests below are not "does the happy path work" but
+// "what stops the relayer, or anyone holding an old payload, from spending
+// twice".
+// =====================================================================
+
+fn va_signing_key() -> SigningKey {
+    SigningKey::from_bytes(&[11u8; 32])
+}
+
+fn va_other_key() -> SigningKey {
+    SigningKey::from_bytes(&[12u8; 32])
+}
+
+/// near_sdk PublicKey = 1 curve-type byte (0 = ed25519) + 32 raw bytes.
+fn va_pubkey(sk: &SigningKey) -> PublicKey {
+    let mut bytes = vec![0u8];
+    bytes.extend_from_slice(&sk.verifying_key().to_bytes());
+    PublicKey::try_from(bytes).expect("ed25519 public key")
+}
+
+/// Sign exactly what the contract reconstructs. Fields are passed in so a
+/// test can sign one thing and submit another.
+#[allow(clippy::too_many_arguments)]
+fn sign_va(
+    sk: &SigningKey,
+    nonce: u64,
+    deadline_ns: u64,
+    request_id: &str,
+    token: &AccountId,
+    amount: u128,
+    recipient: &AccountId,
+    memo: &str,
+    route: &Route,
+) -> Base64VecU8 {
+    let binding = VirtualAgentBinding {
+        vault: vault_id(),
+        nonce,
+        deadline_ns,
+        request_id: request_id.to_string(),
+        token: token.clone(),
+        amount: U128(amount),
+        recipient: recipient.clone(),
+        memo: memo.to_string(),
+        route: route.clone(),
+    };
+    let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+    Base64VecU8(sk.sign(&msg).to_bytes().to_vec())
+}
+
+/// THE test this whole design exists for.
+///
+/// `request_id` is deduplicated, which looks like replay protection and is
+/// not: `purge_settled` removes terminal requests and frees the id for reuse.
+/// Under `request_payment` that is harmless, because NEAR gives every
+/// transaction a nonce and the protocol refuses a replay before this contract
+/// is reached. A detached signature has no such protection, so without the
+/// per-key nonce an old payload becomes spendable again the moment its
+/// request record is purged.
+///
+/// Asserts the rejection comes from NONCE_NOT_FRESH specifically. If it came
+/// back DUPLICATE_REQUEST the test would be passing on the guard that is
+/// about to be purged away, and would keep passing while the real hole opened.
+#[test]
+fn a_purged_request_id_does_not_make_a_signed_payload_replayable() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&sk));
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-1", &tok(), usdc(100).0, &payee(), "", &route);
+
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_dispatched(v.request_payment_signed(
+        "va-1".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route.clone()),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig.clone(),
+    ));
+
+    // Settle it, so it becomes purgeable.
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    v.on_transfer_result("va-1".into());
+
+    // Purge it. The request_id is now free.
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    assert_eq!(v.purge_settled(u64::MAX, 10), 1, "the request was not purged");
+    assert!(v.get_request("va-1".into()).is_none(), "request record still present");
+
+    // Replay the IDENTICAL payload. The duplicate-id guard is gone.
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "va-1".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route),
+            va_pubkey(&sk),
+            1,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::NonceNotFresh,
+    );
+}
+
+/// One signature is worth at most one ATTEMPT, not one success. The nonce is
+/// burned before dispatch, so a payload that was validly signed but rejected
+/// downstream cannot be resubmitted once the blocking condition clears.
+#[test]
+fn a_rejected_signed_payload_still_burns_its_nonce() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&sk));
+    v.freeze_node(t.n_r1, true);
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-f", &tok(), usdc(100).0, &payee(), "", &route);
+
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "va-f".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route.clone()),
+            va_pubkey(&sk),
+            1,
+            U64(DEADLINE),
+            sig.clone(),
+        ),
+        ReasonCode::NodeFrozen,
+    );
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.freeze_node(t.n_r1, false);
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "va-f".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route),
+            va_pubkey(&sk),
+            1,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::NonceNotFresh,
+    );
+}
+
+/// Unbinding must not reset the replay guard. If it did, an owner could
+/// unbind and rebind a key to make every signature it ever produced valid
+/// again.
+#[test]
+fn rebinding_a_key_does_not_reset_its_nonce() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+    let pk = va_pubkey(&sk);
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, pk.clone());
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-r", &tok(), usdc(100).0, &payee(), "", &route);
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_dispatched(v.request_payment_signed(
+        "va-r".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route.clone()),
+        pk.clone(),
+        1,
+        U64(DEADLINE),
+        sig.clone(),
+    ));
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.unbind_virtual_agent(pk.clone());
+    v.bind_virtual_agent(t.n_r1, pk.clone());
+    assert_eq!(
+        v.get_virtual_agent_nonce(pk.clone()),
+        2,
+        "nonce counter was reset by a rebind"
+    );
+
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "va-r2".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route),
+            pk,
+            1,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::NonceNotFresh,
+    );
+}
+
+/// Many keys, one node -- the whole point of the pivot. Two signers share
+/// r1's budget rather than consuming two of the 64 MAX_NODES.
+#[test]
+fn two_virtual_agents_share_one_nodes_budget() {
+    let t = tree();
+    let mut v = t.v;
+    let a = va_signing_key();
+    let b = va_other_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.ops, va_pubkey(&a));
+    v.bind_virtual_agent(t.ops, va_pubkey(&b));
+    assert_eq!(
+        v.get_node(t.ops).account,
+        None,
+        "a virtual binding must not set node.account"
+    );
+
+    let route = Route::NearDirect;
+    for (sk, id) in [(&a, "sh-a"), (&b, "sh-b")] {
+        let sig = sign_va(sk, 1, DEADLINE, id, &tok(), usdc(150).0, &payee(), "", &route);
+        testing_env!(ctx(stranger(), ZERO, 0).build());
+        assert_dispatched(v.request_payment_signed(
+            id.into(),
+            tok(),
+            usdc(150),
+            payee(),
+            "".into(),
+            Some(route.clone()),
+            va_pubkey(sk),
+            1,
+            U64(DEADLINE),
+            sig,
+        ));
+    }
+
+    // 300 drawn from a 300 node by two different signers: the SHARED pool was
+    // debited, not two independent ones.
+    assert_eq!(
+        v.get_node_budget(t.ops, tok(), None).unwrap().pending,
+        usdc(300)
+    );
+
+    // And a third payment is refused by ops' cap, proving they contend.
+    let sig = sign_va(&a, 2, DEADLINE, "sh-c", &tok(), usdc(1).0, &payee(), "", &route);
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "sh-c".into(),
+            tok(),
+            usdc(1),
+            payee(),
+            "".into(),
+            Some(route),
+            va_pubkey(&a),
+            2,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::DailyBudget,
+    );
+}
+
+/// An unbound key has no node to charge, so this is a hard failure.
+#[test]
+#[should_panic(expected = "NOT_VIRTUAL_AGENT")]
+fn an_unbound_key_cannot_spend() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-u", &tok(), usdc(100).0, &payee(), "", &route);
+
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    v.request_payment_signed(
+        "va-u".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig,
+    );
+}
+
+/// A stale signature expires. Bounds what a withheld or leaked payload is
+/// worth.
+#[test]
+fn an_expired_signature_is_refused() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&sk));
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-e", &tok(), usdc(100).0, &payee(), "", &route);
+
+    testing_env!(ctx(stranger(), ZERO, DEADLINE + 1).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "va-e".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route),
+            va_pubkey(&sk),
+            1,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::AgentSignatureExpired,
+    );
+}
+
+/// Tampering with a signed field is caught. The relayer is untrusted, so each
+/// field it could rewrite is checked individually -- a single "wrong amount"
+/// case would not show that the OTHERS are covered.
+#[test]
+fn tampering_with_any_signed_field_is_refused() {
+    let t = tree();
+    let mut v = t.v;
+    let sk = va_signing_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&sk));
+
+    // Signed once, honestly.
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "va-t", &tok(), usdc(100).0, &payee(), "ok", &route);
+
+    // Each submission alters exactly ONE field away from what was signed.
+    let cases: Vec<(&str, U128, AccountId, String)> = vec![
+        ("va-t", usdc(999), payee(), "ok".into()),   // amount
+        ("va-t", usdc(100), stranger(), "ok".into()), // recipient
+        ("va-t", usdc(100), payee(), "tampered".into()), // memo
+        ("other", usdc(100), payee(), "ok".into()),  // request_id
+    ];
+    for (rid, amount, recipient, memo) in cases {
+        testing_env!(ctx(stranger(), ZERO, 0).build());
+        assert_blocked(
+            v.request_payment_signed(
+                rid.into(),
+                tok(),
+                amount,
+                recipient,
+                memo,
+                Some(route.clone()),
+                va_pubkey(&sk),
+                1,
+                U64(DEADLINE),
+                sig.clone(),
+            ),
+            ReasonCode::BadAgentSignature,
+        );
+    }
+}
+
+/// A signature from a key that is bound, but not the key named in the call,
+/// must not pass. Guards against checking "some bound key signed this".
+#[test]
+fn another_bound_keys_signature_is_refused() {
+    let t = tree();
+    let mut v = t.v;
+    let a = va_signing_key();
+    let b = va_other_key();
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&a));
+    v.bind_virtual_agent(t.n_r1, va_pubkey(&b));
+
+    let route = Route::NearDirect;
+    // b signs, but the call names a's key.
+    let sig = sign_va(&b, 1, DEADLINE, "va-x", &tok(), usdc(100).0, &payee(), "", &route);
+
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "va-x".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route),
+            va_pubkey(&a),
+            1,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::BadAgentSignature,
+    );
+}
+

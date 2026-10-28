@@ -930,6 +930,147 @@ impl Vault {
         )
     }
 
+    /// Authorize a virtual agent: a signing key that may spend from `node_id`
+    /// without owning a NEAR account.
+    ///
+    /// MANY-TO-ONE, unlike `create_agent_account`. Several keys may share one
+    /// node, so a swarm draws on a shared pool instead of consuming one of the
+    /// 64 MAX_NODES per member. The node's `account` field stays `None`: that
+    /// field means "a real sub-account is bound here" and a virtual agent is
+    /// precisely the absence of one.
+    ///
+    /// Costs ~0.001 NEAR of state rather than the 0.55 NEAR a real sub-account
+    /// locks, and nothing is stranded — unbinding reclaims the state.
+    #[payable]
+    pub fn bind_virtual_agent(&mut self, node_id: NodeId, public_key: PublicKey) {
+        self.assert_owner();
+        // The node must exist. Unlike assert_bindable we do NOT reject a node
+        // that already has signers; that is the point.
+        let _ = self.get_node(node_id);
+        if self.pubkey_to_node.contains_key(&public_key) {
+            fail(ReasonCode::InvalidConfig, "key already bound to a node");
+        }
+        self.pubkey_to_node.insert(public_key.clone(), node_id);
+        // The nonce counter is NOT initialised here, and must not be: a fresh
+        // key starts with no entry, read as 0, so its first usable nonce is 1.
+        // Re-binding a previously used key keeps its old counter, which is
+        // what stops unbind/rebind from resetting the replay guard.
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{node_id}}}]}}"#
+        ));
+    }
+
+    /// Revoke a virtual agent's key.
+    ///
+    /// Deliberately keeps the nonce entry. Dropping it would let an owner
+    /// unbind and rebind a key to reset the replay guard, making every
+    /// signature that key ever produced valid again.
+    #[payable]
+    pub fn unbind_virtual_agent(&mut self, public_key: PublicKey) {
+        self.assert_owner();
+        if self.pubkey_to_node.remove(&public_key).is_none() {
+            fail(ReasonCode::NotVirtualAgent, "key is not bound");
+        }
+        env::log_str(
+            r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"virtual_agent_unbound","data":[{}]}"#,
+        );
+    }
+
+    /// The next nonce a virtual agent must use. Relayers and SDKs read this.
+    pub fn get_virtual_agent_nonce(&self, public_key: PublicKey) -> u64 {
+        self.pubkey_to_nonce.get(&public_key).copied().unwrap_or(0) + 1
+    }
+
+    /// Which node a virtual agent key spends from, if any.
+    pub fn get_virtual_agent_node(&self, public_key: PublicKey) -> Option<NodeId> {
+        self.pubkey_to_node.get(&public_key).copied()
+    }
+
+    /// Spend on behalf of a virtual agent, authorized by its signature.
+    ///
+    /// Anyone may call this — the caller is only a relayer paying the gas and
+    /// is not trusted for anything. Authority comes entirely from the
+    /// signature over `VirtualAgentBinding`, which covers every field the
+    /// relayer could otherwise tamper with.
+    ///
+    /// The relayer DOES choose whether to submit at all, so it can censor but
+    /// not forge or redirect. An agent that wants no relayer dependency can
+    /// still own a real sub-account and call `request_payment`; both paths
+    /// remain open and land in the same budget logic.
+    pub fn request_payment_signed(
+        &mut self,
+        request_id: String,
+        token: AccountId,
+        amount: U128,
+        recipient: AccountId,
+        memo: String,
+        route: Option<Route>,
+        public_key: PublicKey,
+        nonce: u64,
+        deadline_ns: U64,
+        signature: Base64VecU8,
+    ) -> PromiseOrValue<PaymentOutcome> {
+        let route = route.unwrap_or_default();
+
+        // ---- authenticate, in the order that leaks least work to an attacker
+        let node_id = match self.pubkey_to_node.get(&public_key) {
+            Some(n) => *n,
+            // No node to attribute a `blocked` outcome to, so this is a hard
+            // failure rather than a recorded rejection.
+            None => fail(ReasonCode::NotVirtualAgent, "signing key is not bound to a node"),
+        };
+
+        if env::block_timestamp() > deadline_ns.0 {
+            return blocked(&request_id, node_id, ReasonCode::AgentSignatureExpired);
+        }
+
+        // Strictly greater. Equal would permit one replay.
+        let last = self.pubkey_to_nonce.get(&public_key).copied().unwrap_or(0);
+        if nonce <= last {
+            return blocked(&request_id, node_id, ReasonCode::NonceNotFresh);
+        }
+
+        let binding = VirtualAgentBinding {
+            vault: env::current_account_id(),
+            nonce,
+            deadline_ns: deadline_ns.0,
+            request_id: request_id.clone(),
+            token: token.clone(),
+            amount,
+            recipient: recipient.clone(),
+            memo: memo.clone(),
+            route: route.clone(),
+        };
+        let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+        let Ok(sig) = <[u8; 64]>::try_from(signature.0.as_slice()) else {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        };
+        // `PublicKey` carries a curve-type prefix byte; ed25519_verify wants
+        // the raw 32. Slicing past the prefix is only correct for ed25519, so
+        // a non-ed25519 key is refused rather than mis-sliced.
+        let raw = public_key.as_bytes();
+        if raw.len() != 33 || raw[0] != 0 {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        }
+        let Ok(pk32) = <[u8; 32]>::try_from(&raw[1..]) else {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        };
+        if !env::ed25519_verify(&sig, &msg, &pk32) {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        }
+
+        // ---- the nonce is burned BEFORE dispatch.
+        //
+        // Not after, and not in the callback. `dispatch_payment` may return a
+        // `blocked` outcome or yield a Promise, and a nonce consumed only on
+        // the success path would leave a rejected-but-validly-signed payload
+        // replayable. Burning here means one signature is worth at most one
+        // attempt, which is the guarantee a relayer-submitted payload needs.
+        self.pubkey_to_nonce.insert(public_key, nonce);
+
+        self.dispatch_payment(node_id, request_id, token, amount, recipient, memo, route)
+    }
+
     /// The one budget-and-dispatch implementation.
     ///
     /// Both entry points — account-authenticated `request_payment` and
