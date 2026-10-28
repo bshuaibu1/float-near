@@ -616,14 +616,42 @@ reserve, not fee.
 
 Two consequences for budgeting, both easy to get wrong:
 
-1. **The daily cap must cover `amountIn`, not the payee's amount.** A node
-   capped at exactly 10.000000 cannot deliver 10 USDC cross-chain — the quote
-   charges 10.105478 and the payment is refused by the cap, not by the solver.
-   `EXACT_OUTPUT` is deliberate (a payment is a promise about what the payee
-   receives), so this gap is structural rather than a tuning artefact. Size
-   caps with the spread in mind.
+1. **The cap must cover `amountIn`, not the payee's amount.** A node capped at
+   exactly 10.000000 cannot deliver 10 USDC cross-chain. The boundary, measured
+   rather than derived:
+
+   | deliver | charged | against a 10.000000 cap |
+   | --- | --- | --- |
+   | 9.890000 | 9.994343 | passes |
+   | 9.900000 | 10.004446 | **refused** |
+   | 10.000000 | 10.105478 | refused |
+
+   `EXACT_OUTPUT` is deliberate — a payment is a promise about what the payee
+   receives — so this gap is structural, not a tuning artefact. What makes it
+   worth calling out is the *attribution*: the refusal comes from your own
+   budget, with `PER_TX_LIMIT` or `DAILY_BUDGET`, and nothing about it mentions
+   the solver. It reads like a bug unless you are expecting it.
 2. **"Funded with 10 USDC" does not buy a 10 USDC cross-chain payment.** The
    largest deliverable from exactly 10 USDC is about 9.89.
+
+**Sizing rule, now printed by the wizard.** `create-float` derives a sentence
+from the tree it actually built — a cap of `C` delivers at most about
+`C / 1.02` cross-chain — using `XCHAIN_HEADROOM = 0.02`. That is deliberately
+above the measured worst case (1.52% at 0.50) rather than the ~1.03% the
+spread converges to, because under-reserving produces a refusal while
+over-reserving costs nothing unless a payment is actually that large. For a
+cap of 10 it advertises 9.80 against a true boundary of 9.89 — conservative by
+design, so a user who follows the advice succeeds.
+
+It is a guidance figure for a printed sentence, not a protocol constant:
+nothing validates against it, no contract reads it, and
+`scripts/oneclick-probe.mjs` re-measures it. Slippage tolerance and market
+depth both move the real number, which is exactly why it is not compiled into
+anything.
+
+The shipped mainnet default tree uses `perTx: 10` at every level, so this is
+not hypothetical — a new mainnet user's first instinct, paying a round 10
+cross-chain, is refused by their own default caps.
 
 **A failure mode worth recognising.** `refundTo` must be a MAINNET NEAR
 account. Both callers pass `refundTo: vault` (`mcp/src/server.ts:208`,

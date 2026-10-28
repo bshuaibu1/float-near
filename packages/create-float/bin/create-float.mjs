@@ -88,6 +88,39 @@ const fmtNear = (y) => (Number(y / 10n ** 18n) / 1e6).toFixed(3);
 /** Mainnet USDC on NEAR, and the 1Click asset id for USDC on Base. */
 const MAINNET_USDC = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
 
+/**
+ * Headroom a cross-chain payment needs on top of what the payee receives.
+ *
+ * WHY A CAP DOES NOT MEAN WHAT IT LOOKS LIKE ON THE INTENTS RAIL. 1Click quotes
+ * EXACT_OUTPUT — `amount` is what the PAYEE gets, and the vault is charged the
+ * quote's `amountIn`. The budget tree is charged that larger figure, correctly:
+ * the cap governs real outflow. So a per-tx cap of 10 does NOT permit
+ * delivering 10 cross-chain, and the refusal comes from your own budget rather
+ * than from the solver, which makes it easy to misread as a bug.
+ *
+ * MEASURED against the live API 2026-10-28, dry quotes, NEAR USDC -> Base USDC:
+ *
+ *     deliver  0.500000 -> charged  0.507579   (1.52%)
+ *     deliver  9.890000 -> charged  9.994343   (passes a 10 cap)
+ *     deliver  9.900000 -> charged 10.004446   (REFUSED by a 10 cap)
+ *     deliver 10.000000 -> charged 10.105478   (1.05%)
+ *     deliver 100.00000 -> charged 101.032936  (1.03%)
+ *
+ * The spread converges to ~1.03% and is WORST at small sizes, because most of
+ * it is the 100 bps `slippageTolerance` reserved as headroom rather than fee.
+ * 2% is therefore deliberately above the measured worst case, not an average:
+ * under-reserving here produces a refusal, over-reserving costs nothing unless
+ * the payment is actually that large.
+ *
+ * This is a guidance figure for a printed sentence, NOT a protocol constant —
+ * nothing validates against it and no contract reads it. Re-measure with
+ * `node --experimental-strip-types scripts/oneclick-probe.mjs` before relying
+ * on the number; slippage tolerance and market depth both move it.
+ */
+const XCHAIN_HEADROOM = 0.02;
+/** The most a cap can actually deliver cross-chain, conservatively. */
+const xchainCeiling = (cap) => cap / (1 + XCHAIN_HEADROOM);
+
 const AGENT_KEY_ALLOWANCE = NEAR(0.5);
 const AGENT_STORAGE = NEAR(0.05);
 const AGENT_COST = AGENT_KEY_ALLOWANCE + AGENT_STORAGE;
@@ -676,6 +709,16 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
           `empty. That refusal is the product.`
         : "spend from an agent and watch the budget tree charge every level above it.";
 
+    // The cap the cross-chain sentence should talk about: the SPENDING node's
+    // per-tx limit, since that is the one a payment is checked against first.
+    // Falls back through the tree rather than assuming an `agent: true` leaf
+    // exists — a virtual-agent vault has spending nodes with no bound account,
+    // and defaulting to 0 there would print "delivers at most 0.00".
+    const leafPerTx = leaves[0]?.perTx
+      ?? nodes[nodes.length - 1]?.perTx
+      ?? nodes[0]?.perTx
+      ?? 0;
+
     // ---- 9. Config the user would otherwise hand-write.
     step(9, "Writing configuration");
     mkdirSync(".float", { recursive: true });
@@ -789,6 +832,17 @@ balance — a solver delivers and prices the gas in:
 
   curl -X POST localhost:8787/v1/pay -H 'content-type: application/json' \
     -d '{"amount":"0.50","recipient":"0xYourBaseAddress","rail":"intents"}'
+
+${C.b("Sizing caps for this rail.")} A quote is EXACT_OUTPUT: ${C.dim("amount")} is what the
+payee RECEIVES, and the vault is charged more — solver fee plus a slippage
+reserve. The tree is charged that larger figure, which is correct: a cap
+governs what actually leaves. So a per-tx cap of ${leafPerTx} delivers at most about
+${xchainCeiling(leafPerTx).toFixed(2)} cross-chain, and asking for ${leafPerTx} is refused by ${C.b("your own")}
+${C.b("budget")} rather than by the solver — which reads like a bug if you are not
+expecting it. Measured ~1.03% at 100 and ~1.5% at 0.50, so size caps ~2% above
+the largest payment you mean to make. Re-check before trusting the figure:
+
+  ${C.dim("node --experimental-strip-types scripts/oneclick-probe.mjs")}
 ` : ""}`);
   } finally {
     rl?.close();
