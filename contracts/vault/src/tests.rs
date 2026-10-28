@@ -2282,3 +2282,29 @@ fn another_bound_keys_signature_is_refused() {
     );
 }
 
+
+/// Emits the canonical bytes for a fixed binding so the JS relayer encoder can
+/// be diffed against them. A mismatch makes every signature fail to verify,
+/// and looks identical to a wrong key -- which is how it would go unnoticed.
+#[test]
+fn binding_bytes_are_stable_for_the_js_encoder() {
+    let b = VirtualAgentBinding {
+        vault: "vault.test.near".parse().unwrap(),
+        nonce: 7,
+        deadline_ns: 1234567890,
+        request_id: "req-1".to_string(),
+        token: "usdc.test.near".parse().unwrap(),
+        amount: U128(100_000_000),
+        recipient: "bob".parse().unwrap(),
+        memo: "hi".to_string(),
+        route: Route::NearDirect,
+    };
+    let msg = near_sdk::borsh::to_vec(&b).expect("borsh");
+    let hex: String = msg.iter().map(|x| format!("{x:02x}")).collect();
+    // Pinned. The JS relayer encoder is diffed against this exact string in
+    // packages/create-float/test/binding.test.mjs. If a field is added,
+    // reordered or retyped, BOTH sides must change together -- and this
+    // assertion is what forces that rather than leaving it to be discovered
+    // as unexplained signature failures.
+    assert_eq!(hex, "0f0000007661756c742e746573742e6e6561720700000000000000d202964900000000050000007265712d310e000000757364632e746573742e6e65617200e1f50500000000000000000000000003000000626f6202000000686900", "binding bytes changed; update the JS encoder and its test");
+}
