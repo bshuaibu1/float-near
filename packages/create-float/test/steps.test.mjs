@@ -108,7 +108,7 @@ function scratchCreds(network, account) {
  * than guessed: EXPERIMENTAL_protocol_config for storage_amount_per_byte, then
  * query/view_account. available = amount - max(locked, storage_usage * rate).
  */
-function rpcStub({ nearBalance = 5 } = {}) {
+function rpcStub({ nearBalance = 5, existingAccounts = ["me.testnet"] } = {}) {
   const YOCTO_PER_BYTE = "10000000000000000000";
   const amount = (BigInt(Math.round(nearBalance * 1e6)) * 10n ** 18n).toString();
   const seen = [];
@@ -119,6 +119,29 @@ function rpcStub({ nearBalance = 5 } = {}) {
       const body = JSON.parse(b || "{}");
       const { method, id } = body;
       seen.push(method);
+      // Accounts that do NOT exist must look that way. The stub used to answer
+      // view_account for ANY id, so `new Account(vault).getState()` succeeded
+      // and the vault appeared already-created — which silently disabled the
+      // resumability check that reads it, and made an unaffordable plan look
+      // affordable. A stub that says yes to everything tests nothing.
+      const queried = body?.params?.account_id;
+      if (
+        method === "query" &&
+        body?.params?.request_type === "view_account" &&
+        queried &&
+        !existingAccounts.includes(queried)
+      ) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { name: "HANDLER_ERROR", cause: { name: "UNKNOWN_ACCOUNT" },
+                     message: `account ${queried} does not exist while viewing` },
+          }),
+        );
+        return;
+      }
       const result =
         method === "EXPERIMENTAL_protocol_config"
           ? { runtime_config: { storage_amount_per_byte: YOCTO_PER_BYTE } }
@@ -340,6 +363,79 @@ test("an unaffordable plan is refused BEFORE the dry-run gate", async () => {
     assert.notEqual(r.code, 0, "cannot be a success when the plan is unaffordable");
     assert.match(txt, /insufficient balance: need 3\.000, have 0\.998/);
     assert.doesNotMatch(txt, /dry run — nothing was sent/, "the gate sits after this check");
+  } finally {
+    await rpc.close();
+    rmSync(creds, { recursive: true, force: true });
+  }
+});
+
+test("a RESUME is not billed for a vault that already exists", async () => {
+  // The exact failure a real mainnet run hit: the step-6 crash left the vault
+  // created and holding its 3 NEAR, and re-running refused with "insufficient
+  // balance: need 3.000, have 0.748" — the wizard's own principle 2
+  // ("resumable, not restartable") contradicted by its cheapest check, and only
+  // reachable AFTER a failure past step 4, which is when resuming is the thing
+  // you need.
+  //
+  // 0.9 NEAR is below the 3.000 that the old code demanded and above the 0.000
+  // the fixed code needs with no agents, so this row goes red if `total` ever
+  // charges for the vault again. Note it is the SAME balance that the test
+  // above refuses — the only difference is whether the vault exists, which is
+  // the whole claim.
+  const creds = scratchCreds("testnet", "me.testnet");
+  const rpc = await rpcStub({
+    nearBalance: 0.9,
+    existingAccounts: ["me.testnet", "v.me.testnet"],
+  });
+  try {
+    const r = await run(
+      ["--network", "testnet", "--yes", "--dry-run", "--owner", "me.testnet",
+       "--vault", "v.me.testnet", "--rpc", rpc.url],
+      { creds },
+    );
+    const txt = plain(r.out);
+    assert.doesNotMatch(
+      txt,
+      /insufficient balance/,
+      "a resume was refused for money already in the vault",
+    );
+    assert.match(
+      txt,
+      /v\.me\.testnet already exists and is funded/,
+      "the cost block must say the vault is paid for, not bill for it again",
+    );
+    assert.match(txt, /you send\s+0\.000 NEAR/, "nothing left to send on a bare resume");
+    assert.doesNotMatch(
+      txt,
+      /contract storage/,
+      "the storage-deposit lines describe money that is not going to move",
+    );
+  } finally {
+    await rpc.close();
+    rmSync(creds, { recursive: true, force: true });
+  }
+});
+
+test("a resume still bills for the agents it has not created", async () => {
+  // The other direction, so the fix is "skip what is paid for" rather than
+  // "skip everything once the vault exists". Agents are created in step 7,
+  // AFTER the vault, so an existing vault says nothing about them — and a
+  // resume that silently stopped charging 0.55 each would pass the
+  // affordability gate and then run out mid-way through creating them.
+  const creds = scratchCreds("testnet", "me.testnet");
+  const rpc = await rpcStub({
+    nearBalance: 0.9, // enough for a bare resume, NOT for two agents
+    existingAccounts: ["me.testnet", "v.me.testnet"],
+  });
+  try {
+    const r = await run(
+      ["--network", "testnet", "--yes", "--dry-run", "--owner", "me.testnet",
+       "--vault", "v.me.testnet", "--agents", "all", "--rpc", rpc.url],
+      { creds },
+    );
+    const txt = plain(r.out);
+    assert.notEqual(r.code, 0, "two agents at 0.55 do not fit in 0.9 NEAR");
+    assert.match(txt, /insufficient balance: need 1\.100/);
   } finally {
     await rpc.close();
     rmSync(creds, { recursive: true, force: true });

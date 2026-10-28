@@ -817,3 +817,37 @@ is the first step that spends, and these tests deliberately reach it in the
 control row — against loopback, where the "transaction" goes nowhere. An edit
 that dropped `--rpc` would fall back to the real testnet RPC and spend actual
 NEAR, so that is enforced structurally rather than promised in a comment.
+
+### M37 — `total` charges for the vault unconditionally
+
+`packages/create-float/bin/create-float.mjs`
+
+```js
+-    const total = (vaultExists ? 0n : VAULT_FUNDING) + AGENT_COST * BigInt(agents.length);
++    const total = VAULT_FUNDING + AGENT_COST * BigInt(agents.length);
+```
+
+**Predicted:** the two resume rows go red, the other 43 stay green.
+**Observed:** `ℹ pass 43 / ℹ fail 2` — exactly the two, with
+`a resume was refused for money already in the vault` and
+`did not match /insufficient balance: need 1\.100/`. **KILLED.**
+
+This is the live mainnet failure, re-armed. The mutant is not a hypothetical
+regression: it is the code as shipped, which refused a resume with
+`insufficient balance: need 3.000, have 0.748` after step 6 crashed with the
+vault already created and holding its 3 NEAR.
+
+Worth recording WHY no existing row caught it. The suite had a row for the
+unaffordable case, and it passed both before and after the fix — because
+`rpcStub` answered `view_account` for ANY account id. So `new Account(vault)
+.getState()` succeeded, the vault looked already-created, `total` collapsed to
+0, and the plan was affordable. That row went red the moment the real fix
+landed, which is how the stub was found: a stub that says yes to everything
+cannot distinguish the two branches of the thing being tested, so it reported
+the pre-fix and post-fix code as identical.
+
+`existingAccounts` now defaults to `["me.testnet"]` and everything else gets a
+`UNKNOWN_ACCOUNT` error, which is what a real node returns. The second row is
+the other direction — a resume still bills 0.55 per uncreated agent, so the fix
+is "skip what is already paid for" rather than "skip everything once the vault
+exists". Without it, `vaultExists ? 0n : total` would also pass.
