@@ -644,6 +644,14 @@ at 0.50). Covers `packages/create-float/test/xchain.test.mjs`.
 - **Actual:** ✅ **3 failed, 6 passed** — exact match, including which rows
   survived. The live-charge row failed at **10**, not at 0.50:
   `cap for 10 is 10100000 but delivering it was charged 10105478`.
+- **Re-run after a correction to the subject.** The first version of this
+  change applied `xchainCap` to the WRONG BRANCH of `DEFAULT_TREE` — testnet
+  instead of mainnet, because `MAINNET ? … : …` gives mainnet the SMALL tree.
+  The fixtures were widened to the mainnet scale (0.5/1/1.5/2 alongside
+  10/50/60/100) and M31 re-run: still 3 failed, 6 passed. Worth recording that
+  the mutation was re-run rather than assumed to still hold — the fixture set
+  changed underneath it, and a row count carried over from before the change
+  would have been evidence about a suite that no longer existed.
 
 Worth recording for the shape rather than the row. The fixtures are charges
 from live 1Click dry quotes, not `desired * 1.02`, for the same reason

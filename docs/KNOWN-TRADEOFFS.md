@@ -634,29 +634,42 @@ Two consequences for budgeting, both easy to get wrong:
 2. **"Funded with 10 USDC" does not buy a 10 USDC cross-chain payment.** The
    largest deliverable from exactly 10 USDC is about 9.89.
 
-**The mainnet defaults are now pre-sized for this.** They used to be flat
-(`perTx: 10` at every level), which meant a new user's first instinct — paying
-a round 10 cross-chain — was refused by their own caps. The mainnet tree in
-`create-float` now derives each cap through `xchainCap(desired)`, i.e.
-`ceil(desired × 1.02)` to the cent:
+**The mainnet defaults are now pre-sized for this.** They used to be flat, so a
+user paying the full per-tx cap cross-chain was refused by their own budget. The
+mainnet tree in `create-float` now derives each cap through `xchainCap(desired)`
+— `ceil(desired × 1.02)` to the cent:
 
 | node | wants to deliver | cap | charged to deliver it (live) | slack |
 | --- | --- | --- | --- | --- |
-| root daily | 100 | 102 | 101.032936 | 0.967064 |
-| research daily | 60 | 61.2 | 60.620733 | 0.579267 |
-| r1/r2 daily | 50 | 51 | 50.517682 | 0.482318 |
-| per-tx | 10 | 10.2 | 10.105478 | 0.094522 |
+| root daily | 2 | 2.04 | 2.023038 | 0.016962 |
+| research daily | 1.5 | 1.53 | 1.517884 | 0.012116 |
+| r1/r2 daily | 1 | 1.02 | 1.012733 | 0.007267 |
+| per-tx | 0.50 | 0.51 | 0.507579 | 0.002421 |
 
-All four confirmed against live quotes, not just the formula. Written as a
-derivation rather than as literal `102` / `10.2` so the intent survives — a
-bare `10.2` invites someone to tidy it back to `10`, which silently
-reintroduces the refusal.
+All four confirmed against live quotes, not just the formula. The overcommit the
+tree exists to demonstrate survives the change: `r1 + r2 = 2.04 > research
+1.53`.
 
-**Testnet keeps round caps**, because Intents is mainnet-only: there is no
-spread to absorb there, and inflating them would loosen limits for no benefit.
+**Mind which tree is which — this is the easy mistake, and it was made here
+first.** `DEFAULT_TREE = MAINNET ? … : …` gives **mainnet the SMALL tree**
+(real money, "sized so a total loss is a rounding error") and **testnet the
+generous 100/10 one** (fake tokens, sized to make the hierarchy legible). The
+first attempt at this change applied `xchainCap` to the testnet branch —
+inflating caps for a spread that cannot occur there, while leaving the mainnet
+caps flat and the actual problem unfixed. It was caught by running
+`--dry-run --network testnet` and seeing `102/day, 10.2/tx` where round numbers
+belonged.
+
+That the spread is **worst at small sizes** (1.52% at 0.50 vs 1.03% at 100) is
+what makes the mainnet scale the one that matters: a flat `0.50` per-tx cap
+cannot deliver 0.50 cross-chain at all.
+
+**Testnet keeps round caps**, because Intents is mainnet-only and step 8 skips
+the quote signer there: the rail is closed, so there is no spread to absorb and
+inflating them would loosen limits for no benefit.
 
 **The trade, which is a real loosening.** These caps apply to BOTH rails. A
-per-tx cap of 10.2 lets a `NearDirect` payment spend 10.2, not 10 — 2% more
+per-tx cap of 0.51 lets a `NearDirect` payment spend 0.51, not 0.50 — 2% more
 direct-payment headroom than the operator asked for, bought to make round
 cross-chain amounts clear. The wizard says so explicitly rather than leaving it
 to be discovered, and anyone who cares more about an exact direct-payment

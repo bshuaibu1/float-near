@@ -140,55 +140,64 @@ const VAULT_FUNDING = NEAR(3); // contract storage + headroom for agent creation
 const DEFAULT_TREE = MAINNET
   ? {
       // Real money. Sized so a total loss is a rounding error, and still
-      // overcommitted (1 + 1 > 1.50) so the contention this product exists
-      // to show is visible on day one rather than only once someone builds
-      // that shape by hand.
+      // overcommitted (1.02 + 1.02 > 1.53) so the contention this product
+      // exists to show is visible on day one rather than only once someone
+      // builds that shape by hand.
+      //
+      // CAPS ARE PRE-SIZED FOR THE CROSS-CHAIN SPREAD, via xchainCap(). The
+      // numbers inside the calls are what the operator wants to be able to
+      // DELIVER — 2/day, 0.50 per payment — and the caps come out ~2% above so
+      // a quote's amountIn fits. Written as a derivation rather than as
+      // 2.04 / 0.51 so the intent survives: a bare 0.51 invites someone to
+      // "tidy" it back to 0.50, which silently reintroduces the refusal.
+      //
+      // The spread is WORST at small sizes, which is exactly this tree's scale.
+      // Measured: delivering 0.50 is charged 0.507579 (1.52%), so a flat 0.50
+      // per-tx cap cannot deliver 0.50 cross-chain at all. 1 -> 1.012733,
+      // 1.5 -> 1.517884, 2 -> 2.023038; all four fit their derived caps.
+      //
+      // THE TRADE, stated because it is a real loosening and not a display
+      // change: these caps apply to BOTH rails. A per-tx cap of 0.51 lets a
+      // NearDirect payment spend 0.51, not 0.50 — 2% more direct-payment
+      // headroom than was asked for, bought to make round cross-chain amounts
+      // clear. Anyone who cares more about an exact direct ceiling should set
+      // these flat and accept delivering ~98% of them.
       label: "root",
-      daily: 2,
-      perTx: 0.5,
+      daily: xchainCap(2),
+      perTx: xchainCap(0.5),
       children: [
         {
           label: "research",
-          daily: 1.5,
-          perTx: 0.5,
+          daily: xchainCap(1.5),
+          perTx: xchainCap(0.5),
           children: [
-            { label: "r1", daily: 1, perTx: 0.5, agent: true },
-            { label: "r2", daily: 1, perTx: 0.5, agent: true },
+            { label: "r1", daily: xchainCap(1), perTx: xchainCap(0.5), agent: true },
+            { label: "r2", daily: xchainCap(1), perTx: xchainCap(0.5), agent: true },
           ],
         },
       ],
     }
   : {
-  // MAINNET CAPS ARE PRE-SIZED FOR THE CROSS-CHAIN SPREAD, via xchainCap().
+  // Testnet. ROUND CAPS, deliberately NOT pre-sized.
   //
-  // The numbers inside the calls are what the operator actually wants to be
-  // able to DELIVER — 100/day, 10 per payment — and the caps come out ~2%
-  // above that so a quote's amountIn fits. Written as a derivation rather than
-  // as 102 / 10.2 so the intent survives: a bare 10.2 invites someone to
-  // "tidy" it back to 10, which silently reintroduces the refusal.
+  // NEAR Intents is mainnet-only (packages/mcp/src/quote.ts:27), and step 8
+  // skips the quote signer here, so the cross-chain rail is closed on testnet
+  // and there is no spread to absorb. Inflating these would loosen limits for
+  // no benefit whatsoever — the opposite of what the mainnet tree needs.
   //
-  // ONLY THE MAINNET TREE. The testnet tree above keeps round caps, because
-  // NEAR Intents is mainnet-only — there is no spread to absorb on testnet,
-  // and inflating caps there would loosen limits for no benefit at all.
-  //
-  // THE TRADE, stated because it is a real loosening and not just a display
-  // change: these caps apply to BOTH rails. A per-tx cap of 10.2 lets a
-  // NearDirect payment spend 10.2, not 10. That is 2% more direct-payment
-  // headroom than the operator asked for, bought to make round cross-chain
-  // amounts clear. Anyone who cares more about an exact direct-payment ceiling
-  // than about round cross-chain deliveries should set these to flat numbers
-  // and accept delivering ~98% of the cap.
+  // Generous on purpose: the tokens are fake, so the numbers are sized to make
+  // the hierarchy legible rather than to bound a loss.
   label: "root",
-  daily: xchainCap(100),
-  perTx: xchainCap(10),
+  daily: 100,
+  perTx: 10,
   children: [
     {
       label: "research",
-      daily: xchainCap(60),
-      perTx: xchainCap(10),
+      daily: 60,
+      perTx: 10,
       children: [
-        { label: "r1", daily: xchainCap(50), perTx: xchainCap(10), agent: true },
-        { label: "r2", daily: xchainCap(50), perTx: xchainCap(10), agent: true },
+        { label: "r1", daily: 50, perTx: 10, agent: true },
+        { label: "r2", daily: 50, perTx: 10, agent: true },
       ],
     },
   ],

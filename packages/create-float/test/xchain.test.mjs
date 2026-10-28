@@ -13,7 +13,18 @@ import { XCHAIN_HEADROOM, xchainCeiling, xchainCap } from "../bin/xchain.mjs";
  * wrong the headroom became.
  */
 const MEASURED = [
+  // The MAINNET default tree's own amounts. This scale is the one that matters:
+  // mainnet gets the SMALL tree (real money, "a total loss is a rounding
+  // error"), and the spread is WORST at small sizes — so a flat 0.50 per-tx cap
+  // cannot deliver 0.50 at all. Getting this backwards is easy: the generous
+  // 100/10 tree is TESTNET's, where the rail is closed and the spread is moot.
   { desired: 0.5, charged: 507_579n },
+  { desired: 1, charged: 1_012_733n },
+  { desired: 1.5, charged: 1_517_884n },
+  { desired: 2, charged: 2_023_038n },
+  // Larger sizes, to pin the shape of the curve rather than one point — the
+  // spread falls from 1.52% to 1.03% across this range, so a headroom tuned
+  // only at one end would pass there and fail at the other.
   { desired: 10, charged: 10_105_478n },
   { desired: 50, charged: 50_517_682n },
   { desired: 60, charged: 60_620_733n },
