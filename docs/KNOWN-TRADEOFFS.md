@@ -579,6 +579,74 @@ recently-written store by mtime and refuses, pointing at
 union by request id, coverage widens, and a span stops being a gap only if
 neither side failed to read it.
 
+## 12b. What a cross-chain payment actually costs — MEASURED against live 1Click
+
+The Intents rail was executed end-to-end on testnet against a real NEP-141
+(`usdc.fakes.testnet`, not `mock_ft`), and the 1Click side was priced
+read-only against the live mainnet API. Both on 2026-10-28.
+
+**On-chain, testnet (`v4.floatv4.testnet`, node 24):**
+
+| | result |
+| --- | --- |
+| rail with no quote signer | `QUOTE_SIGNER_UNSET`, 2.77 Tgas, nothing moved |
+| settled | 25.00 to a **non-allowlisted** deposit address, **9.12 Tgas** |
+| agent substitutes its own deposit address | `QUOTE_BAD_SIGNATURE`, recipient delta 0 |
+
+9.12 Tgas against 7.85 for `NearDirect`. The ~1.27 delta is the second
+`ed25519_verify` (over `QuoteBinding`) plus the longer borsh payload, so the
+rail costs ~16% more gas and still sits at roughly 11x headroom under the
+relay's 100 Tgas.
+
+**Off-chain, live 1Click `/v0/quote` with `dry: true`** — a price, not an
+instruction, and it correctly returns no deposit address:
+
+| deliver to payee | vault is charged | spread |
+| --- | --- | --- |
+| 1 USDC | 1.012733 | 1.27% |
+| 5 USDC | 5.053953 | 1.08% |
+| 10 USDC | 10.105478 | 1.05% |
+| 25 USDC | 25.260054 | 1.04% |
+| 100 USDC | 101.032936 | 1.03% |
+
+ETA 22s throughout. The spread converges to ~1.03% and is worst at small
+sizes, which matters because `slippageTolerance` defaults to 100 bps and
+`EXACT_OUTPUT` reserves that as headroom — most of the spread is the slippage
+reserve, not fee.
+
+Two consequences for budgeting, both easy to get wrong:
+
+1. **The daily cap must cover `amountIn`, not the payee's amount.** A node
+   capped at exactly 10.000000 cannot deliver 10 USDC cross-chain — the quote
+   charges 10.105478 and the payment is refused by the cap, not by the solver.
+   `EXACT_OUTPUT` is deliberate (a payment is a promise about what the payee
+   receives), so this gap is structural rather than a tuning artefact. Size
+   caps with the spread in mind.
+2. **"Funded with 10 USDC" does not buy a 10 USDC cross-chain payment.** The
+   largest deliverable from exactly 10 USDC is about 9.89.
+
+**A failure mode worth recognising.** `refundTo` must be a MAINNET NEAR
+account. Both callers pass `refundTo: vault` (`mcp/src/server.ts:208`,
+`float-adapter/src/server.ts:338`), which is correct — but the asset ids in
+`ASSETS` are mainnet-only, so a TESTNET vault against them is internally
+inconsistent and 1Click answers:
+
+```
+HTTP 400 {"message":"Internal server error", "correlationId": ...}
+```
+
+That names nothing and reads exactly like an outage on their side. Measured
+both ways in one run: `floatv4.testnet` → 400 every time, `wrap.near` → 201
+with a real quote. If that 400 appears, check the network of `refundTo` before
+suspecting 1Click. `scripts/oneclick-probe.mjs` reproduces both.
+
+**Still not proven:** that a solver fills the order. The deposit address in the
+testnet run is an account we control standing in for a one-time quote address,
+and the live quote was `dry`, so no solver was ever engaged. On mainnet the
+owner's backend takes the address from a non-dry quote and signs the same
+binding — the signing step is the production mechanism, not a stub, but the
+counterparty is absent. That is the last gap before mainnet.
+
 ## 13. Sub-agents: why delegation is owner-mediated, not agent-initiated
 
 The obvious feature is `spawn_child` — an agent creating its own sub-agent and
