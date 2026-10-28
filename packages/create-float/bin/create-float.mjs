@@ -34,38 +34,24 @@ import { ed25519 } from "@noble/curves/ed25519";
 // the tree that applies it; XCHAIN_HEADROOM is internal to both.
 import { xchainCeiling } from "./xchain.mjs";
 import { defaultTree, flatten, planTreeLines } from "./tree.mjs";
+import { parseArgs, makeReaders, agentCount } from "./args.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
-const has = (f) => argv.includes(f);
-const opt = (f, d) => {
-  const i = argv.indexOf(f);
-  return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
-};
+const { has, opt } = makeReaders(argv);
 
-const DRY = has("--dry-run");
-const YES = has("--yes");
-const NETWORK = opt("--network", "testnet");
-const RPC_FLAG = opt("--rpc", null);
-
-// ---- Mainnet is allowed, but never by accident.
-//
-// This used to be a flat refusal. That was right while the cross-chain rail
-// was operator-facilitated and unproven — but NEAR Intents has no testnet, so
-// refusing mainnet outright now means refusing the only working cross-chain
-// path. The guard becomes a gate rather than a wall.
-//
-// What has NOT changed is the reason the wall was there. Real funds on a
-// contract with an unaudited history deserve an explicit, typed
-// acknowledgement, not a flag someone copy-pastes.
-if (NETWORK !== "testnet" && NETWORK !== "mainnet") {
-  console.error(`Unknown network '${NETWORK}'. Use testnet or mainnet.`);
-  process.exit(2);
+// Parsed in ./args.mjs, which also owns the unknown-network guard. That guard
+// used to call process.exit(2) at module scope, so importing this file to check
+// a single flag could terminate the caller; it now throws a UsageError and the
+// catch at the bottom turns it back into the same exit code.
+let CFG;
+try {
+  CFG = parseArgs(argv);
+} catch (e) {
+  console.error(e.message);
+  process.exit(e.exitCode ?? 2);
 }
-const MAINNET = NETWORK === "mainnet";
-// Per-network default. The flag wins; without this, mainnet got `null`
-// and every call failed with "Failed to parse URL from null".
-const RPC = RPC_FLAG ?? (MAINNET ? "https://free.rpc.fastnear.com" : "https://test.rpc.fastnear.com");
+const { dry: DRY, yes: YES, network: NETWORK, mainnet: MAINNET, rpc: RPC } = CFG;
 
 const C = {
   dim: (s) => `\x1b[2m${s}\x1b[0m`,
@@ -312,14 +298,13 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     const agentOpt =
       opt("--agents", null) ??
       (YES ? "0" : await ask(rl, `Create agent accounts now? (0-${candidateAgents.length}, 0.55 NEAR each)`, "0"));
-    const agentCount =
-      agentOpt === "all"
-        ? candidateAgents.length
-        : Math.max(0, Math.min(candidateAgents.length, Number.parseInt(agentOpt, 10) || 0));
-    if (agentOpt !== "all" && !Number.isFinite(Number.parseInt(agentOpt, 10)) && agentOpt !== "0") {
-      throw new Error(`--agents expects a number or "all", got "${agentOpt}"`);
-    }
-    const agents = candidateAgents.slice(0, agentCount);
+    // Validation moved to ./args.mjs so it can be tested, and TIGHTENED while
+    // moving: the old check accepted "3abc", because Number.parseInt returns 3
+    // and that is finite. The comment above it always said a non-numeric value
+    // must be refused rather than silently treated as a number, so this makes
+    // the code agree with its own stated intent. agentCount() rejects anything
+    // that does not round-trip as an integer.
+    const agents = candidateAgents.slice(0, agentCount(agentOpt, candidateAgents.length));
     const total = VAULT_FUNDING + AGENT_COST * BigInt(agents.length);
 
     step(3, "Plan");

@@ -697,9 +697,59 @@ plan's exact lines are pinned too: a tree with correct caps that prints the
 wrong node's numbers is still the first thing a user sees.
 
 **What these tests cannot do.** The faithful check would be shelling out to
-`--dry-run`, and it is not testable — step 3 ends with
-`await ownerAcct.getBalance()`, a live RPC read against a real funded account,
-so a subprocess test would be network-, credential- and account-dependent.
-`NEAR_CREDENTIALS_DIR` makes the PREFLIGHT scriptable but not the plan. So step
-ordering and argument parsing remain uncovered, and that gap is recorded here
-rather than implied by a green suite.
+`--dry-run`, and the `--dry-run` GATE itself is not reachable — step 3 ends with
+`await ownerAcct.getBalance()`, which a hermetic run cannot get past.
+
+Step ordering and argument parsing, listed here as uncovered when this row was
+written, are now covered — see M33 and M34. A subprocess test turned out to be
+hermetic after all, via two seams that already existed: `NEAR_CREDENTIALS_DIR`
+for the keychain, and `--rpc http://127.0.0.1:1` to make the first network call
+fail instantly on a closed local port rather than depend on DNS or the
+internet. The conclusion that it was untestable was right about `getBalance()`
+and wrong about everything before it.
+
+
+### M33 — remove the unknown-network guard
+
+- **Edit:** `packages/create-float/bin/args.mjs`,
+  `if (!NETWORKS.includes(network))` → `if (false && …)`.
+- **Predicted:** 2 red — the unit row asserting `parseArgs` throws a
+  `UsageError` with `exitCode` 2, and the subprocess row asserting the CLI
+  exits 2 *before any step runs*.
+- **Actual:** ✅ **2 failed, 30 passed** — exact match.
+
+The guard moved out of module scope while being extracted, and that is the
+point of the row. It used to call `process.exit(2)` directly, so importing
+`create-float.mjs` to read one flag could terminate the caller — a test runner
+included. It now throws and the entry point applies `e.exitCode`, which is both
+testable and the same behaviour from outside.
+
+### M34 — preflight stops reporting and starts merely mentioning
+
+- **Edit:** `create-float.mjs` step 0, the missing-credentials
+  `if (!existsSync(credDir))` → `if (false && …)`, so preflight notices nothing
+  and the run continues.
+- **Predicted:** 1 red — "preflight runs FIRST, and a preflight failure stops
+  everything after it". The sibling row uses a VALID scratch keychain, so it is
+  unaffected.
+- **Actual:** ✅ **1 failed, 31 passed** — exact match.
+
+This is f69e9d0's property restated as a test. Those checks used to run at step
+5, AFTER the plan was confirmed and two accounts had been created and funded, so
+discovering there was nothing to deploy left a half-built vault and real NEAR
+spent. "Preflight exists" is not the claim; "preflight GATES" is, and only an
+ordering assertion can carry it.
+
+Both rows run the real CLI as a subprocess. Nothing in `test/steps.test.mjs` can
+send a transaction: the dead RPC guarantees the run dies at step 3, and step 4
+is the first step that spends. The assertions check `[4]` is absent rather than
+trusting that.
+
+One harness note worth keeping, because it failed silently rather than loudly.
+The step headers are printed as `[1m[0][0m Preflight`, so matching
+`/\[(\d)\]\s/` against raw output finds nothing — the `]` is followed by an
+escape sequence, not a space. The first run of these tests reported an empty
+step list, which reads as "no steps ran" rather than "the matcher cannot see
+them". Every assertion now goes through a `plain()` stripper. Same hazard as
+asserting on coloured text anywhere, and the same shape as injecting `dim` into
+`planTreeLines`.
