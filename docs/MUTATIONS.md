@@ -851,3 +851,60 @@ the pre-fix and post-fix code as identical.
 the other direction — a resume still bills 0.55 per uncreated agent, so the fix
 is "skip what is already paid for" rather than "skip everything once the vault
 exists". Without it, `vaultExists ? 0n : total` would also pass.
+
+### M38 — the orphaned `#[private]` on `get_node` (found in production, not by mutation)
+
+`contracts/vault/src/lib.rs`
+
+This row is inverted: the "mutation" was the SHIPPED CODE, and it was found by
+calling the deployed mainnet contract, not by the suite.
+
+```rust
+  /// Chain Signatures rail. A successful promise means the MPC network
+  /// returned a SIGNATURE over the Base transaction.
+  #[private]                        // <-- orphan: on_sign_result's, not get_node's
+  // -------------------------------------------------------------- views
+
+  pub fn get_node(&self, node_id: NodeId) -> Node {
+```
+
+`on_sign_result` was deleted when the MPC/Base rail was removed on 2026-10-28.
+Its body went; its doc comment and `#[private]` stayed. Rust binds an attribute
+to the next ITEM, and a comment is not an item, so the attribute landed on
+`get_node`. `#[private]` expands to an assert on `predecessor_account_id()`,
+which the runtime forbids in a view context, so every view call returned:
+
+    HostError(ProhibitedInView { method_name: "predecessor_account_id" })
+
+**Observed on mainnet** against `float.test015.near`, while reading the tree to
+confirm the token id. `get_tree` and `get_node_budget` both answered fine, which
+is what made it visible: one view failing while its neighbours worked.
+
+**Why the whole suite missed it, which is the part worth keeping.** Two
+independent blinds, either of which alone would have been enough:
+
+1. `#[private]` is injected into the generated `extern "C"` wrapper, NOT the
+   inner Rust method. The six internal `self.get_node(..)` call sites are
+   untouched, so no payment path changed behaviour — the bug has no symptom
+   anywhere except the external view surface.
+2. All 15 unit-test call sites are `v.get_node(..)` — the Rust method, direct.
+   They bypass the wrapper entirely and cannot observe `#[private]` even in
+   principle. Only a real node executes that wrapper.
+
+So "the function returns the right value" and "the function can be CALLED" were
+two different claims, and the second one had zero coverage across 100 unit and
+24 sandbox tests.
+
+**Red/green.** With the attribute in place, `tests/views.rs` fails 3/3 and the
+surface test names `get_node` as the only broken view — the other six pass,
+which bounds the blast radius to one method. With it removed, 3/3 pass and the
+tier is 27/27.
+
+The general repair is the surface test, not the deletion: `no_view_asserts_on
+_its_caller` calls all seven public views AS views and reports every failure at
+once, naming `ProhibitedInView` when it sees it.
+
+**Still live on mainnet.** `float.test015.near` is running the affected build.
+No funds or limits are at risk — `#[private]` is strictly MORE restrictive and
+the internal callers are unaffected — but a single-node read is broken until
+the contract is redeployed.

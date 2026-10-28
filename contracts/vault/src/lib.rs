@@ -1388,16 +1388,23 @@ impl Vault {
         )
     }
 
-    /// Chain Signatures rail. A successful promise means the MPC network
-    /// returned a SIGNATURE over the Base transaction.
-    ///
-    /// Read that precisely: this proves the vault obtained authority to move
-    /// the funds on Base. It does NOT prove the transaction was relayed or
-    /// included. Relaying is off-chain and the contract cannot observe it, so
-    /// `Signed` is deliberately a distinct reason code from `Settled` — a
-    /// reader of the ledger can tell which guarantee they have.
-    #[private]
     // ---------------------------------------------------------------- views
+    //
+    // Nothing between this banner and the first view. There used to be an
+    // orphaned `#[private]` here — the leftover of `on_sign_result`, the Chain
+    // Signatures callback deleted when the MPC/Base rail was removed. Its body
+    // went; its doc comment and attribute stayed. Rust binds an attribute to
+    // the next ITEM and a comment is not an item, so `#[private]` landed on
+    // `get_node` and expanded to an assert on `predecessor_account_id()`, which
+    // the runtime forbids in a view context. `get_node` shipped to mainnet
+    // answering every view call with
+    // `HostError(ProhibitedInView { method_name: "predecessor_account_id" })`.
+    //
+    // It stayed invisible because `#[private]` is injected into the generated
+    // `extern "C"` wrapper, not the inner method: the six internal
+    // `self.get_node(..)` calls below were unaffected, and the 15 unit-test
+    // call sites invoke the Rust method directly, so neither could observe it.
+    // Only a real node can. tests/views.rs now calls every view AS a view.
 
     pub fn get_node(&self, node_id: NodeId) -> Node {
         self.nodes
