@@ -127,10 +127,29 @@ TEST was weak, not because the guard was strong. That generalises to any
 overflow guard and is why a surviving mutation is investigated rather than
 explained away.
 
-One piece of residue worth knowing: the `BaseConfig` struct still exists in
-`types.rs` and the vault still stores `base_config: Option<BaseConfig>` with a
-`get_base_config()` getter — but the setter was removed with the rail, so the
-field is permanently `None` on every vault and nothing dispatches on it.
+`BaseConfig`, the `base_config` field and `get_base_config()` were all removed
+on 2026-10-28. Because `base_config` was the 5th field of the persisted `Vault`
+struct, that is a **borsh layout change**, and it ships with a `migrate`
+method — see the migration section in `lib.rs`.
+
+An earlier revision of this section claimed the field was "permanently `None`
+on every vault". That was **wrong**, and the correction is the useful part:
+`None` is the default and there was no setter left, but `v3.floatvault-12329.
+testnet` was configured while the setter still existed and its state holds a
+populated config (~116 bytes: `chain_id` 84532, the Sepolia USDC address, a
+`base-1` derivation path). Reading the deployed state refuted an inference
+drawn from reading the source.
+
+Two measured facts about upgradeability, both from RPC `view_state` on
+2026-10-28:
+
+- **`v4.floatv4.testnet` (103 bytes) migrates.** Its layout matches the shadow
+  struct exactly, with `base_config` as a single `None` tag.
+- **`v3.floatvault-12329.testnet` (284 bytes) cannot, and already could not.**
+  Its state has no `pubkey_to_node`/`pubkey_to_nonce` — the virtual-agent
+  fields added earlier the same day — so it was already unreadable by current
+  code before the Base rail was touched. It must be redeployed, not upgraded.
+  Its 15 stored requests match the count recorded in §5.
 
 ## 4. A stuck reservation
 

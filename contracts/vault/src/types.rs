@@ -158,47 +158,6 @@ impl Route {
     }
 }
 
-/// Owner-set parameters for the Base rail.
-///
-/// `None` on the vault means the rail is CLOSED, which is the default: a
-/// freshly deployed vault cannot sign a cross-chain anything until the owner
-/// explicitly opens it and names the token contract.
-#[near(serializers = [borsh, json])]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BaseConfig {
-    /// The MPC signer, e.g. `v1.signer-prod.testnet`.
-    pub mpc_contract: AccountId,
-    /// The ERC-20 USDC contract on Base, lowercase `0x` + 40 hex.
-    pub usdc_address: String,
-    /// 8453 mainnet, 84532 Sepolia. Signed over, so a signature for one chain
-    /// is not valid on the other.
-    pub chain_id: u64,
-    /// MPC derivation path. Fixes which Base address the vault controls.
-    pub derivation_path: String,
-    /// HARD CEILING on the gas cost of a single signed transaction, in wei.
-    ///
-    /// This closes the one hole through which an agent could move value
-    /// OUTSIDE the ERC-20 budget. The budget tree constrains USDC; it says
-    /// nothing about the native ETH the vault's derived Base address holds to
-    /// pay for gas. Since the agent supplies `max_fee_per_gas` and
-    /// `gas_limit`, an inflated pair would produce a validly-signed
-    /// transaction that burns that ETH — the leash would hold on the token and
-    /// leak on the fee.
-    ///
-    /// The bound is on the PRODUCT, not on each field: the maximum a 1559
-    /// transaction can ever cost is `gas_limit * max_fee_per_gas` (the network
-    /// charges `gas_used * (base_fee + min(priority, max_fee - base_fee))`,
-    /// which is always <= that). Capping the two fields independently would
-    /// leave their product unbounded in combination, which is the mistake this
-    /// comment exists to prevent.
-    pub max_tx_fee_wei: U128,
-    /// Which MPC root key signs. Measured on v1.signer-prod.testnet
-    /// 2026-10-26: domain 0 is CaitSith/secp256k1 — the ECDSA curve an EVM
-    /// chain needs. Domain 1 is Frost/Ed25519 and would produce a signature
-    /// Base cannot verify, which is why this is owner-set and not guessed.
-    pub domain_id: u64,
-}
-
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]

@@ -1411,6 +1411,13 @@ fn a_node_with_an_open_reservation_is_not_removable() {
     assert!(!removed, "a node with an open reservation was removed");
 }
 
+/// Gated: needs `set_day_len_ns`, which only the test-clock build exposes.
+/// Without this gate the suite cannot compile in the PRODUCTION shape — and
+/// the production shape is the one that has to migrate real state. Removing
+/// `base_config` changed the struct layout, and the test-clock build carries
+/// an extra `day_len_ns_override`, so the two shapes disagree by 8 bytes. See
+/// `the_shadow_struct_matches_real_pre_migration_bytes_from_chain`.
+#[cfg(feature = "test-clock")]
 #[test]
 fn a_reservation_opened_before_midnight_still_blocks_removal() {
     // `today()` is a fixed window and RESERVATION_TTL is an hour, so a
@@ -2391,4 +2398,292 @@ fn binding_bytes_are_stable_for_the_js_encoder() {
     // assertion is what forces that rather than leaving it to be discovered
     // as unexplained signature failures.
     assert_eq!(hex, "0f0000007661756c742e746573742e6e6561720700000000000000d202964900000000050000007265712d310e000000757364632e746573742e6e65617200e1f50500000000000000000000000003000000626f6202000000686900", "binding bytes changed; update the JS encoder and its test");
+}
+
+// =====================================================================
+// State migration — dropping `base_config` from the Vault struct
+//
+// WHY THIS NEEDS ITS OWN TESTS, and why the 95 that already passed proved
+// nothing about it: a unit test builds its own fixtures, so it never reads
+// bytes written by OLDER code. The whole failure mode here is a layout
+// mismatch against records a previous version wrote, which is invisible to
+// every other test in this file.
+//
+// `base_config: Option<BaseConfig>` was the 5th field of `Vault`. Removing it
+// shifts every following byte. MEASURED on testnet 2026-10-28:
+//   v4.floatv4.testnet           get_base_config -> null   (1 byte)
+//   v3.floatvault-12329.testnet  get_base_config -> {..}   (~130 bytes)
+// so the shifted region is a populated struct on a vault that currently works.
+//
+// These tests go through STORAGE, not a shared in-memory cache: the legacy
+// collections are flushed before the state is written, and `migrate` then
+// rebuilds handles that must find the entries by prefix. Without the flush the
+// test would pass on cache hits and prove nothing about a real deploy.
+// =====================================================================
+
+/// v3's real on-chain config, so the bytes being read past are the ones that
+/// actually exist rather than a hand-picked small case.
+fn v3_base_config() -> LegacyBaseConfig {
+    LegacyBaseConfig {
+        mpc_contract: "v1.signer-prod.testnet".parse().unwrap(),
+        usdc_address: "0x036cbd53842c5426634e7929541ec2318f3dcf7e".to_string(),
+        chain_id: 84532,
+        derivation_path: "base-1".to_string(),
+        max_tx_fee_wei: U128(10_000_000_000_000_000),
+        domain_id: 0,
+    }
+}
+
+/// Rewrites a populated vault's state in the PRE-removal layout and returns
+/// the facts the migration has to preserve.
+fn write_legacy_state(base_config: Option<LegacyBaseConfig>) -> (NodeId, String, usize) {
+    let t = tree();
+    let mut v = t.v;
+
+    // A request, so `requests` (an IterableMap, with its own key vector) has
+    // to survive and not just the simpler LookupMaps.
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("mig-1".into(), tok(), usdc(5), payee(), "".into(), None));
+
+    let node_count = v.node_order.len();
+    let root = t.root;
+
+    // Flush every collection to storage. `migrate` deserialises fresh handles
+    // that read by prefix, so anything still sitting in a cache would vanish.
+    v.nodes.flush();
+    v.account_to_node.flush();
+    v.pubkey_to_node.flush();
+    v.pubkey_to_nonce.flush();
+    v.ledgers.flush();
+    v.last_paid_ns.flush();
+    v.requests.flush();
+
+    let legacy = LegacyVault {
+        owner: v.owner.clone(),
+        network: v.network.clone(),
+        paused: v.paused,
+        strict_allocation: v.strict_allocation,
+        base_config,
+        nodes: v.nodes,
+        node_order: v.node_order.clone(),
+        account_to_node: v.account_to_node,
+        pubkey_to_node: v.pubkey_to_node,
+        pubkey_to_nonce: v.pubkey_to_nonce,
+        next_node_id: v.next_node_id,
+        ledgers: v.ledgers,
+        last_paid_ns: v.last_paid_ns,
+        requests: v.requests,
+        #[cfg(feature = "test-clock")]
+        day_len_ns_override: v.day_len_ns_override,
+    };
+
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    env::state_write(&legacy);
+    (root, "mig-1".to_string(), node_count)
+}
+
+/// The migration path that matters: v3's populated config, ~130 bytes that
+/// must be read and discarded without disturbing anything after it.
+#[test]
+fn migrate_drops_a_populated_base_config_and_preserves_the_tree() {
+    let (root, req_id, node_count) = write_legacy_state(Some(v3_base_config()));
+
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    let v = Vault::migrate();
+
+    // Scalars before the removed field.
+    assert_eq!(v.owner, owner(), "owner lost");
+    assert_eq!(v.network, "sandbox", "network lost");
+    assert!(!v.paused, "paused flipped");
+    assert!(!v.strict_allocation, "strict_allocation flipped");
+
+    // Everything AFTER the removed field — this is what a byte shift destroys.
+    assert_eq!(v.node_order.len(), node_count, "node_order truncated");
+    assert_eq!(v.get_node(root).label, "root", "nodes misparsed after the shift");
+    assert_eq!(
+        v.account_to_node.get(&r1()).copied(),
+        Some(root + 3),
+        "account_to_node lost its binding"
+    );
+    assert_eq!(v.list_requests(None, None).len(), 1, "requests vanished");
+    assert!(v.get_request(req_id).is_some(), "the stored request is unreadable");
+}
+
+/// The `None` case, which is what every FRESH vault has. Still a one-byte
+/// shift, and a one-byte shift corrupts just as completely as a large one.
+#[test]
+fn migrate_also_handles_a_closed_rail_with_no_config() {
+    let (root, _, node_count) = write_legacy_state(None);
+
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    let v = Vault::migrate();
+
+    assert_eq!(v.owner, owner());
+    assert_eq!(v.node_order.len(), node_count);
+    assert_eq!(v.get_node(root).label, "root");
+    assert_eq!(v.list_requests(None, None).len(), 1);
+}
+
+/// The premise check. If the new layout still parsed as the old one, the
+/// migration would be unnecessary AND silently wrong, so this asserts the two
+/// layouts are genuinely incompatible rather than taking it on trust.
+///
+/// Reading new bytes as `LegacyVault` consumes the first byte of `nodes`'
+/// prefix-length as the `Option` tag; that byte is 4, and borsh rejects any
+/// `Option` tag other than 0 or 1.
+#[test]
+#[should_panic(expected = "Cannot deserialize the contract state.")]
+fn the_new_layout_does_not_parse_as_the_old_one() {
+    let t = tree();
+    let v = t.v;
+
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    env::state_write(&v); // CURRENT layout, no base_config
+    let _ = Vault::migrate();
+}
+
+// NOT TESTED HERE, and the attempt is the instructive part: `migrate` is
+// `#[private]`, so only the vault account may call it on chain. There is
+// deliberately no unit test for that.
+//
+// near-sdk emits the check into the WASM EXPORT, not the inner Rust fn —
+// near-sdk-macros 5.29.1, impl_item_method_info.rs:187, generated inside
+// `#[cfg(target_arch = "wasm32")] pub extern "C" fn migrate()`:
+//
+//     if env::current_account_id() != env::predecessor_account_id() {
+//         env::panic_str("Method migrate is private");
+//     }
+//
+// A unit test calls `Vault::migrate()` directly on the NATIVE target and
+// never crosses that wrapper. A `#[should_panic(expected = "Method migrate is
+// private")]` test therefore fails outright, because nothing panics — it was
+// written here first and removed once it did exactly that.
+//
+// The guarantee is real but belongs to a tier that executes the wasm. Covering
+// it needs the sandbox (contracts/integration-tests), which cannot compile on
+// Windows: `near-workspaces` ships no sandbox binary for this platform. So on
+// this machine `#[private]` on `migrate` is UNVERIFIED — a known gap, not a
+// passing test.
+
+// ---------------------------------------------------------------------
+// The fixture that is NOT synthetic.
+//
+// Every migration test above writes state with `LegacyVault` and reads it
+// back with `LegacyVault`, so it is self-consistent by construction: it
+// proves `migrate` maps fields correctly, but it CANNOT prove the shadow
+// struct matches what the pre-removal code actually wrote. A wrong shadow
+// struct would round-trip through those tests perfectly and still brick a
+// real vault.
+//
+// These are real bytes, read from v3.floatvault-12329.testnet's `STATE` key
+// over the testnet RPC on 2026-10-28 at block 275134487 — written by the
+// deployed code that still had `base_config`. 284 bytes total.
+// ---------------------------------------------------------------------
+
+/// `v4.floatv4.testnet` STATE, read over testnet RPC on 2026-10-28. 103 bytes,
+/// written by the pre-removal code. `base_config` is the `None` tag (0x00)
+/// here, which is the one-byte shift every CURRENT-generation vault presents.
+const V4_LEGACY_STATE_HEX: &str = "0f000000666c6f617476342e746573746e657407000000746573746e65740000000100000000040000000000000001000000020000000300000001000000030100000005010000000604000000010000000101000000020400000002000000047602000000046d";
+
+// ---------------------------------------------------------------------
+// WHY THERE IS NO v3 FIXTURE, which is a finding rather than an omission.
+//
+// `v3.floatvault-12329.testnet` CANNOT be migrated by this code, and that was
+// already true before `base_config` was removed. Its 284 state bytes, decoded
+// field by field on 2026-10-28, are:
+//
+//   owner, network, paused, strict_allocation, base_config(Some, ~116 bytes),
+//   nodes[0], node_order(21), account_to_node[3], next_node_id=21,
+//   ledgers[1], last_paid_ns[2], requests(keys len 15)
+//
+// That accounts for all 284 bytes with nothing left over — and it contains NO
+// `pubkey_to_node` and NO `pubkey_to_nonce`. Those two fields arrived with the
+// virtual-agent work earlier the same day, so v3's layout is two generations
+// behind: the virtual-agent commits already made it unreadable, independently
+// of anything done here. Removing `base_config` did not break v3; it was
+// already broken, and a `migrate` that claimed to handle it would be lying.
+//
+// Corroboration that the decode is right rather than merely self-consistent:
+// `requests.keys len` is 15, and KNOWN-TRADEOFFS §5 independently records
+// "all fifteen requests on the live vault". Migrating v3 would need a second
+// shadow struct for the pre-virtual-agent layout; it is not attempted, and v3
+// must be redeployed rather than upgraded.
+// ---------------------------------------------------------------------
+
+fn hex_bytes(s: &str) -> Vec<u8> {
+    assert!(s.len() % 2 == 0, "hex must be even-length");
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+        .collect()
+}
+
+/// Does the shadow struct describe the layout the OLD CODE really wrote?
+///
+/// `node_order` and `next_node_id` are the load-bearing assertions. They sit
+/// after `base_config`, so if that field were mis-sized by even one byte they
+/// would decode as garbage rather than as `[0,1,2,3]` and `4`.
+///
+/// PRODUCTION SHAPE ONLY, and that is the point. The test-clock build appends
+/// `day_len_ns_override: u64`, so these real bytes come up exactly 8 short
+/// against it and borsh reports "Unexpected length of input".
+/// `scripts/deploy-testnet.sh` refuses to ship a test-clock wasm, so chain
+/// state is always this shape — which means `cargo test --features test-clock`
+/// structurally CANNOT check the layout that actually gets migrated. Both
+/// invocations are required:
+///   cargo test -p vault                      <- this test runs
+///   cargo test --features test-clock -p vault <- this test is skipped
+#[cfg(not(feature = "test-clock"))]
+#[test]
+fn the_shadow_struct_matches_real_pre_migration_bytes_from_chain() {
+    use near_sdk::borsh::BorshDeserialize;
+    let bytes = hex_bytes(V4_LEGACY_STATE_HEX);
+    assert_eq!(bytes.len(), 103, "fixture truncated");
+
+    let old = LegacyVault::try_from_slice(&bytes)
+        .expect("v4's real on-chain state must parse as the shadow struct");
+
+    assert_eq!(old.owner.as_str(), "floatv4.testnet");
+    assert_eq!(old.network, "testnet");
+    assert!(!old.paused);
+    assert!(!old.strict_allocation);
+    assert!(
+        old.base_config.is_none(),
+        "v4 never had the rail opened, so this is the None tag"
+    );
+
+    assert_eq!(
+        old.node_order,
+        vec![0u32, 1, 2, 3],
+        "node_order is the byte-shift canary and it is wrong"
+    );
+    assert_eq!(old.next_node_id, 4, "next_node_id sits past the pubkey maps");
+}
+
+/// End to end on the same real bytes, through `env::state_read` exactly as a
+/// deploy would: `migrate` must consume v4's state and hand back a
+/// current-layout vault with everything after the dropped field intact.
+///
+/// The collections come across as handles only — their entries live under
+/// v4's own storage prefixes and are not present in this mock, which is why
+/// this asserts on `node_order`/`next_node_id` and the scalars rather than on
+/// node contents.
+///
+/// Production shape only, for the same 8-byte reason as the test above.
+#[cfg(not(feature = "test-clock"))]
+#[test]
+fn migrate_consumes_real_v4_state() {
+    let bytes = hex_bytes(V4_LEGACY_STATE_HEX);
+
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    env::storage_write(b"STATE", &bytes);
+
+    let v = Vault::migrate();
+
+    assert_eq!(v.owner.as_str(), "floatv4.testnet");
+    assert_eq!(v.network, "testnet");
+    assert!(!v.paused);
+    assert!(!v.strict_allocation);
+    assert_eq!(v.node_order, vec![0u32, 1, 2, 3]);
+    assert_eq!(v.next_node_id, 4, "next_node_id survived the shift");
 }

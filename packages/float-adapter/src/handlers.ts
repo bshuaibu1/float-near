@@ -189,15 +189,6 @@ export interface VaultInfo {
    * never arrived. Null when the token contract cannot be read.
    */
   vaultTokenBalance: string | null;
-  /** Null means the cross-chain rail is CLOSED. */
-  baseRail: {
-    mpcContract: string;
-    usdcAddress: string;
-    chainId: number;
-    derivationPath: string;
-    domainId: number;
-    maxTxFeeWei: string;
-  } | null;
 }
 
 /**
@@ -209,16 +200,6 @@ export function explorerBaseFor(network: string): string {
   return network === "mainnet" || network === "near"
     ? "https://nearblocks.io"
     : "https://testnet.nearblocks.io";
-}
-
-/** `get_base_config` as the contract returns it. */
-interface RawBaseConfig {
-  mpc_contract: string;
-  usdc_address: string;
-  chain_id: number;
-  derivation_path: string;
-  domain_id: number;
-  max_tx_fee_wei: string;
 }
 
 /** A view against an arbitrary contract — the token, not the vault. */
@@ -233,20 +214,17 @@ export async function getVaultInfo(
   cfg: AdapterConfig,
   viewOn: ViewOnFn,
 ): Promise<VaultInfo> {
-  const [c, b] = await Promise.all([
-    view<{
-      owner: string;
-      vault_id: string;
-      network: string;
-      paused: boolean;
-      clock_mode: string;
-      strict_allocation: boolean;
-    }>("get_config", {}),
-    // A vault deployed before the Base rail existed has no such method.
-    // Reporting the rail as closed is the honest reading of that: nothing can
-    // be signed on it either way.
-    view<RawBaseConfig | null>("get_base_config", {}).catch(() => null),
-  ]);
+  // `get_base_config` used to be read here alongside `get_config`. The
+  // MPC/Base rail and its config were removed from the contract on
+  // 2026-10-28, so there is no method left to call and no rail to report.
+  const c = await view<{
+    owner: string;
+    vault_id: string;
+    network: string;
+    paused: boolean;
+    clock_mode: string;
+    strict_allocation: boolean;
+  }>("get_config", {});
 
   // Read off the TOKEN contract, not the vault — so it is the real balance and
   // not an echo of the vault's own bookkeeping. Null rather than "0" on
@@ -267,16 +245,6 @@ export async function getVaultInfo(
     clockMode: c.clock_mode,
     strictAllocation: c.strict_allocation,
     vaultTokenBalance,
-    baseRail: b
-      ? {
-          mpcContract: b.mpc_contract,
-          usdcAddress: b.usdc_address,
-          chainId: b.chain_id,
-          derivationPath: b.derivation_path,
-          domainId: b.domain_id,
-          maxTxFeeWei: b.max_tx_fee_wei,
-        }
-      : null,
   };
 }
 

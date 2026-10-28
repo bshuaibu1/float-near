@@ -255,14 +255,6 @@ describe("getVaultInfo", () => {
   function view(over: Record<string, unknown> = {}): ViewFn {
     const table: Record<string, unknown> = {
       get_config: cfgView,
-      get_base_config: {
-        mpc_contract: "v1.signer-prod.testnet",
-        usdc_address: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-        chain_id: 84532,
-        derivation_path: "base-1",
-        domain_id: 0,
-        max_tx_fee_wei: "10000000000000000",
-      },
       ...over,
     };
     return async <T>(m: string) => table[m] as T;
@@ -298,27 +290,19 @@ describe("getVaultInfo", () => {
     expect(info.vaultTokenBalance).toBeNull();
   });
 
-  it("reports the base rail as CLOSED on a vault that predates it", async () => {
-    // An older deployment has no get_base_config method at all. Nothing can be
-    // signed on that rail either way, so closed is the honest reading.
+  // The two base-rail tests that stood here are gone with the rail: the
+  // contract no longer has `get_base_config`, so there is nothing to map and
+  // no "closed" state to report. Replaced by the assertion that we no longer
+  // ASK — a stale call would be a wasted RPC round-trip on every dashboard
+  // load, and silently swallowed by the old `.catch(() => null)`.
+  it("does not call the removed get_base_config", async () => {
+    const asked: string[] = [];
     const v: ViewFn = async <T>(m: string) => {
-      if (m === "get_base_config") throw new Error("MethodNotFound");
+      asked.push(m);
       return cfgView as T;
     };
-    const info = await getVaultInfo(v, cfg(), async () => "0");
-    expect(info.baseRail).toBeNull();
-  });
-
-  it("maps the base rail into camelCase for the UI", async () => {
-    const info = await getVaultInfo(view(), cfg(), async () => "0");
-    expect(info.baseRail).toEqual({
-      mpcContract: "v1.signer-prod.testnet",
-      usdcAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-      chainId: 84532,
-      derivationPath: "base-1",
-      domainId: 0,
-      maxTxFeeWei: "10000000000000000",
-    });
+    await getVaultInfo(v, cfg(), async () => "0");
+    expect(asked).toEqual(["get_config"]);
   });
 });
 

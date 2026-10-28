@@ -115,11 +115,11 @@ pub struct Vault {
     /// false = overcommit: children contend for a shared parent pool.
     ///         This is the case that races, and the case under test.
     strict_allocation: bool,
-    /// `None` means the Base rail is CLOSED. Default on a fresh deploy, so the
-    /// vault cannot sign a cross-chain transaction until the owner opens the
-    /// rail and names the token contract it is allowed to call.
-    base_config: Option<BaseConfig>,
 
+    // NOTE: a 5th field `base_config: Option<BaseConfig>` sat here until
+    // 2026-10-28. It was REMOVED, which changes this struct's borsh layout —
+    // see `migrate` at the bottom of this impl. Any state written before that
+    // date must pass through `migrate` or it will misparse from this point on.
     nodes: LookupMap<NodeId, Node>,
     /// Bounded by MAX_NODES so `get_tree` stays a single view call.
     node_order: Vec<NodeId>,
@@ -171,7 +171,6 @@ impl Vault {
             network,
             paused: false,
             strict_allocation,
-            base_config: None,
             nodes: LookupMap::new(StorageKey::Nodes),
             node_order: Vec::new(),
             account_to_node: LookupMap::new(StorageKey::AccountToNode),
@@ -883,10 +882,6 @@ impl Vault {
         self.strict_allocation = strict;
     }
 
-    pub fn get_base_config(&self) -> Option<BaseConfig> {
-        self.base_config.clone()
-    }
-
     // ------------------------------------------------------- agent methods
 
     /// NOT `#[payable]`: a function-call key cannot attach a deposit, so this
@@ -1481,6 +1476,117 @@ impl Vault {
             strict_allocation: self.strict_allocation,
             node_count: self.node_order.len() as u32,
             clock_mode: self.clock_mode(),
+        }
+    }
+}
+
+// --------------------------------------------------------------- migration
+//
+// `base_config: Option<BaseConfig>` was the 5th field of `Vault` until
+// 2026-10-28, when the MPC/Base rail was removed. Deleting a field from a
+// borsh struct shifts every byte after it, so a vault deployed before that
+// date cannot read its own state under this code: the `Option`'s tag byte
+// would be consumed as the start of `nodes`' storage prefix, and every field
+// after it would misparse.
+//
+// MEASURED on testnet 2026-10-28, which is why this is a migration and not a
+// plain delete:
+//   v4.floatv4.testnet           `get_base_config` -> null    (1 byte, 0x00)
+//   v3.floatvault-12329.testnet  `get_base_config` -> {..}    (~130 bytes)
+// A populated config is not hypothetical. v3 was configured while the setter
+// still existed, so the shifted region is a whole struct there, not one byte.
+//
+// `migrate` MUST be called in the same transaction as the deploy. A deploy
+// without it leaves a vault whose every method panics on state read.
+
+/// The pre-removal `BaseConfig`, retained ONLY so `migrate` can consume the
+/// bytes it has to read past. Field ORDER is the layout — do not reorder, and
+/// do not "tidy" these types.
+// `dead_code` is correct here and the point: these fields are DESERIALISED
+// and never read. Borsh needs them declared to know how many bytes to consume
+// before `nodes`; discarding the value is the migration. Deleting them to
+// silence the warning would resize the struct and corrupt every field after
+// it.
+#[allow(dead_code)]
+#[derive(near_sdk::borsh::BorshDeserialize)]
+#[cfg_attr(test, derive(near_sdk::borsh::BorshSerialize))]
+#[borsh(crate = "near_sdk::borsh")]
+pub(crate) struct LegacyBaseConfig {
+    mpc_contract: AccountId,
+    usdc_address: String,
+    chain_id: u64,
+    derivation_path: String,
+    max_tx_fee_wei: U128,
+    domain_id: u64,
+}
+
+/// The pre-removal `Vault` layout, field for field — including the
+/// `test-clock` cfg, so each build migrates the layout that same build would
+/// have written. The deploy script refuses to ship a test-clock wasm, so live
+/// state is the `not(test-clock)` shape.
+// Same reason as above: `base_config` is read to be thrown away.
+#[allow(dead_code)]
+#[derive(near_sdk::borsh::BorshDeserialize)]
+#[cfg_attr(test, derive(near_sdk::borsh::BorshSerialize))]
+#[borsh(crate = "near_sdk::borsh")]
+pub(crate) struct LegacyVault {
+    pub(crate) owner: AccountId,
+    pub(crate) network: String,
+    pub(crate) paused: bool,
+    pub(crate) strict_allocation: bool,
+    pub(crate) base_config: Option<LegacyBaseConfig>,
+    pub(crate) nodes: LookupMap<NodeId, Node>,
+    pub(crate) node_order: Vec<NodeId>,
+    pub(crate) account_to_node: LookupMap<AccountId, NodeId>,
+    pub(crate) pubkey_to_node: LookupMap<PublicKey, NodeId>,
+    pub(crate) pubkey_to_nonce: LookupMap<PublicKey, u64>,
+    pub(crate) next_node_id: NodeId,
+    pub(crate) ledgers: LookupMap<(NodeId, AccountId, u64), DailyLedger>,
+    pub(crate) last_paid_ns: LookupMap<NodeId, u64>,
+    pub(crate) requests: IterableMap<String, PaymentRequest>,
+    #[cfg(feature = "test-clock")]
+    pub(crate) day_len_ns_override: u64,
+}
+
+#[near]
+impl Vault {
+    /// Reads the pre-2026-10-28 layout and rewrites state without
+    /// `base_config`. Owner-agnostic but `#[private]`: only the vault account
+    /// itself can call it, which is the account doing the deploy.
+    ///
+    /// The collections move across by handle. Their entries live under their
+    /// own storage prefixes, not inside this struct — only the prefix is a
+    /// struct field — so no key/value pair is rewritten, copied, or charged
+    /// for again. That is what keeps this O(1) rather than O(nodes).
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        // Panics with "Cannot deserialize the contract state." if the bytes
+        // are not the OLD layout, which is the correct outcome: running this
+        // against already-migrated state must fail loudly rather than
+        // overwrite it with a half-read struct.
+        let old: LegacyVault = match env::state_read() {
+            Some(v) => v,
+            None => fail(ReasonCode::InvalidConfig, "no existing state to migrate"),
+        };
+
+        Self {
+            owner: old.owner,
+            network: old.network,
+            paused: old.paused,
+            strict_allocation: old.strict_allocation,
+            // old.base_config is read and DROPPED here. That is the migration.
+            nodes: old.nodes,
+            node_order: old.node_order,
+            account_to_node: old.account_to_node,
+            pubkey_to_node: old.pubkey_to_node,
+            pubkey_to_nonce: old.pubkey_to_nonce,
+            next_node_id: old.next_node_id,
+            ledgers: old.ledgers,
+            last_paid_ns: old.last_paid_ns,
+            requests: old.requests,
+            #[cfg(feature = "test-clock")]
+            day_len_ns_override: old.day_len_ns_override,
         }
     }
 }
