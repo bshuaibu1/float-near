@@ -84,6 +84,49 @@ export function defaultTree(mainnet) {
       };
 }
 
+/**
+ * Human amount -> base units, EXACTLY, without touching floating point.
+ *
+ * `BigInt(n.daily) * BigInt(10 ** decimals)` was the original, and it threw on
+ * every fractional cap: `BigInt(2.04)` is a TypeError, because BigInt refuses
+ * any non-integer. So did `BigInt(1.5)` and `BigInt(0.5)` — meaning the MAINNET
+ * tree never worked, from before the caps were pre-sized. Testnet's tree is
+ * 100/60/50/10, all whole, which is why it went unnoticed until a real mainnet
+ * deploy reached step 6 with the vault already created and funded.
+ *
+ * The obvious repair is `BigInt(Math.round(human * 10 ** decimals))`, and for
+ * TODAY's caps it would work — 2.04, 1.53, 1.02 and 0.51 all multiply to exact
+ * integers at 1e6. That is luck, not a property. Neighbouring values do not:
+ *
+ *     2.01 * 1e6 = 2009999.9999999998
+ *     2.03 * 1e6 = 2029999.9999999998
+ *     2.05 * 1e6 = 2049999.9999999998
+ *
+ * So anyone choosing 2.01 as a cap would hit it. Math.round would paper over
+ * those three and keep papering until a value where the error exceeds half a
+ * unit. Splitting the decimal string removes the whole class instead of the
+ * instances, which is worth more than the two lines it costs.
+ *
+ * This splits the decimal string instead, so no float arithmetic happens at
+ * all. Over-precision is REFUSED rather than truncated: silently turning
+ * 0.0000001 into 0 on a 6dp token would set a cap of zero and look like a
+ * configuration choice.
+ */
+export function toBaseUnits(human, decimals) {
+  const s = String(human);
+  if (!/^\d+(\.\d+)?$/.test(s)) {
+    throw new Error(`cap "${human}" is not a positive decimal number`);
+  }
+  const [whole, frac = ""] = s.split(".");
+  if (frac.length > decimals) {
+    throw new Error(
+      `cap ${human} has ${frac.length} decimal places but the token has ${decimals}. ` +
+        `Rounding it would change the limit silently.`,
+    );
+  }
+  return BigInt(whole + frac.padEnd(decimals, "0"));
+}
+
 /** Depth-first, parent label attached. The order the plan prints in. */
 export const flatten = (n, parent = null, out = []) => {
   out.push({ ...n, parent });

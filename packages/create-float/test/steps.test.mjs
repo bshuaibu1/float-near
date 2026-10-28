@@ -116,11 +116,21 @@ function rpcStub({ nearBalance = 5 } = {}) {
     let b = "";
     req.on("data", (c) => (b += c));
     req.on("end", () => {
-      const { method, id } = JSON.parse(b || "{}");
+      const body = JSON.parse(b || "{}");
+      const { method, id } = body;
       seen.push(method);
       const result =
         method === "EXPERIMENTAL_protocol_config"
           ? { runtime_config: { storage_amount_per_byte: YOCTO_PER_BYTE } }
+          : method === "query" && body?.params?.request_type === "call_function"
+            ? {
+                // ft_metadata, base64 — step 2 now proves the token is a NEP-141
+                // before the vault exists. Without this the run dies at step 2.
+                result: [...Buffer.from(JSON.stringify({ spec: "ft-1.0.0", name: "T", symbol: "T", decimals: 6 }))],
+                logs: [],
+                block_height: 1,
+                block_hash: "11111111111111111111111111111111",
+              }
           : method === "query"
             ? {
                 amount,
@@ -195,14 +205,17 @@ test("steps run in ascending order, and stop at the first network call", async (
     );
     const steps = stepOrder(r.out);
 
-    // 0, 1, 2 complete without a network: preflight is filesystem-only, the
-    // owner key is read from disk, and step 2 takes decimals from a flag.
-    assert.deepEqual(steps, [0, 1, 2, 3], `expected 0,1,2,3 then a stop, got ${steps}`);
+    // 0 and 1 complete without a network: preflight is filesystem-only and the
+    // owner key is read from disk. Step 2 now ENDS with a network call — it
+    // validates the token is a real NEP-141 via ft_metadata — so a dead RPC
+    // stops the run there. That check exists because a live mainnet run typed
+    // "mainnet" at the token prompt and the wizard accepted it.
+    assert.deepEqual(steps, [0, 1, 2], `expected 0,1,2 then a stop, got ${steps}`);
     assert.deepEqual([...steps].sort((a, b) => a - b), steps, "step numbers must be ascending");
 
     // Step 3 prints the plan and then reads the balance, which is where a dead
     // RPC stops it. Reaching 4 would mean money moved.
-    assert.doesNotMatch(plain(r.out), /\[4\]/, "must not reach step 4 with no reachable RPC");
+    assert.doesNotMatch(plain(r.out), /\[3\]/, "must not reach the plan with no reachable RPC");
     assert.notEqual(r.code, 0);
   } finally {
     rmSync(creds, { recursive: true, force: true });
@@ -212,10 +225,12 @@ test("steps run in ascending order, and stop at the first network call", async (
 test("the plan is printed BEFORE the run can spend anything", async () => {
   // "Show the bill first" is principle 1 in the file's own header. The tree and
   // the cost must appear in the output of a run that never reaches step 4.
+  // Needs the stub: step 2 validates the token over RPC before the plan prints.
   const creds = scratchCreds("testnet", "me.testnet");
+  const rpc = await rpcStub({ nearBalance: 5 });
   try {
     const r = await run(
-      ["--network", "testnet", "--yes", "--owner", "me.testnet", "--vault", "v.me.testnet", "--rpc", DEAD_RPC],
+      ["--network", "testnet", "--yes", "--dry-run", "--owner", "me.testnet", "--vault", "v.me.testnet", "--rpc", rpc.url],
       { creds },
     );
     const txt = plain(r.out);
@@ -227,22 +242,27 @@ test("the plan is printed BEFORE the run can spend anything", async () => {
     assert.ok(costAt > treeAt, "the cost must print after the tree, before any spend");
     assert.doesNotMatch(plain(r.out), /\[4\]/);
   } finally {
+    await rpc.close();
     rmSync(creds, { recursive: true, force: true });
   }
 });
 
 test("--agents rejects a non-numeric value, and does so before spending", async () => {
+  // Also needs the stub: the --agents check lives in step 3, past the token
+  // validation that step 2 now performs over RPC.
   const creds = scratchCreds("testnet", "me.testnet");
+  const rpc = await rpcStub({ nearBalance: 5 });
   try {
     const r = await run(
       ["--network", "testnet", "--yes", "--owner", "me.testnet", "--vault", "v.me.testnet",
-       "--agents", "3abc", "--rpc", DEAD_RPC],
+       "--agents", "3abc", "--rpc", rpc.url],
       { creds },
     );
     assert.notEqual(r.code, 0);
     assert.match(plain(r.out), /--agents expects a number or "all", got "3abc"/);
     assert.doesNotMatch(plain(r.out), /\[4\]/, "a bad flag must not get as far as creating accounts");
   } finally {
+    await rpc.close();
     rmSync(creds, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defaultTree, flatten, planTreeLines } from "../bin/tree.mjs";
+import { defaultTree, flatten, planTreeLines, toBaseUnits } from "../bin/tree.mjs";
 import { xchainCeiling } from "../bin/xchain.mjs";
 
 /**
@@ -120,4 +120,71 @@ test("planTreeLines takes its colouring injected, so output is assertable", () =
   // would be comparing ANSI escapes and would fail on a cosmetic change.
   const [first] = planTreeLines(flatten(defaultTree(false)), (s) => `<${s}>`);
   assert.equal(first, "      root  <100/day, 10/tx>");
+});
+
+// ---- toBaseUnits: the bug that reached mainnet
+//
+// `BigInt(n.daily) * BigInt(10 ** decimals)` threw on every fractional cap,
+// so the MAINNET tree could never be built — from before the caps were
+// pre-sized, since BigInt(1.5) and BigInt(0.5) throw just as BigInt(2.04) does.
+// Testnet's tree is all whole numbers, which is why it survived every test
+// until a real deploy reached step 6 with the vault already created.
+
+test("fractional caps convert exactly — the values that failed on mainnet", () => {
+  assert.equal(toBaseUnits(2.04, 6), 2_040_000n);
+  assert.equal(toBaseUnits(1.53, 6), 1_530_000n);
+  assert.equal(toBaseUnits(1.02, 6), 1_020_000n);
+  assert.equal(toBaseUnits(0.51, 6), 510_000n);
+});
+
+test("the OLD mainnet caps would have failed too — this was never a new bug", () => {
+  // 1.5 and 0.5 are what the mainnet tree used before pre-sizing, and
+  // BigInt(1.5) throws exactly like BigInt(2.04). Proof the mainnet path was
+  // broken before the caps changed, rather than broken BY them.
+  // RangeError, not TypeError — the exact class matters less than that it
+  // throws, but asserting the wrong one is still a test that lies.
+  assert.throws(() => BigInt(1.5), RangeError);
+  assert.throws(() => BigInt(0.5), RangeError);
+  assert.equal(toBaseUnits(1.5, 6), 1_500_000n);
+  assert.equal(toBaseUnits(0.5, 6), 500_000n);
+});
+
+test("no floating point is involved, so inexact products cannot leak", () => {
+  // 2.01 * 1e6 is 2009999.9999999998. A Math.round repair would survive this
+  // and keep surviving until the error exceeded half a unit; splitting the
+  // decimal string removes the class.
+  assert.ok(!Number.isInteger(2.01 * 1e6), "2.01 * 1e6 should be inexact");
+  assert.equal(toBaseUnits(2.01, 6), 2_010_000n);
+  assert.equal(toBaseUnits(2.03, 6), 2_030_000n);
+  assert.equal(toBaseUnits(2.05, 6), 2_050_000n);
+});
+
+test("whole numbers and other decimal counts still work", () => {
+  assert.equal(toBaseUnits(100, 6), 100_000_000n);
+  assert.equal(toBaseUnits(2, 0), 2n);
+  assert.equal(toBaseUnits(1.5, 2), 150n);
+  assert.equal(toBaseUnits(0.000001, 6), 1n);
+});
+
+test("over-precision is REFUSED, not silently truncated", () => {
+  // Rounding 0.0000001 to 0 on a 6dp token sets a cap of zero, which looks
+  // like a deliberate configuration rather than a lost digit.
+  assert.throws(() => toBaseUnits("0.0000001", 6), /decimal places/);
+  assert.throws(() => toBaseUnits(1.005, 2), /decimal places/);
+});
+
+test("exponential notation is refused rather than mis-parsed", () => {
+  // String(0.0000001) is "1e-7", not "0.0000001" — JS switches to exponential
+  // below 1e-6. The digit-only guard catches it, which is the right outcome:
+  // silently reading "1e-7" as 1 would set a cap seven orders of magnitude too
+  // high. Asserted because the number and string forms behave differently and
+  // that is surprising.
+  assert.equal(String(0.0000001), "1e-7");
+  assert.throws(() => toBaseUnits(0.0000001, 6), /not a positive decimal/);
+});
+
+test("non-numeric or negative caps are refused", () => {
+  for (const bad of ["abc", "-1", "", "1e6", "1.2.3"]) {
+    assert.throws(() => toBaseUnits(bad, 6), /not a positive decimal/, `"${bad}"`);
+  }
 });

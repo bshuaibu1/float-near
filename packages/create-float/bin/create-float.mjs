@@ -33,7 +33,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 // Only the ceiling is used here, for the closing advice. xchainCap lives with
 // the tree that applies it; XCHAIN_HEADROOM is internal to both.
 import { xchainCeiling } from "./xchain.mjs";
-import { defaultTree, flatten, planTreeLines } from "./tree.mjs";
+import { defaultTree, flatten, planTreeLines, toBaseUnits } from "./tree.mjs";
 import { parseArgs, makeReaders, agentCount } from "./args.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +67,18 @@ const warn = (m) => console.log(`    ${C.y("!")}    ${m}`);
 
 const NEAR = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 18n; // NEAR -> yocto
 const fmtNear = (y) => (Number(y / 10n ** 18n) / 1e6).toFixed(3);
+
+/**
+ * Format a deliverable amount for the closing advice.
+ *
+ * `.toFixed(0)` was used here and printed "deliver a round 1" for a per-tx cap
+ * of 0.51, whose true ceiling is 0.50 — JS rounds half away from zero, so 0.5
+ * became 1. It was chosen when the mainnet cap was 10.2, where toFixed(0) gives
+ * a clean 10, and silently became wrong for every cap under about 1, which is
+ * the entire mainnet tree. Two decimals, with trailing zeros kept so 0.50 does
+ * not render as 0.5 next to a 0.51 cap.
+ */
+const fmtDeliver = (n) => n.toFixed(2);
 
 /**
  * Per-agent cost, mirroring the contract's own floors:
@@ -275,11 +287,42 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     const token =
       opt("--token", null) ??
       (await ask(rl, "Token (NEP-141)", MAINNET ? MAINNET_USDC : "usdc.fakes.testnet"));
-    const decimals = Number(opt("--decimals", "6"));
-    ok(`${vault} paying in ${token} (${decimals} dp)`);
+    const decimalsFlag = Number(opt("--decimals", "6"));
 
     const provider = new JsonRpcProvider({ url: RPC });
     const ownerAcct = new Account(owner, provider, new KeyPairSigner(KeyPair.fromString(ownerKey)));
+
+    // Is it actually a NEP-141? Asked here, before anything is created.
+    //
+    // This was not checked, and a real mainnet run typed the word "mainnet" at
+    // the prompt — a VALID account id, so nothing complained. The wizard
+    // reported "paying in mainnet (6 dp)" and would have built the whole tree
+    // against a token that does not exist, with every payment failing later at
+    // the transfer for reasons that point nowhere near the cause.
+    //
+    // ft_metadata is the cheapest possible proof: a contract that answers it is
+    // a fungible token, and the decimals it reports are authoritative. Using
+    // them also removes --decimals as a way to be quietly wrong.
+    const meta = await viewSafe(provider, token, "ft_metadata");
+    if (!meta || typeof meta.decimals !== "number") {
+      throw new Error(
+        [
+          `"${token}" does not answer ft_metadata on ${NETWORK}, so it is not a NEP-141.`,
+          MAINNET
+            ? `  Mainnet USDC is ${MAINNET_USDC}`
+            : "  Testnet USDC is usdc.fakes.testnet",
+          "  Pass it with --token, or press enter at the prompt to take the default.",
+        ].join("\n"),
+      );
+    }
+    // The CONTRACT's decimals win over the flag. A mismatch here silently
+    // scales every cap by a power of ten, so the authoritative value is used
+    // and the flag is reported as the mistake it is.
+    if (meta.decimals !== decimalsFlag) {
+      warn(`${token} reports ${meta.decimals} decimals, not ${decimalsFlag} — using ${meta.decimals}`);
+    }
+    const decimals = meta.decimals;
+    ok(`${vault} paying in ${meta.symbol ?? token} (${token}, ${meta.decimals} dp)`);
 
     // ---- 3. The bill, before a single transaction.
     const nodes = flatten(DEFAULT_TREE);
@@ -305,7 +348,24 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     // the code agree with its own stated intent. agentCount() rejects anything
     // that does not round-trip as an integer.
     const agents = candidateAgents.slice(0, agentCount(agentOpt, candidateAgents.length));
-    const total = VAULT_FUNDING + AGENT_COST * BigInt(agents.length);
+
+    // RESUMABILITY, in the one place it was missing. Step 4 skips when the vault
+    // already exists, so its funding is not needed again — but `total` charged
+    // for it unconditionally, and the affordability gate then refused a resume
+    // with "insufficient balance: need 3.000, have 0.748". That is the wizard's
+    // own principle 2 ("resumable, not restartable") contradicted by its
+    // cheapest check, and it only shows up after a run has failed PAST step 4,
+    // which is exactly when resuming is the thing you need.
+    //
+    // Same existence probe step 4 uses, so the two cannot disagree about what
+    // is already paid for.
+    let vaultExists = true;
+    try {
+      await new Account(vault, provider).getState();
+    } catch {
+      vaultExists = false;
+    }
+    const total = (vaultExists ? 0n : VAULT_FUNDING) + AGENT_COST * BigInt(agents.length);
 
     step(3, "Plan");
     console.log(`    ${C.dim("tree")}`);
@@ -340,10 +400,18 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     const vaultIdle = VAULT_FUNDING - codeStake;
 
     console.log(`\n    ${C.dim("cost — almost all of this is a deposit, not a fee")}`);
-    console.log(
-      `      contract storage     ${fmtNear(codeStake)} NEAR  ${C.dim(`refundable — ${(Number(readFileSync(wasm).length) / 1024).toFixed(0)} KB staked at 1 NEAR/100 KB`)}`,
-    );
-    console.log(`      vault balance        ${fmtNear(vaultIdle)} NEAR  ${C.dim("refundable — stakes budget-tree state")}`);
+    if (vaultExists) {
+      // A resume. Saying "you send 3.000" when the vault is already funded
+      // would be a bill for money that is not going to move.
+      console.log(
+        `      ${C.dim(`${vault} already exists and is funded — its 3.000 NEAR is not charged again`)}`,
+      );
+    } else {
+      console.log(
+        `      contract storage     ${fmtNear(codeStake)} NEAR  ${C.dim(`refundable — ${(Number(readFileSync(wasm).length) / 1024).toFixed(0)} KB staked at 1 NEAR/100 KB`)}`,
+      );
+      console.log(`      vault balance        ${fmtNear(vaultIdle)} NEAR  ${C.dim("refundable — stakes budget-tree state")}`);
+    }
     if (agents.length) {
       // MEASURED on live testnet agents, which contradicted the first version
       // of this label. The 0.5 is a RESERVE, not a spend: NEAR locks the full
@@ -495,7 +563,6 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     step(6, "Building the budget tree");
     const existingTree = (await viewSafe(provider, vault, "get_tree")) ?? [];
     const byLabel = new Map(existingTree.map((n) => [n.label, n.id]));
-    const unit = 10 ** decimals;
     for (const n of nodes) {
       if (byLabel.has(n.label)) {
         skip(`${n.label} exists (node ${byLabel.get(n.label)})`);
@@ -510,8 +577,8 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
           limits: [
             {
               token,
-              daily_cap: String(BigInt(n.daily) * BigInt(unit)),
-              per_tx_cap: String(BigInt(n.perTx) * BigInt(unit)),
+              daily_cap: String(toBaseUnits(n.daily, decimals)),
+              per_tx_cap: String(toBaseUnits(n.perTx, decimals)),
             },
           ],
           cooldown_sec: 0,
@@ -753,7 +820,7 @@ ${C.b("Why your caps are not round numbers.")} A quote is EXACT_OUTPUT: ${C.dim(
 the payee RECEIVES, and the vault is charged more — solver fee plus a slippage
 reserve. The tree is charged that larger figure, which is correct, because a cap
 governs what actually leaves. So the caps above are pre-sized ~2% high: a per-tx
-cap of ${leafPerTx} is there to let you deliver a round ${xchainCeiling(leafPerTx).toFixed(0)}, and the daily caps
+cap of ${leafPerTx} is there to let you deliver a round ${fmtDeliver(xchainCeiling(leafPerTx))}, and the daily caps
 follow the same shape.
 
 Two things that follow:
