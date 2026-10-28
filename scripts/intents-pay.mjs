@@ -524,9 +524,13 @@ async function pay() {
   s.lastDeliver = String(DELIVER);
   s.lastDepositAddress = q.depositAddress;
   s.lastAmountIn = String(amount);
+  // When, and how long the solver said it would take. `verify` needs both to
+  // tell "still in flight" apart from "short-filled" — see the note there.
+  s.lastPaidAtMs = Date.now();
+  s.lastEtaSec = q.timeEstimateSec ?? 30;
   save(s);
   console.log(`\n  request_id saved: ${requestId}`);
-  console.log("  run `verify` in ~30s — the solver fills on Base asynchronously");
+  console.log("  `verify` waits for the fill — the solver delivers asynchronously");
 }
 
 async function verify() {
@@ -543,28 +547,71 @@ async function verify() {
     console.log("\n  SETTLED means the NEP-141 transfer to the deposit address landed.");
     console.log("  It does NOT mean the solver delivered on Base — that is off-chain.");
     console.log(`  Check the payee: https://basescan.org/address/${PAYEE}`);
-    try {
-      const now = await baseUsdcBalance(PAYEE);
-      console.log(`\n  payee on Base   : ${usdc(now)}`);
-      if (s.lastPayeeBaseBefore != null) {
-        const delta = now - BigInt(s.lastPayeeBaseBefore);
-        const want = BigInt(s.lastDeliver ?? DELIVER);
-        console.log(`  before payment  : ${usdc(s.lastPayeeBaseBefore)}`);
+    /**
+     * WAIT for the fill rather than sampling once.
+     *
+     * The first run of this printed `DELIVERED 0.000000 ... SHORT — not filled
+     * yet, or short-filled` for a payment that was simply still in flight: the
+     * solver's own estimate was 22s and `verify` ran immediately. The delivery
+     * landed in full moments later.
+     *
+     * That message collapsed two states that demand opposite responses — "wait"
+     * and "investigate a short fill" — into one alarming line, which is the
+     * same error as reading an RPC failure as a zero: an INCONCLUSIVE
+     * observation reported as a finding. A single sample of an asynchronous
+     * process cannot distinguish them, so the fix is not better wording, it is
+     * to keep looking until the answer is conclusive or the budget runs out,
+     * and to name which of the two it ended on.
+     *
+     * `pay` records when it submitted and the solver's own eta, so the wait is
+     * bounded by what the counterparty promised rather than a guess.
+     */
+    if (s.lastPayeeBaseBefore == null) {
+      try {
+        console.log(`\n  payee on Base   : ${usdc(await baseUsdcBalance(PAYEE))}`);
+      } catch (err) {
+        console.log(`\n  payee on Base   : READ FAILED — ${String(err.message).slice(0, 80)}`);
+      }
+      console.log("  (no before-picture recorded, so this balance proves nothing alone)");
+    } else {
+      const before = BigInt(s.lastPayeeBaseBefore);
+      const want = BigInt(s.lastDeliver ?? DELIVER);
+      const etaMs = (Number(s.lastEtaSec ?? 30) + 60) * 1000; // eta plus slack
+      const since = s.lastPaidAtMs ? Date.now() - Number(s.lastPaidAtMs) : null;
+      const deadline = Date.now() + Math.max(etaMs - (since ?? 0), 5000);
+      if (since != null) console.log(`\n  submitted ${(since / 1000).toFixed(0)}s ago, solver eta ${s.lastEtaSec}s`);
+
+      let delta = null;
+      let lastErr = null;
+      for (;;) {
+        try {
+          delta = (await baseUsdcBalance(PAYEE)) - before;
+          lastErr = null;
+          if (delta >= want) break;
+        } catch (err) {
+          lastErr = err;
+        }
+        if (Date.now() >= deadline) break;
+        process.stdout.write("  waiting for the solver...\r");
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+
+      if (lastErr) {
+        // A failed read is not a zero. Say so, loudly and specifically.
+        console.log(`  payee on Base   : READ FAILED — ${String(lastErr.message).slice(0, 80)}`);
+        console.log("  That is NOT evidence of non-delivery. Check basescan directly.");
+      } else {
+        console.log(`  before payment  : ${usdc(before)}`);
+        console.log(`  payee on Base   : ${usdc(before + delta)}`);
         console.log(
           `  DELIVERED       : ${usdc(delta)}   expected ${usdc(want)}   ${
             delta === want ? "exact"
               : delta > want ? "above the minimum"
-              : "SHORT — not filled yet, or short-filled"
+              : delta === 0n ? "NOTHING YET — past the eta, so investigate rather than wait"
+              : "SHORT FILL — less than the minimum, which should not happen"
           }`,
         );
-      } else {
-        console.log("  (no before-picture recorded, so this balance proves nothing alone)");
       }
-    } catch (err) {
-      // Say the READ failed. Reporting a failed read as a zero delivery is the
-      // exact mistake this helper exists to prevent.
-      console.log(`\n  payee on Base   : READ FAILED — ${String(err.message).slice(0, 80)}`);
-      console.log("  That is NOT evidence of non-delivery. Check basescan directly.");
     }
   }
   const lim = await view("get_node_budget", { node_id: NODE_ID, token: TOKEN });

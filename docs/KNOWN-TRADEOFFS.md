@@ -883,3 +883,39 @@ GROSS outflow, which is what a cap should do, not net cost.
 
 Not a defect. Recorded because "executed" reads like "spent" and here it is
 measurably larger.
+
+### 13c. Second payment: the refund reproduces, and a second data point
+
+0.250000 delivered to Base, charged 0.255004 gross, request `base-3-67990016`.
+Delivery confirmed exact. Node 0 accumulated correctly across both payments:
+`executed 0.762583` = 0.507579 + 0.255004, `available 1.277417`.
+
+| deliver | gross amountIn | refund | net cost | gross spread | net spread |
+| --- | --- | --- | --- | --- | --- |
+| 0.500000 | 507579 | 5076 | 502503 | 1.52% | **0.50%** |
+| 0.250000 | 255004 | 2551 | 252453 | 2.00% | **0.98%** |
+
+The refund is 1.01% of net in both cases — the 100 bps slippage reserve coming
+back, as in 13b. So the net spread is roughly HALF the gross, while still
+climbing as the amount shrinks, which is the shape the cap sizing was built
+for. Cap sizing stays on gross: that is what leaves the vault, and the per-tx
+check runs before any refund exists.
+
+Gross is also what the measurements in `xchain.mjs` record, and they reproduce
+exactly — 0.255004 for 0.25 was measured days earlier and again live here, to
+the base unit.
+
+**A verification bug this surfaced.** `verify` sampled the payee's balance ONCE
+and printed `DELIVERED 0.000000 ... SHORT — not filled yet, or short-filled`
+for a payment still in flight; the solver's own eta was 22s and `verify` ran
+immediately. The fill landed moments later.
+
+One line cannot be both "wait" and "investigate a short fill" — those demand
+opposite responses, and a single sample of an asynchronous process cannot tell
+them apart. Same error as reading an RPC failure as a zero: an INCONCLUSIVE
+observation reported as a finding. `verify` now POLLS until the delta appears
+or the solver's own eta plus slack elapses, and then says which it ended on:
+`exact`, `above the minimum`, `NOTHING YET — past the eta, so investigate`, or
+`SHORT FILL — less than the minimum, which should not happen`. `pay` records the
+submission time and the eta so the bound comes from the counterparty's promise
+rather than a guess.
