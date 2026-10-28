@@ -374,20 +374,40 @@ async function pay() {
   };
   const asig = sign(agent, encodeAgent(payload));
 
+  // FLAT, not wrapped in a `payload` object. request_payment_signed takes ten
+  // positional parameters (lib.rs:991), and near-sdk deserializes JSON args by
+  // PARAMETER NAME — so a nested `payload` yields
+  // `missing field \`request_id\``, which reads like the field is absent when it
+  // is merely one level too deep. scripts/intents-dryrun.mjs has had the
+  // correct shape since it was written; this was copied from nothing.
+  //
+  // `vault` is NOT an argument. The contract fills it from
+  // env::current_account_id() when it rebuilds the binding, which is what makes
+  // a signature non-replayable against another vault.
+  //
+  // Two numeric encodings, and they differ: `nonce: u64` serializes as a JSON
+  // NUMBER, while `deadline_ns: U64` and `amount: U128` are near-sdk wrappers
+  // that serialize as STRINGS. Sending a string nonce is another
+  // missing/invalid-field error.
   const args = {
-    payload: {
-      vault: VAULT, nonce: String(nonce), deadline_ns: agentDeadlineNs,
-      request_id: requestId, token: TOKEN, amount: String(amount),
-      recipient: PAYEE, memo: payload.memo,
-      route: {
-        intents: {
-          deposit_address: q.depositAddress,
-          quote_deadline_ns: String(q.deadlineNs),
-          signature: qsig,
-        },
+    request_id: requestId,
+    token: TOKEN,
+    amount: String(amount),
+    recipient: PAYEE,
+    memo: payload.memo,
+    route: {
+      // `intents` lowercase: Route carries #[serde(rename_all = "snake_case")].
+      // The borsh tag is positional (1) and unaffected — two encodings of one
+      // enum, and only the JSON one is spelled this way.
+      intents: {
+        deposit_address: q.depositAddress,
+        quote_deadline_ns: String(q.deadlineNs),
+        signature: qsig,
       },
     },
     public_key: s.agentPublic,
+    nonce,
+    deadline_ns: agentDeadlineNs,
     signature: asig,
   };
 
