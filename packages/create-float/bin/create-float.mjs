@@ -180,18 +180,35 @@ function findWasm() {
   //
   // Only ever cargo-near output. A plain
   // `cargo build --target wasm32-unknown-unknown` produces a wasm that RUNS
-  // but selects near-sdk's pure-Rust fallbacks by cfg:
-  //   #[cfg(near)]                 -> real host functions (cargo-near)
-  //   #[cfg(target_family="wasm")] -> fallbacks, "not for on-chain use"
-  // so env::panic_str never reaches the host panic_utf8 and every reason code
-  // becomes "unreachable opcode". That path is therefore not searched.
+  // but loses every panic message, so this contract's stable reason codes are
+  // silently destroyed. That path is therefore not searched.
   //
-  // NOTE on verifying this: counting wasm imports does NOT distinguish the two
-  // builds — near-sdk declares the same extern block either way, so both show
-  // all 40 env functions. The difference is which implementation is linked
-  // behind env::*. A test that returns "identical" here has not refuted
-  // anything; it has only failed to discriminate. Deploy both and trigger a
-  // panic, or count call sites to the imported index.
+  // MEASURED 2026-10-28, both artifacts built from the same source with the
+  // same toolchain and profile, differing only in the build command:
+  //   cargo near build : "Smart contract panicked: INVALID_CONFIG: label ..."
+  //   plain cargo build: "WebAssembly trap: An `unreachable` opcode was executed."
+  // Pinned by contracts/integration-tests/tests/panic_reason_codes.rs, which
+  // deploys BOTH into one sandbox and triggers the same panic on each.
+  //
+  // The mechanism is in near-sdk-env, NOT in near-sdk -- which is why grepping
+  // near-sdk for the cfg finds nothing and is easy to misread as "no such
+  // mechanism exists". near-sdk-env 0.1.7 gates `use near_sys as sys` on
+  // `all(near, target_arch = "wasm32")`, and `panic_str` picks a branch:
+  //   host:  sys::panic_utf8(..)          <- only with --cfg near, i.e. cargo-near
+  //   local: eprintln!(..); panic!()      <- otherwise
+  // Without --cfg near the local branch is compiled: eprintln! goes nowhere on
+  // wasm and panic!() lowers to an `unreachable` opcode.
+  //
+  // NOTE on verifying this: counting wasm IMPORTS does distinguish the two
+  // builds, contrary to an earlier note here that said it could not. The host
+  // branch is the only caller of panic_utf8, so when it is not compiled the
+  // import is absent. Measured with scripts/wasm-imports.mjs, which parses the
+  // import section rather than grepping:
+  //   cargo near build : 40 env imports (incl. panic_utf8, sha256)
+  //   plain cargo build: 38 env imports (panic_utf8 and sha256 MISSING)
+  // `grep -c panic_utf8 <wasm>` is the unreliable check -- it matches the name
+  // section and string data too, so it can report a function that is not
+  // imported. Use the import section, or deploy both and trigger a panic.
   const candidates = [
     join(HERE, "..", "res", "vault.wasm"),
     resolve(process.cwd(), "target", "near", "vault", "vault.wasm"),
@@ -230,9 +247,13 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
           ...(existsSync(plain)
             ? [
                 "",
-                "  NOTE: a plain-cargo artifact exists under target/wasm32-unknown-unknown/",
-                "  and is not used. cargo-near is the supported path and emits the stripped",
-                "  binary plus the checksum used to verify a deployment.",
+                "  WARNING: a plain-cargo artifact exists under target/wasm32-unknown-unknown/",
+                "  and is deliberately NOT used. It deploys and runs, but every contract panic",
+                "  arrives as \"WebAssembly trap: An `unreachable` opcode was executed\" with the",
+                "  message gone -- so INVALID_CONFIG, DAILY_BUDGET and every other reason code",
+                "  this vault returns become indistinguishable from each other and from a bug.",
+                "  Measured, not theorised: see contracts/integration-tests/tests/",
+                "  panic_reason_codes.rs. Do not deploy that file.",
               ]
             : []),
         ].join("\n"),

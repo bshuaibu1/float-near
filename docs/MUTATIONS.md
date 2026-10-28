@@ -21,8 +21,10 @@ Protocol for every row:
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline, measured 2026-10-28: **95 unit + 18 sandbox = 113 passed, 0 failed.**
-The sandbox 18 are 2 concurrency + 1 keys + 7 sandbox + 8 virtual_agent.
+Baseline, measured 2026-10-28: **95 unit + 20 sandbox = 115 passed, 0 failed.**
+The sandbox 20 are 2 concurrency + 1 keys + 7 sandbox + 8 virtual_agent + 2
+panic_reason_codes (the last two need scripts/m21-plain-vs-cargo-near.sh; they
+skip LOUDLY rather than silently if its artifacts are absent).
 (The earlier "33 unit + 9 sandbox" line predates the virtual-agent rail and the
 removal of the MPC/Base rail's `chain_signatures.rs`.)
 
@@ -258,7 +260,9 @@ Until then the virtual-agent surface had **zero** references in any sandbox
 test: the symbols were in the wasm and unreachable from a real runtime, so
 `env::ed25519_verify` had only ever been exercised against near-sdk's *mock*.
 
-Baseline for these rows: **95 unit + 18 sandbox** (8 of the 18 are this file).
+Baseline for these rows: **95 unit + 18 sandbox** at the time they were run
+(8 of the 18 being `virtual_agent.rs`). The tier is 20 now — `panic_reason_codes.rs`
+was added afterwards by the M21 row below.
 
 | # | Edit | Predicted red | Actual |
 | --- | --- | --- | --- |
@@ -325,6 +329,71 @@ below.
 
 ---
 
+### M21 — plain `cargo build` instead of `cargo near build`: **EXECUTED**, claim upheld
+
+Previously listed as blocked on the sandbox tier, and the subject of a direct
+contradiction in this repo: the workspace `Cargo.toml` and this file said a
+plain build destroys panic reason codes, while commit `c732cbe` reported that
+"both artifacts import the same 40 `env` host functions" and removed the
+warning as unsupported. Settled by measurement.
+
+- **Edit:** none to the source. The *build command* is the mutation. Both
+  artifacts produced by `scripts/m21-plain-vs-cargo-near.sh` from identical
+  source, toolchain (rustc 1.99.1), profile (`--release`) and features
+  (`test-clock`), in one WSL environment.
+- **Predicted:** the plain artifact loses the message. Written as a
+  *differential* assertion rather than an absolute one — the test asserts only
+  that the two artifacts behave DIFFERENTLY and prints which way, so a pass
+  could not encode the claim under test as its own premise.
+- **Actual:** ✅ **claim upheld.** Same source, same panic (`add_node` with an
+  empty label → `fail(ReasonCode::InvalidConfig, ..)`), one sandbox:
+
+  | build | receipt |
+  | --- | --- |
+  | `cargo near build` | `Smart contract panicked: INVALID_CONFIG: label must be 1..=48 chars` |
+  | plain `cargo build` | `WebAssembly trap: An `unreachable` opcode was executed.` |
+
+- **Pinned by:** `contracts/integration-tests/tests/panic_reason_codes.rs`,
+  which deploys both into one sandbox. It skips when the artifacts are absent,
+  since `build-wasm.sh` deliberately produces only the correct one.
+
+**Why `c732cbe` reached the opposite conclusion, and the lesson.** Its claim is
+not reproducible: the real import counts are **38 (plain) vs 40 (cargo-near)**,
+with `panic_utf8` and `sha256` missing from the plain build — measured with
+`scripts/wasm-imports.mjs`, which parses the import section. Any correct
+comparison of these two artifacts shows a difference, so whatever was compared,
+it was not these two. Note the sizes differ almost 2:1 (624,090 vs 290,110
+bytes), which is a cheap sanity check that two artifacts are not the same thing.
+
+The second lesson is where the mechanism lives. Grepping **near-sdk** for the
+cfg finds only a `compile_error!` gate and a doc line — no implementation
+switch — which reads convincingly as "the claim is unfounded." But `near-sdk`
+re-exports `panic_str` from **`near-sdk-env` 0.1.7**, which gates
+`use near_sys as sys` on `all(near, target_arch = "wasm32")` and branches:
+
+```rust
+pub fn panic_str(message: &str) -> ! {
+    execute_target_specific! {
+        host:  { unsafe { sys::panic_utf8(..) } },   // only with --cfg near
+        local: { eprintln!("{message}"); panic!() }  // otherwise
+    }
+}
+```
+
+Without `--cfg near` the `local` branch compiles: `eprintln!` goes nowhere on
+wasm and `panic!()` lowers to an `unreachable` opcode. `sha256` is substituted
+the same way. Those are the "pure-Rust fallbacks" near-sdk's docs call "not for
+on-chain use" — they are simply in a different crate than the one you would
+grep. **A negative result from reading one crate is not a refutation when the
+symbol is re-exported from another.**
+
+Third: `grep -c panic_utf8 <wasm>` is not a test for "is it imported". It also
+matches the name section and string data, so it can report a function that is
+not imported — and on a stripped binary can look identical for the wrong
+reason. Use the import section.
+
+---
+
 ## Queued (the tests exist; the mutation has not been run yet)
 
 Do not record these as proven until each has a real result in the table above.
@@ -342,7 +411,7 @@ schedule a promise and the callback never executes there.
 | # | Edit | Predicted red |
 | --- | --- | --- |
 | M9 | drop the `pending.checked_sub` release in the failure branch | forced-failure + unregistered-recipient tests |
-| M21 | plain `cargo build --target wasm32-unknown-unknown` instead of `cargo near build` | `reason_code_panics_reach_the_receipt_outcome`. **This one already fired for real:** the tier was initially built the plain way, every panic arrived as `WebAssembly trap: unreachable`, and the contract's stable reason codes were silently gone. |
+| ~~M21~~ | plain `cargo build` instead of `cargo near build` | **EXECUTED 2026-10-28 — see the M21 section above.** No longer blocked. |
 | M22 | `TEST_DAY_NS` as the default day length in `setup()` | `concurrency_parent_cap_is_exact_*` (via the one-day-bucket assertion). **Also fired for real:** a 100 ms day made `current_day()` a moving target and would have let 16 concurrent payments draw on two separate daily budgets. |
 | M10 | remove the `status != TransferPending` idempotency gate | forced-failure test (figures double) |
 | M17 | mock's `ft_transfer` returns instead of panicking when armed | forced-failure test (differential control) |
