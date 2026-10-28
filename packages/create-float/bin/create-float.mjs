@@ -30,7 +30,10 @@ import { createInterface } from "node:readline/promises";
 import { Account, KeyPair, KeyPairSigner, JsonRpcProvider } from "near-api-js";
 import { randomBytes } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519";
-import { XCHAIN_HEADROOM, xchainCeiling, xchainCap } from "./xchain.mjs";
+// Only the ceiling is used here, for the closing advice. xchainCap lives with
+// the tree that applies it; XCHAIN_HEADROOM is internal to both.
+import { xchainCeiling } from "./xchain.mjs";
+import { defaultTree, flatten, planTreeLines } from "./tree.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -89,35 +92,6 @@ const fmtNear = (y) => (Number(y / 10n ** 18n) / 1e6).toFixed(3);
 /** Mainnet USDC on NEAR, and the 1Click asset id for USDC on Base. */
 const MAINNET_USDC = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
 
-/**
- * Headroom a cross-chain payment needs on top of what the payee receives.
- *
- * WHY A CAP DOES NOT MEAN WHAT IT LOOKS LIKE ON THE INTENTS RAIL. 1Click quotes
- * EXACT_OUTPUT — `amount` is what the PAYEE gets, and the vault is charged the
- * quote's `amountIn`. The budget tree is charged that larger figure, correctly:
- * the cap governs real outflow. So a per-tx cap of 10 does NOT permit
- * delivering 10 cross-chain, and the refusal comes from your own budget rather
- * than from the solver, which makes it easy to misread as a bug.
- *
- * MEASURED against the live API 2026-10-28, dry quotes, NEAR USDC -> Base USDC:
- *
- *     deliver  0.500000 -> charged  0.507579   (1.52%)
- *     deliver  9.890000 -> charged  9.994343   (passes a 10 cap)
- *     deliver  9.900000 -> charged 10.004446   (REFUSED by a 10 cap)
- *     deliver 10.000000 -> charged 10.105478   (1.05%)
- *     deliver 100.00000 -> charged 101.032936  (1.03%)
- *
- * The spread converges to ~1.03% and is WORST at small sizes, because most of
- * it is the 100 bps `slippageTolerance` reserved as headroom rather than fee.
- * 2% is therefore deliberately above the measured worst case, not an average:
- * under-reserving here produces a refusal, over-reserving costs nothing unless
- * the payment is actually that large.
- *
- * This is a guidance figure for a printed sentence, NOT a protocol constant —
- * nothing validates against it and no contract reads it. Re-measure with
- * `node --experimental-strip-types scripts/oneclick-probe.mjs` before relying
- * on the number; slippage tolerance and market depth both move it.
- */
 // Cap sizing for the cross-chain spread lives in its own module so it can be
 // tested — this file calls main() at the bottom, so a test importing it would
 // launch the wizard. See bin/xchain.mjs for the measurements behind the 2%.
@@ -127,87 +101,10 @@ const AGENT_STORAGE = NEAR(0.05);
 const AGENT_COST = AGENT_KEY_ALLOWANCE + AGENT_STORAGE;
 const VAULT_FUNDING = NEAR(3); // contract storage + headroom for agent creation
 
-/**
- * The default tree deliberately OVERCOMMITS.
- *
- * r1 and r2 may each spend 50/day, but the research pool above them holds only
- * 60. They therefore contend, and the first thing a new user sees is the
- * behaviour that makes this product different from a per-agent spending limit:
- * an agent refused while its own limit still has room, because the pool it
- * shares is empty. A tidy non-overlapping tree would hide that until the user
- * happened to construct it themselves.
- */
-const DEFAULT_TREE = MAINNET
-  ? {
-      // Real money. Sized so a total loss is a rounding error, and still
-      // overcommitted (1.02 + 1.02 > 1.53) so the contention this product
-      // exists to show is visible on day one rather than only once someone
-      // builds that shape by hand.
-      //
-      // CAPS ARE PRE-SIZED FOR THE CROSS-CHAIN SPREAD, via xchainCap(). The
-      // numbers inside the calls are what the operator wants to be able to
-      // DELIVER — 2/day, 0.50 per payment — and the caps come out ~2% above so
-      // a quote's amountIn fits. Written as a derivation rather than as
-      // 2.04 / 0.51 so the intent survives: a bare 0.51 invites someone to
-      // "tidy" it back to 0.50, which silently reintroduces the refusal.
-      //
-      // The spread is WORST at small sizes, which is exactly this tree's scale.
-      // Measured: delivering 0.50 is charged 0.507579 (1.52%), so a flat 0.50
-      // per-tx cap cannot deliver 0.50 cross-chain at all. 1 -> 1.012733,
-      // 1.5 -> 1.517884, 2 -> 2.023038; all four fit their derived caps.
-      //
-      // THE TRADE, stated because it is a real loosening and not a display
-      // change: these caps apply to BOTH rails. A per-tx cap of 0.51 lets a
-      // NearDirect payment spend 0.51, not 0.50 — 2% more direct-payment
-      // headroom than was asked for, bought to make round cross-chain amounts
-      // clear. Anyone who cares more about an exact direct ceiling should set
-      // these flat and accept delivering ~98% of them.
-      label: "root",
-      daily: xchainCap(2),
-      perTx: xchainCap(0.5),
-      children: [
-        {
-          label: "research",
-          daily: xchainCap(1.5),
-          perTx: xchainCap(0.5),
-          children: [
-            { label: "r1", daily: xchainCap(1), perTx: xchainCap(0.5), agent: true },
-            { label: "r2", daily: xchainCap(1), perTx: xchainCap(0.5), agent: true },
-          ],
-        },
-      ],
-    }
-  : {
-  // Testnet. ROUND CAPS, deliberately NOT pre-sized.
-  //
-  // NEAR Intents is mainnet-only (packages/mcp/src/quote.ts:27), and step 8
-  // skips the quote signer here, so the cross-chain rail is closed on testnet
-  // and there is no spread to absorb. Inflating these would loosen limits for
-  // no benefit whatsoever — the opposite of what the mainnet tree needs.
-  //
-  // Generous on purpose: the tokens are fake, so the numbers are sized to make
-  // the hierarchy legible rather than to bound a loss.
-  label: "root",
-  daily: 100,
-  perTx: 10,
-  children: [
-    {
-      label: "research",
-      daily: 60,
-      perTx: 10,
-      children: [
-        { label: "r1", daily: 50, perTx: 10, agent: true },
-        { label: "r2", daily: 50, perTx: 10, agent: true },
-      ],
-    },
-  ],
-};
-
-const flatten = (n, parent = null, out = []) => {
-  out.push({ ...n, parent });
-  for (const c of n.children ?? []) flatten(c, n.label, out);
-  return out;
-};
+// The tree and its rendering live in ./tree.mjs so both can be tested;
+// this file calls main() at the bottom, so a test importing it would
+// launch the wizard. MAINNET gets the SMALL tree -- see tree.mjs.
+const DEFAULT_TREE = defaultTree(MAINNET);
 
 async function ask(rl, q, dflt) {
   if (YES) return dflt;
@@ -427,11 +324,9 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
 
     step(3, "Plan");
     console.log(`    ${C.dim("tree")}`);
-    for (const n of nodes) {
-      const indent = n.parent === null ? "" : n.parent === "root" ? "  " : "    ";
-      const tag = n.agent ? C.dim(" ← agent, gets a restricted key") : "";
-      console.log(`      ${indent}${n.label}  ${C.dim(`${n.daily}/day, ${n.perTx}/tx`)}${tag}`);
-    }
+    // Rendered by ./tree.mjs so the exact lines can be asserted in tests —
+    // this is the output that revealed xchainCap sitting on the wrong branch.
+    for (const line of planTreeLines(nodes, C.dim)) console.log(line);
     {
       // Derived, not hardcoded. The note must describe the tree actually
       // printed above — the mainnet tree has different numbers, and a fixed

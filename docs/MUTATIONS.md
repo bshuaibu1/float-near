@@ -665,3 +665,41 @@ The property row (`headroom > worst measured spread`) exists for the opposite
 drift: someone re-measures a worse spread, updates the fixtures, and does not
 revisit the constant. That row notices; the per-row assertions would all still
 pass against their own updated numbers.
+
+### M32 — swap the branches of `defaultTree`
+
+Reproduces the bug that actually shipped in 9d03e99: `xchainCap` applied to the
+testnet tree instead of the mainnet one. Covers
+`packages/create-float/test/tree.test.mjs`.
+
+- **Edit:** `packages/create-float/bin/tree.mjs`, `return mainnet` →
+  `return !mainnet`.
+- **Predicted:** 4 red — "the mainnet plan renders pre-sized caps", "the testnet
+  plan renders ROUND caps", "mainnet caps are fractional; testnet caps are
+  whole", "planTreeLines takes its colouring injected". 4 of the 8 survive:
+  `notDeepEqual`, the deliverability check, the overcommit check and `flatten`.
+- **Actual:** ✅ **4 failed, 13 passed** — exact match, and the diagnostic
+  earned its wording: `no mainnet cap is fractional — xchainCap is probably not
+  applied to this branch`.
+
+**Why "the two trees are not the same tree" SURVIVES, which is the point of
+writing predictions down.** `notDeepEqual(mainnet, testnet)` guards against the
+two branches collapsing into one. Swapped trees are still different, so it
+passes — a test that looks like it covers "the branches are right" covers only
+"the branches are not identical". The assertion that actually fails under a swap
+is the fractional-vs-whole property, because pre-sized caps are
+`ceil(x * 1.02)` to the cent and round defaults never are.
+
+**Why the rendered text is asserted and not just the data.** A data-only test
+would catch this row. But the thing that caught the real bug was running
+`--dry-run` and reading `102/day, 10.2/tx` where round numbers belonged, so the
+plan's exact lines are pinned too: a tree with correct caps that prints the
+wrong node's numbers is still the first thing a user sees.
+
+**What these tests cannot do.** The faithful check would be shelling out to
+`--dry-run`, and it is not testable — step 3 ends with
+`await ownerAcct.getBalance()`, a live RPC read against a real funded account,
+so a subprocess test would be network-, credential- and account-dependent.
+`NEAR_CREDENTIALS_DIR` makes the PREFLIGHT scriptable but not the plan. So step
+ordering and argument parsing remain uncovered, and that gap is recorded here
+rather than implied by a green suite.
