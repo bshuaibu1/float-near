@@ -725,9 +725,11 @@ ${C.b("Still to do — the wizard cannot do these for you:")}
        near contract call-function as-transaction ${token} storage_deposit \\
          json-args '{"account_id":"${vault}"}' \\
          prepaid-gas '30 Tgas' attached-deposit '0.00125 NEAR' \\
-         sign-as ${owner} network-config testnet sign-with-legacy-keychain send
+         sign-as ${owner} network-config ${NETWORK} sign-with-legacy-keychain send
 
-       ...then ft_transfer the amount you want the agents to share.
+       ...then ft_transfer the amount you want the agents to share. Note that
+       ft_transfer requires exactly 1 yoctoNEAR attached, and that the vault
+       must be registered FIRST — a transfer to an unregistered account fails.
 
   2. Restart your MCP client so it picks up the new server.
 
