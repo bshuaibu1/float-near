@@ -408,6 +408,74 @@ async function baseUsdcBalance(addr) {
   return BigInt(j.result);
 }
 
+/**
+ * Both signatures over one agreed set of bytes, and the flat args to carry them.
+ *
+ * Extracted so `pay` and `capedge` cannot drift. The cap-edge test is only
+ * evidence if it submits something the contract would otherwise have HONOURED —
+ * if its signing differed in any detail, a refusal would prove nothing about
+ * the cap, because the quote gate runs first and would have rejected it anyway.
+ *
+ * FLAT args, not wrapped in a `payload` object. request_payment_signed takes
+ * ten positional parameters (lib.rs:991) and near-sdk deserializes JSON args by
+ * PARAMETER NAME, so a nested `payload` yields `missing field 'request_id'` —
+ * which reads like the field is absent when it is merely one level too deep.
+ *
+ * `vault` is NOT an argument. The contract fills it from
+ * env::current_account_id() when rebuilding the binding, which is exactly what
+ * makes a signature non-replayable against another vault.
+ *
+ * Two numeric encodings, and they differ: `nonce: u64` serializes as a JSON
+ * NUMBER, while `deadline_ns: U64` and `amount: U128` are near-sdk wrappers
+ * that serialize as STRINGS.
+ */
+async function buildSignedArgs({ s, agent, qsk, q, amount, memo }) {
+  const nonce = Number(await view("get_virtual_agent_nonce", { public_key: s.agentPublic }));
+  const nowNs = BigInt((await provider.viewBlock({ finality: "final" })).header.timestamp);
+  const requestId = `base-${nonce}-${String(nowNs).slice(-8)}`;
+
+  // The quote signer binds deposit address <-> payee.
+  const qsig = toBase64(signBinding({
+    vault: VAULT, requestId, token: TOKEN, amount,
+    payee: PAYEE, depositAddress: q.depositAddress, deadlineNs: BigInt(q.deadlineNs),
+  }, qsk));
+
+  // The agent authorises the spend. Its deadline is separate from the quote's
+  // and must also be in the future at execution.
+  const agentDeadlineNs = String(nowNs + 600_000_000_000n);
+  const asig = sign(agent, encodeAgent({
+    vault: VAULT, nonce, deadlineNs: agentDeadlineNs, requestId, token: TOKEN,
+    amount, recipient: PAYEE, memo,
+    route: { depositAddress: q.depositAddress, quoteDeadlineNs: String(q.deadlineNs), signature: qsig },
+  }));
+
+  return {
+    requestId,
+    nonce,
+    args: {
+      request_id: requestId,
+      token: TOKEN,
+      amount: String(amount),
+      recipient: PAYEE,
+      memo,
+      route: {
+        // `intents` lowercase: Route carries #[serde(rename_all = "snake_case")].
+        // The borsh tag is positional (1) and unaffected — two encodings of one
+        // enum, and only the JSON one is spelled this way.
+        intents: {
+          deposit_address: q.depositAddress,
+          quote_deadline_ns: String(q.deadlineNs),
+          signature: qsig,
+        },
+      },
+      public_key: s.agentPublic,
+      nonce,
+      deadline_ns: agentDeadlineNs,
+      signature: asig,
+    },
+  };
+}
+
 async function pay() {
   const s = load();
   if (!s.agentSecret) throw new Error("run keygen first");
@@ -444,62 +512,9 @@ async function pay() {
   // quote — not after a signed payment is already in flight.
   await ensureRegistered(ownerAccount(), q.depositAddress);
 
-  const nonce = Number(await view("get_virtual_agent_nonce", { public_key: s.agentPublic }));
-  const nowNs = BigInt((await provider.viewBlock({ finality: "final" })).header.timestamp);
-  const requestId = `base-${nonce}-${String(nowNs).slice(-8)}`;
-
-  // The quote signer binds deposit address <-> payee.
-  const qsig = toBase64(signBinding({
-    vault: VAULT, requestId, token: TOKEN, amount,
-    payee: PAYEE, depositAddress: q.depositAddress, deadlineNs: BigInt(q.deadlineNs),
-  }, qsk));
-
-  // The agent authorises the spend. Its own deadline is separate from the
-  // quote's and must also be in the future at execution.
-  const agentDeadlineNs = String(nowNs + 600_000_000_000n);
-  const payload = {
-    vault: VAULT, nonce, deadlineNs: agentDeadlineNs, requestId, token: TOKEN,
-    amount, recipient: PAYEE, memo: "first mainnet cross-chain payment",
-    route: { depositAddress: q.depositAddress, quoteDeadlineNs: String(q.deadlineNs), signature: qsig },
-  };
-  const asig = sign(agent, encodeAgent(payload));
-
-  // FLAT, not wrapped in a `payload` object. request_payment_signed takes ten
-  // positional parameters (lib.rs:991), and near-sdk deserializes JSON args by
-  // PARAMETER NAME — so a nested `payload` yields
-  // `missing field \`request_id\``, which reads like the field is absent when it
-  // is merely one level too deep. scripts/intents-dryrun.mjs has had the
-  // correct shape since it was written; this was copied from nothing.
-  //
-  // `vault` is NOT an argument. The contract fills it from
-  // env::current_account_id() when it rebuilds the binding, which is what makes
-  // a signature non-replayable against another vault.
-  //
-  // Two numeric encodings, and they differ: `nonce: u64` serializes as a JSON
-  // NUMBER, while `deadline_ns: U64` and `amount: U128` are near-sdk wrappers
-  // that serialize as STRINGS. Sending a string nonce is another
-  // missing/invalid-field error.
-  const args = {
-    request_id: requestId,
-    token: TOKEN,
-    amount: String(amount),
-    recipient: PAYEE,
-    memo: payload.memo,
-    route: {
-      // `intents` lowercase: Route carries #[serde(rename_all = "snake_case")].
-      // The borsh tag is positional (1) and unaffected — two encodings of one
-      // enum, and only the JSON one is spelled this way.
-      intents: {
-        deposit_address: q.depositAddress,
-        quote_deadline_ns: String(q.deadlineNs),
-        signature: qsig,
-      },
-    },
-    public_key: s.agentPublic,
-    nonce,
-    deadline_ns: agentDeadlineNs,
-    signature: asig,
-  };
+  const { args, requestId } = await buildSignedArgs({
+    s, agent, qsk, q, amount, memo: "first mainnet cross-chain payment",
+  });
 
   // The before-picture, taken BEFORE the money moves. Best effort: a Base RPC
   // hiccup must not abort a payment whose NEAR side is ready to go.
@@ -618,7 +633,134 @@ async function verify() {
   console.log(`\n  node ${NODE_ID} today: executed ${usdc(lim.executed)} pending ${usdc(lim.pending)} available ${usdc(lim.available)}`);
 }
 
-const steps = { keygen, check, setup, quote, pay, verify };
+/**
+ * THE CAP EDGE, ADVERSARIALLY: submit a payment the vault must REFUSE.
+ *
+ * Both live payments sat comfortably inside the 0.51 per-tx cap, so on mainnet
+ * the cap had never been anywhere near its edge. PER_TX_LIMIT is covered by the
+ * sandbox tier, but a limit that has only ever been tested with room to spare
+ * is a limit nobody has watched fire on the Intents path against real money.
+ *
+ * WHY THIS COSTS ALMOST NOTHING. The per-tx check sits in PASS ONE of
+ * dispatch_payment, which runs BEFORE any charging and before the NEP-141
+ * transfer. A refusal moves no tokens, so the whole test costs gas.
+ *
+ * WHY IT MUST BE A FULLY VALID REQUEST. The Intents quote gate runs EARLIER
+ * than the cap check (lib.rs:1153 before the pass-one loop). A malformed quote,
+ * a stale deadline or a bad signature would be refused there instead, and the
+ * test would "pass" while proving nothing about the cap. So this signs exactly
+ * what `pay` signs, via the same buildSignedArgs, and the ONLY thing wrong with
+ * it is the amount.
+ *
+ * WHY THE DEPOSIT ADDRESS IS NOT REGISTERED. The transfer never happens, so
+ * registering would burn 0.00125 NEAR for nothing. It also sharpens the result:
+ * if the cap check somehow did NOT fire, the outcome would be TRANSFER_FAILED
+ * rather than SETTLED, so money still could not leave. The failure mode of the
+ * test is itself safe.
+ *
+ * WHAT IT COSTS BEYOND GAS: one nonce. The nonce is burned BEFORE dispatch
+ * (lib.rs, "the nonce is burned BEFORE dispatch"), deliberately, so that any
+ * attempt reaching dispatch is single-use. A blocked request is also NOT
+ * stored — the contract returns it and emits an event rather than letting
+ * rejected attempts grow the vault's storage bill — so `get_request` will say
+ * null afterwards, and that is correct, not a missing record.
+ */
+async function capedge() {
+  const s = load();
+  if (!s.agentSecret) throw new Error("run keygen first");
+  const agent = KeyPair.fromString(s.agentSecret);
+  const qsk = quoteSecret();
+
+  const node = await getNode(NODE_ID);
+  const perTx = BigInt(node.limits.find((l) => l.token === TOKEN).per_tx_cap);
+  const before = {
+    vault: BigInt(await ftView("ft_balance_of", { account_id: VAULT })),
+    lim: await view("get_node_budget", { node_id: NODE_ID, token: TOKEN }),
+    nonce: Number(await view("get_virtual_agent_nonce", { public_key: s.agentPublic })),
+  };
+  console.log(`  per-tx cap     : ${usdc(perTx)}`);
+  console.log(`  vault balance  : ${usdc(before.vault)}`);
+  console.log(`  executed today : ${usdc(before.lim.executed)}`);
+
+  // Find a deliver amount whose amountIn EXCEEDS the cap. Derived from a live
+  // dry quote rather than assumed from the spread, because the spread moves.
+  let deliver = perTx;
+  let dry = null;
+  for (let i = 0; i < 4; i++) {
+    dry = await getQuote({
+      amountOut: deliver, payee: PAYEE, refundTo: VAULT,
+      deadline: new Date(Date.now() + 10 * 60_000), dry: true,
+    });
+    if (BigInt(dry.amountIn) > perTx) break;
+    deliver = (deliver * 105n) / 100n;
+  }
+  if (BigInt(dry.amountIn) <= perTx) {
+    throw new Error(`could not find an over-cap amount; amountIn ${dry.amountIn} <= cap ${perTx}`);
+  }
+  console.log(`\n  chose deliver  : ${usdc(deliver)} -> amountIn ${usdc(dry.amountIn)}`);
+  console.log(`  over cap by    : ${usdc(BigInt(dry.amountIn) - perTx)}  <- this is what must be refused`);
+
+  const q = await getQuote({
+    amountOut: deliver, payee: PAYEE, refundTo: VAULT,
+    deadline: new Date(Date.now() + 10 * 60_000), dry: false,
+  });
+  const amount = BigInt(q.amountIn);
+  if (!q.depositAddress) throw new Error("a non-dry quote returned no deposit address");
+  if (amount <= perTx) throw new Error(`real quote came back UNDER the cap (${amount}) — rerun`);
+
+  const { args, requestId } = await buildSignedArgs({
+    s, agent, qsk, q, amount, memo: "cap edge test — must be refused",
+  });
+
+  console.log(`\n  submitting ${usdc(amount)} against a ${usdc(perTx)} cap...`);
+  const acct = ownerAccount();
+  const out = await acct.callFunction({
+    contractId: VAULT, methodName: "request_payment_signed",
+    args, gas: 100n * TGAS, deposit: 0n,
+  });
+  console.log("  outcome:", JSON.stringify(out));
+
+  const after = {
+    vault: BigInt(await ftView("ft_balance_of", { account_id: VAULT })),
+    lim: await view("get_node_budget", { node_id: NODE_ID, token: TOKEN }),
+    nonce: Number(await view("get_virtual_agent_nonce", { public_key: s.agentPublic })),
+    stored: await view("get_request", { request_id: requestId }),
+  };
+
+  // Every one of these must hold. A refusal that still moved money, or charged
+  // the budget, would be worse than no refusal at all.
+  const checks = [
+    ["status is BLOCKED", out?.status === "BLOCKED"],
+    // Either spelling is the cap firing. The contract distinguishes whether the
+    // violating level is the requesting node or an ancestor (types.rs:208-209);
+    // paying from the root it should be the former, but accepting both means a
+    // correct refusal at a different level is not mistaken for a failure.
+    [
+      `reason_code is a per-tx refusal (got ${out?.reason_code})`,
+      out?.reason_code === "PER_TX_LIMIT" || out?.reason_code === "PARENT_PER_TX_LIMIT",
+    ],
+    ["no tokens moved", after.vault === before.vault],
+    ["budget not charged", after.lim.executed === before.lim.executed],
+    ["nothing left pending", after.lim.pending === "0"],
+    ["nonce WAS consumed (burned before dispatch, by design)", after.nonce === before.nonce + 1],
+    ["blocked request not stored (deliberate, see list_requests)", after.stored === null],
+  ];
+  console.log();
+  let ok = true;
+  for (const [name, pass] of checks) {
+    console.log(`  ${pass ? "PASS" : "FAIL"}  ${name}`);
+    if (!pass) ok = false;
+  }
+  console.log(`\n  vault ${usdc(before.vault)} -> ${usdc(after.vault)}   executed ${usdc(before.lim.executed)} -> ${usdc(after.lim.executed)}`);
+  if (!ok) {
+    console.log("\n  THE CAP DID NOT BEHAVE AS SPECIFIED. Do not ignore this.");
+    process.exitCode = 1;
+  } else {
+    console.log("\n  The per-tx cap refused an otherwise fully valid payment. Cost: gas and one nonce.");
+  }
+}
+
+const steps = { keygen, check, setup, quote, pay, capedge, verify };
 const step = process.argv[2];
 if (!steps[step]) {
   console.error(`usage: node --experimental-strip-types scripts/intents-pay.mjs <${Object.keys(steps).join("|")}>`);
