@@ -19,7 +19,22 @@ anyhow = "1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 futures = "0.3"
+# Real ed25519 signatures for the virtual-agent tier. Same crate the vault's
+# unit tests use, so there is one signing idiom in the repo rather than two.
+# A hardcoded signature blob would pin one byte string instead of the property,
+# and could not show that TAMPERING with the binding is what the gate rejects.
+ed25519-dalek = "2"
+# To hand the contract a `Base64VecU8` signature.
+base64 = "0.22"
 
 # NOTE: the vault crate is deliberately NOT a dependency. These tests assert
 # on the contract's JSON surface, not on its internal Rust types, so a change
 # to an internal struct cannot silently keep them passing.
+#
+# That rule is why `virtual_agent.rs` re-implements the borsh encoding of
+# `VirtualAgentBinding` by hand instead of importing the struct. The unit tier
+# signs via `near_sdk::borsh::to_vec` on the REAL struct, so it agrees with the
+# contract by construction and cannot detect an encoding mistake. The
+# hand-rolled encoder here is an independent third witness, alongside the Rust
+# derive and `float-relay.mjs` -- and a real sandbox signature verifying
+# against it is what proves all three agree.

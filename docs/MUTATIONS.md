@@ -21,13 +21,28 @@ Protocol for every row:
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline: **33 unit + 9 sandbox = 42 passed, 0 failed, 0 warnings.**
+Baseline, measured 2026-10-28: **95 unit + 18 sandbox = 113 passed, 0 failed.**
+The sandbox 18 are 2 concurrency + 1 keys + 7 sandbox + 8 virtual_agent.
+(The earlier "33 unit + 9 sandbox" line predates the virtual-agent rail and the
+removal of the MPC/Base rail's `chain_signatures.rs`.)
 
 The sandbox tier must run under Linux or WSL: `near-workspaces` ships a
 sandbox node only for linux-x86_64, linux-aarch64 and darwin-arm64. Build the
 wasm with `scripts/build-wasm.sh` (which uses `cargo near build`, never plain
 `cargo build` — see the note in the workspace `Cargo.toml`) and run with
 `CARGO_TARGET_DIR` pointed at a Linux-native path.
+
+`scripts/wsl-sandbox.sh` wraps all of that, callable from Windows:
+
+```sh
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh all          # build + whole tier
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh check        # compile only
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh one  <file>  # one test file
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh mut  <file>  # REBUILD + run (mutations)
+```
+
+Invoke it from PowerShell, not git-bash: git-bash rewrites the `/mnt/c/...`
+argument into a Windows path and `bash` then cannot find the script.
 
 ---
 
@@ -215,9 +230,98 @@ the exact binary the script is meant to reject.
   `production_build_reports_production_clock_and_a_real_day`, which runs under
   `cargo test -p vault --no-default-features`. Both sides of the marker are
   asserted, so neither can drift into agreeing with the other.
-- **Not verified:** `scripts/deploy-testnet.sh` itself has only been
-  syntax-checked (`bash -n`). Its end-to-end behaviour needs a testnet account
-  and has NOT been exercised. What is proven is the premise the guard rests on.
+- **Now verified (2026-10-28):** `scripts/deploy-testnet.sh` has been run
+  end-to-end against testnet, deploying to a fresh `v4.floatv4.testnet` with
+  `OWNER=floatv4.testnet`. The `clock_mode` guard executed and printed both
+  sides (`expected='production' actual='production'`). Superseded the earlier
+  note that only `bash -n` had been done.
+  - One portability fix was required: cargo-near generates the ABI by
+    compiling the crate NATIVELY as a cdylib, and on Windows MSVC that link
+    fails with ~52 unresolved near-sdk host-function externs (`panic_utf8`,
+    `promise_batch_create`, …) because `link.exe`, unlike `ld`, refuses to emit
+    a DLL with undefined symbols. The ABI step is now opt-out via `NO_ABI=1`;
+    the wasm build still runs THROUGH cargo-near, so `--cfg near` is preserved.
+    Confirmed rather than assumed: the resulting wasm was byte-identical
+    (sha256 `23a44704…`) to the repo's checked-in build, `grep -c panic_utf8`
+    = 1, and a live call returned a readable
+    `Smart contract panicked: INSUFFICIENT_GAS: …` rather than a bare
+    `unreachable` trap. On Linux/WSL the ABI step succeeds and no flag is
+    needed — which is itself the evidence that the ABI step, and nothing else,
+    was the Windows failure.
+
+---
+
+### M25 / M26 / M27 — the virtual-agent rail (`tests/virtual_agent.rs`)
+
+Run against the sandbox tier on 2026-10-28, after it gained the signed path.
+Until then the virtual-agent surface had **zero** references in any sandbox
+test: the symbols were in the wasm and unreachable from a real runtime, so
+`env::ed25519_verify` had only ever been exercised against near-sdk's *mock*.
+
+Baseline for these rows: **95 unit + 18 sandbox** (8 of the 18 are this file).
+
+| # | Edit | Predicted red | Actual |
+| --- | --- | --- | --- |
+| M25 | `dispatch_payment` gas floor, `prepaid_gas() < floor` → `<=` | `the_gas_floor_admits_its_own_boundary_and_refuses_below_it` only; every other test attaches `max_gas()` | ✅ **1 failed, 7 passed** — exact match, on the predicted assertion (`exactly 50 Tgas must dispatch`) |
+| M26 | nonce freshness, `nonce <= last` → `nonce < last` (permits exactly one replay) | `a_replayed_signature_is_refused_by_the_contract`, `rebinding_a_revoked_key_does_not_reset_its_nonce` | ✅ **2 failed, 6 passed** — exact match, both `left: "DUPLICATE_REQUEST"` / `right: "NONCE_NOT_FRESH"` |
+| M27 | `if !env::ed25519_verify(&sig, &msg, &pk32)` → `if false` | `a_relayer_cannot_rewrite_any_signed_field`, `an_unbound_key_cannot_spend` | ✅ **2 failed, 6 passed** — exact match, `left: "SETTLED"` / `right: "BAD_AGENT_SIGNATURE"` |
+
+Three things these rows establish that the unit tier cannot:
+
+- **M27 matters most.** It proves the HOST `env::ed25519_verify` is
+  load-bearing under `neard` — and because `tests/virtual_agent.rs` re-derives
+  the borsh encoding by hand rather than importing `VirtualAgentBinding`, that
+  the encoder genuinely detects forgery instead of agreeing with itself. The
+  unit tier signs via `near_sdk::borsh::to_vec` on the real struct, so it
+  agrees by construction and could never catch an encoding mistake.
+- **M26 shows why the reason code, not just "blocked", must be asserted.**
+  With the nonce guard weakened the replay was still refused — by the
+  duplicate-`request_id` check behind it. A test asserting only
+  `status == "BLOCKED"` would have **survived** M26 while the replay guard was
+  broken. Layered defence, bad oracle.
+- **M25 is not hypothetical.** This exact `<` → `<=` slip was introduced into
+  the working tree while the comparator's own doc comment was being corrected,
+  and was caught by the unit-tier boundary test. The floor is now pinned from
+  both sides in both tiers, and against live testnet numbers (50 Tgas settles,
+  49 panics).
+
+Protocol note: in all three rows the wasm hash was printed before the run and
+differed from baseline (`596c6791` → `03c64d2a`, `ec4c9a66`, `e3622f4e`). A
+mutation run that forgets `scripts/build-wasm.sh` tests the PREVIOUS binary and
+reads as a survival, so `scripts/wsl-sandbox.sh mut <file>` pairs the rebuild
+and the run and cannot drift apart.
+
+### M29 — the gas floor must PANIC, not return `blocked` (unit tier)
+
+Run on 2026-10-28 alongside the comment fix that scoped the nonce-burn
+guarantee. M25 pins the floor's *direction*; this pins its *mechanism*, which
+is a separate property and the one with a griefing vector behind it.
+
+Baseline for this row: **95 unit.**
+
+| # | Edit | Predicted red | Actual |
+| --- | --- | --- | --- |
+| M29 | `dispatch_payment` gas floor, `fail(ReasonCode::InsufficientGas, …)` → `return blocked(&request_id, node_id, ReasonCode::InsufficientGas)` | `an_under_gassed_signed_payload_panics_rather_than_consuming_its_nonce` only; `a_signed_payload_at_exactly_the_gas_floor_dispatches` is insensitive to it | ✅ **1 failed, 1 passed** (`cargo test -p vault gas`) — exact match, `test did not panic as expected`, and the boundary test stayed green as predicted |
+
+Why the mechanism is load-bearing: `request_payment_signed` burns the nonce
+*before* calling `dispatch_payment`. A panic reverts that insert along with the
+rest of the receipt, so an under-gassed payload stays replayable — which is
+what stops a malicious relayer from destroying an agent's signed payloads by
+deliberately under-gassing them. Returning `blocked` instead commits the burn
+and opens exactly that vector, while every assertion about the payment being
+*rejected* keeps passing. The reason code is identical either way, so an
+oracle that checks only `INSUFFICIENT_GAS` survives this mutation — same
+lesson as M26, one layer further in.
+
+**What this row does NOT establish.** The revert is invisible to the unit
+tier: an unwinding panic does not roll back the in-memory `self`, and the
+insert precedes the floor check, so this process's counter advances either
+way. The test can only assert that the path panics rather than returning. The
+revert itself rests on the live testnet run of 2026-10-28 against
+`v4.floatv4.testnet` — 49 Tgas panicked with `INSUFFICIENT_GAS` and
+`get_virtual_agent_nonce` was unchanged afterwards, so the payload remained
+replayable. Making that directly observable needs a real receipt; queued
+below.
 
 ---
 
@@ -243,6 +347,7 @@ schedule a promise and the callback never executes there.
 | M10 | remove the `status != TransferPending` idempotency gate | forced-failure test (figures double) |
 | M17 | mock's `ft_transfer` returns instead of panicking when armed | forced-failure test (differential control) |
 | M18 | drop the receiver-registration check in the mock | `unregistered_recipient_releases_the_reservation` |
+| M29 (re-run) | the M29 edit, `fail(InsufficientGas, …)` → `return blocked(…)` | **The test does not exist yet — write it before claiming this row.** The unit tier can only prove the path panics; only a real receipt shows the nonce burn reverting with it. Shape: submit a signed payload below the floor, assert the receipt failed with `INSUFFICIENT_GAS`, assert `get_virtual_agent_nonce` is unchanged, then assert the SAME payload still settles at adequate gas. Under the mutation the burn commits, so the retry comes back `NONCE_NOT_FRESH`. Until then the atomic revert rests on the manual testnet run recorded in M29. |
 
 ## Expected to survive
 
