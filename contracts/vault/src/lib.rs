@@ -97,6 +97,19 @@ enum StorageKey {
     LastPaid,
     AccountToNode,
     Requests,
+    /// Virtual agents: an authorized signing key -> the node it spends from.
+    /// MANY-TO-ONE on purpose, unlike `AccountToNode` — a swarm shares a pool.
+    PubkeyToNode,
+    /// Virtual agents: signing key -> highest nonce already consumed.
+    ///
+    /// This is the replay guard and it must NEVER be pruned. `request_id`
+    /// dedup cannot serve that role: `sweep_stuck_pending` removes terminal
+    /// requests, which frees the id for reuse. That is harmless for
+    /// `request_payment`, where NEAR's per-transaction nonce makes replay
+    /// impossible at the protocol level, but for a detached signature it would
+    /// be a drain — resubmit an old payload after the purge window and the
+    /// budget is spent again.
+    PubkeyToNonce,
 }
 
 #[near(contract_state)]
@@ -118,6 +131,11 @@ pub struct Vault {
     /// Bounded by MAX_NODES so `get_tree` stays a single view call.
     node_order: Vec<NodeId>,
     account_to_node: LookupMap<AccountId, NodeId>,
+    /// Virtual agents. Many keys may map to one node; a 100-signer swarm draws
+    /// on a shared pool rather than consuming 100 of the MAX_NODES budget.
+    pubkey_to_node: LookupMap<PublicKey, NodeId>,
+    /// Highest nonce consumed per virtual agent key. Monotonic, never pruned.
+    pubkey_to_nonce: LookupMap<PublicKey, u64>,
     next_node_id: NodeId,
 
     /// THE hot-path map. (node, token, utc_day) -> {executed, pending}.
@@ -164,6 +182,8 @@ impl Vault {
             nodes: LookupMap::new(StorageKey::Nodes),
             node_order: Vec::new(),
             account_to_node: LookupMap::new(StorageKey::AccountToNode),
+            pubkey_to_node: LookupMap::new(StorageKey::PubkeyToNode),
+            pubkey_to_nonce: LookupMap::new(StorageKey::PubkeyToNonce),
             next_node_id: ROOT_NODE,
             ledgers: LookupMap::new(StorageKey::Ledgers),
             last_paid_ns: LookupMap::new(StorageKey::LastPaid),
@@ -894,13 +914,42 @@ impl Vault {
         memo: String,
         route: Option<Route>,
     ) -> PromiseOrValue<PaymentOutcome> {
-        let route = route.unwrap_or_default();
         let caller = env::predecessor_account_id();
         let node_id = *self
             .account_to_node
             .get(&caller)
             .unwrap_or_else(|| fail(ReasonCode::NotAgent, "caller is not bound to a node"));
+        self.dispatch_payment(
+            node_id,
+            request_id,
+            token,
+            amount,
+            recipient,
+            memo,
+            route.unwrap_or_default(),
+        )
+    }
 
+    /// The one budget-and-dispatch implementation.
+    ///
+    /// Both entry points — account-authenticated `request_payment` and
+    /// signature-authenticated `request_payment_signed` — resolve a `node_id`
+    /// their own way and then land here. Deliberately ONE body: two copies of
+    /// hierarchical reservation, allowlist, cooldown and freeze logic would
+    /// drift, and the copy that drifts is the one with the money in it.
+    ///
+    /// Everything below this line is caller-agnostic. Authentication is the
+    /// caller's job and is finished by the time we are called.
+    fn dispatch_payment(
+        &mut self,
+        node_id: NodeId,
+        request_id: String,
+        token: AccountId,
+        amount: U128,
+        recipient: AccountId,
+        memo: String,
+        route: Route,
+    ) -> PromiseOrValue<PaymentOutcome> {
         let gas_floor = match route {
             Route::NearDirect => MIN_GAS_FOR_DISPATCH,
             // A NEP-141 transfer; the cross-chain half is off-contract.
