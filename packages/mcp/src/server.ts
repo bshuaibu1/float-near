@@ -25,7 +25,6 @@ import { z } from "zod";
 
 import { fromBaseUnits, toBaseUnits } from "./amounts.js";
 import {
-  BASE_GAS_TGAS,
   DEFAULT_GAS_TGAS,
   planAddNode,
   planCreateAgentAccount,

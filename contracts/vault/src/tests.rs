@@ -743,10 +743,6 @@ fn contract_constants_match_the_shared_file() {
     assert_eq!(MAX_PURGE_LIMIT as u64, num("MAX_PURGE_LIMIT"));
     assert_eq!(MAX_LIST_LIMIT as u64, num("MAX_LIST_LIMIT"));
     assert_eq!(MIN_GAS_FOR_DISPATCH.as_tgas(), num("MIN_GAS_FOR_DISPATCH_TGAS"));
-    assert_eq!(
-        MIN_GAS_FOR_BASE_DISPATCH.as_tgas(),
-        num("MIN_GAS_FOR_BASE_DISPATCH_TGAS"),
-    );
     assert_eq!(PRODUCTION_DAY_NS, num("PRODUCTION_DAY_NS"));
 
     // Token amounts as decimal strings: a JSON number cannot hold a

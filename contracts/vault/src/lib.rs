@@ -26,15 +26,21 @@ pub use crate::types::*;
 pub const GAS_FOR_FT_TRANSFER: Gas = Gas::from_tgas(10);
 pub const GAS_FOR_TRANSFER_CALLBACK: Gas = Gas::from_tgas(10);
 /// Checked up front so a call cannot reserve budget and then run out of gas
-/// part-way through dispatch.
+/// part-way through dispatch. The ONLY gas floor — both `Route` variants use
+/// it, so this is the number a relay has to clear.
+///
+/// MEASURED on testnet 2026-10-28, not guessed: the signed-payment path burns
+/// 7.85 Tgas at tree depth 1 and 9.28 Tgas at MAX_DEPTH. 50 Tgas prepaid
+/// settles; 49 panics with INSUFFICIENT_GAS. So the floor carries ~5x headroom
+/// over the deepest real burn, and float-relay.mjs's 100 Tgas carries ~10x.
+/// Do not raise this to cover a hypothetical — a floor above what a relay
+/// attaches fails EVERY payment, which is how the removed Base rail's 130 Tgas
+/// came to look like the relay was 30 Tgas under-funded when that constant was
+/// in fact unreachable.
 pub const MIN_GAS_FOR_DISPATCH: Gas = Gas::from_tgas(50);
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 /// `ft_transfer` returns nothing; anything longer is an unexpected token.
 const MAX_PROMISE_RESULT_LEN: usize = 256;
-/// An MPC signature response is a small struct (big_r, s, recovery_id); this
-/// bounds what the signature callback will copy, for the same out-of-gas
-/// reason as MAX_PROMISE_RESULT_LEN.
-const MAX_MPC_RESULT_LEN: usize = 1024;
 
 pub const PRODUCTION_DAY_NS: u64 = 86_400 * NS_PER_SEC;
 
@@ -56,19 +62,6 @@ pub const MIN_AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_millinear(500);
 pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
 pub const GAS_FOR_CREATE_CALLBACK: Gas = Gas::from_tgas(10);
 
-/// Gas for the MPC sign call.
-///
-/// MEASURED, not guessed: v1.signer-prod.testnet's own `config` reports
-/// `sign_call_gas_attachment_requirement_tera_gas: 15`, and a live sign call
-/// at 100 Tgas returned a real secp256k1 signature. 100 keeps a wide margin
-/// over the stated requirement while leaving room under NEAR's 300 Tgas cap —
-/// an under-funded sign call that runs out of gas never returns to the
-/// callback, which would leave the reservation held at every level.
-pub const GAS_FOR_MPC_SIGN: Gas = Gas::from_tgas(100);
-pub const GAS_FOR_SIGNATURE_CALLBACK: Gas = Gas::from_tgas(10);
-/// The Base rail demands more prepaid gas than the NEAR rail. Checked BEFORE
-/// anything is charged.
-pub const MIN_GAS_FOR_BASE_DISPATCH: Gas = Gas::from_tgas(130);
 /// Upper bound on a single purge sweep, so one call cannot exhaust gas
 /// part-way and leave an unpredictable amount of work done.
 pub const MAX_PURGE_LIMIT: u32 = 100;
@@ -82,7 +75,7 @@ pub const MIN_SWEEP_AGE_NS: u64 = 3_600 * NS_PER_SEC;
 pub const MAX_SUB_LABEL_LEN: usize = 32;
 pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 
-/// The `sign` entry point of the Chain Signatures MPC contract.
+/// The `ft_transfer` entry point of a NEP-141 token contract.
 #[ext_contract(ext_ft)]
 #[allow(dead_code)]
 trait FungibleTokenCore {
@@ -1112,6 +1105,14 @@ impl Vault {
             // Checked before anything is charged. An under-funded dispatch that
             // ran out of gas mid-flight would never reach the callback, and the
             // reservation would stay held at every level of the chain.
+            //
+            // `<`, NOT `<=`: a submission at EXACTLY MIN_GAS_FOR_DISPATCH is
+            // adequately funded and must dispatch, or the real floor would be
+            // one gas unit above the constant that documents it. Measured on
+            // testnet 2026-10-28 against the deployed vault: 50 Tgas prepaid
+            // settles, 49 panics. Pinned from both sides by
+            // `a_signed_payload_at_exactly_the_gas_floor_dispatches` and
+            // `an_under_gassed_signed_payload_panics_rather_than_consuming_its_nonce`.
             fail(ReasonCode::InsufficientGas, "not enough prepaid gas for this rail");
         }
 

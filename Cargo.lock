@@ -1529,6 +1529,8 @@ name = "integration-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "ed25519-dalek",
  "futures",
  "near-workspaces",
  "serde",
@@ -1850,13 +1852,6 @@ dependencies = [
 
 [[package]]
 name = "mock-ft"
-version = "0.1.0"
-dependencies = [
- "near-sdk",
-]
-
-[[package]]
-name = "mock-mpc"
 version = "0.1.0"
 dependencies = [
  "near-sdk",

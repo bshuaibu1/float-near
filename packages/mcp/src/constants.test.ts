@@ -13,7 +13,7 @@ import {
   planPurgeSettled,
   planCreateAgentAccount,
   planAddNode,
-  BASE_GAS_TGAS,
+  DEFAULT_GAS_TGAS,
 } from "./payloads.js";
 
 // This server validates locally so a bad call fails before it costs gas or a
@@ -115,15 +115,13 @@ describe("the planner surface stays inside the contract's", () => {
   });
 });
 
-describe("the Base rail's gas floor", () => {
+describe("the dispatch gas floor", () => {
   it("attaches more than the contract's documented minimum", () => {
     // Asserted against the shared file, not a literal: the contract refuses a
-    // Base payment below MIN_GAS_FOR_BASE_DISPATCH, so if that floor rises and
-    // this constant does not, EVERY Base payment fails with INSUFFICIENT_GAS.
-    const floor = Number(C.MIN_GAS_FOR_BASE_DISPATCH_TGAS);
-    expect(floor).toBeGreaterThan(Number(C.MIN_GAS_FOR_DISPATCH_TGAS));
-    expect(BASE_GAS_TGAS).toBeGreaterThanOrEqual(floor);
+    // payment below MIN_GAS_FOR_DISPATCH, so if that floor rises and the gas
+    // we attach does not, EVERY payment fails with INSUFFICIENT_GAS.
+    expect(DEFAULT_GAS_TGAS).toBeGreaterThanOrEqual(Number(C.MIN_GAS_FOR_DISPATCH_TGAS));
     // NEAR caps prepaid gas at 300 Tgas; asking for more is rejected outright.
-    expect(BASE_GAS_TGAS).toBeLessThanOrEqual(300);
+    expect(DEFAULT_GAS_TGAS).toBeLessThanOrEqual(300);
   });
 });
