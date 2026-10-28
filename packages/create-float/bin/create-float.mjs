@@ -30,6 +30,7 @@ import { createInterface } from "node:readline/promises";
 import { Account, KeyPair, KeyPairSigner, JsonRpcProvider } from "near-api-js";
 import { randomBytes } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519";
+import { XCHAIN_HEADROOM, xchainCeiling, xchainCap } from "./xchain.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -117,9 +118,9 @@ const MAINNET_USDC = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3
  * `node --experimental-strip-types scripts/oneclick-probe.mjs` before relying
  * on the number; slippage tolerance and market depth both move it.
  */
-const XCHAIN_HEADROOM = 0.02;
-/** The most a cap can actually deliver cross-chain, conservatively. */
-const xchainCeiling = (cap) => cap / (1 + XCHAIN_HEADROOM);
+// Cap sizing for the cross-chain spread lives in its own module so it can be
+// tested — this file calls main() at the bottom, so a test importing it would
+// launch the wizard. See bin/xchain.mjs for the measurements behind the 2%.
 
 const AGENT_KEY_ALLOWANCE = NEAR(0.5);
 const AGENT_STORAGE = NEAR(0.05);
@@ -158,17 +159,36 @@ const DEFAULT_TREE = MAINNET
       ],
     }
   : {
+  // MAINNET CAPS ARE PRE-SIZED FOR THE CROSS-CHAIN SPREAD, via xchainCap().
+  //
+  // The numbers inside the calls are what the operator actually wants to be
+  // able to DELIVER — 100/day, 10 per payment — and the caps come out ~2%
+  // above that so a quote's amountIn fits. Written as a derivation rather than
+  // as 102 / 10.2 so the intent survives: a bare 10.2 invites someone to
+  // "tidy" it back to 10, which silently reintroduces the refusal.
+  //
+  // ONLY THE MAINNET TREE. The testnet tree above keeps round caps, because
+  // NEAR Intents is mainnet-only — there is no spread to absorb on testnet,
+  // and inflating caps there would loosen limits for no benefit at all.
+  //
+  // THE TRADE, stated because it is a real loosening and not just a display
+  // change: these caps apply to BOTH rails. A per-tx cap of 10.2 lets a
+  // NearDirect payment spend 10.2, not 10. That is 2% more direct-payment
+  // headroom than the operator asked for, bought to make round cross-chain
+  // amounts clear. Anyone who cares more about an exact direct-payment ceiling
+  // than about round cross-chain deliveries should set these to flat numbers
+  // and accept delivering ~98% of the cap.
   label: "root",
-  daily: 100,
-  perTx: 10,
+  daily: xchainCap(100),
+  perTx: xchainCap(10),
   children: [
     {
       label: "research",
-      daily: 60,
-      perTx: 10,
+      daily: xchainCap(60),
+      perTx: xchainCap(10),
       children: [
-        { label: "r1", daily: 50, perTx: 10, agent: true },
-        { label: "r2", daily: 50, perTx: 10, agent: true },
+        { label: "r1", daily: xchainCap(50), perTx: xchainCap(10), agent: true },
+        { label: "r2", daily: xchainCap(50), perTx: xchainCap(10), agent: true },
       ],
     },
   ],
@@ -833,14 +853,26 @@ balance — a solver delivers and prices the gas in:
   curl -X POST localhost:8787/v1/pay -H 'content-type: application/json' \
     -d '{"amount":"0.50","recipient":"0xYourBaseAddress","rail":"intents"}'
 
-${C.b("Sizing caps for this rail.")} A quote is EXACT_OUTPUT: ${C.dim("amount")} is what the
-payee RECEIVES, and the vault is charged more — solver fee plus a slippage
-reserve. The tree is charged that larger figure, which is correct: a cap
-governs what actually leaves. So a per-tx cap of ${leafPerTx} delivers at most about
-${xchainCeiling(leafPerTx).toFixed(2)} cross-chain, and asking for ${leafPerTx} is refused by ${C.b("your own")}
-${C.b("budget")} rather than by the solver — which reads like a bug if you are not
-expecting it. Measured ~1.03% at 100 and ~1.5% at 0.50, so size caps ~2% above
-the largest payment you mean to make. Re-check before trusting the figure:
+${C.b("Why your caps are not round numbers.")} A quote is EXACT_OUTPUT: ${C.dim("amount")} is what
+the payee RECEIVES, and the vault is charged more — solver fee plus a slippage
+reserve. The tree is charged that larger figure, which is correct, because a cap
+governs what actually leaves. So the caps above are pre-sized ~2% high: a per-tx
+cap of ${leafPerTx} is there to let you deliver a round ${xchainCeiling(leafPerTx).toFixed(0)}, and the daily caps
+follow the same shape.
+
+Two things that follow:
+
+  ${C.b("*")} These caps apply to ${C.b("both rails")}. ${leafPerTx} per transaction means a direct
+    NEAR payment can also spend ${leafPerTx} — 2% more than the round figure. If an
+    exact direct-payment ceiling matters more to you than round cross-chain
+    amounts, set the caps to flat numbers and accept delivering ~98% of them.
+
+  ${C.b("*")} If you ${C.b("do")} flatten them, a request for the full cap is refused by
+    ${C.b("your own budget")}, not by the solver, and nothing in the error mentions
+    cross-chain. That reads like a bug unless you are expecting it.
+
+Measured ~1.03% at 100 and ~1.5% at 0.50 — worst at small sizes, since most of
+it is the slippage reserve rather than fee. Re-check before trusting it:
 
   ${C.dim("node --experimental-strip-types scripts/oneclick-probe.mjs")}
 ` : ""}`);

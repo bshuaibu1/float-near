@@ -634,24 +634,41 @@ Two consequences for budgeting, both easy to get wrong:
 2. **"Funded with 10 USDC" does not buy a 10 USDC cross-chain payment.** The
    largest deliverable from exactly 10 USDC is about 9.89.
 
-**Sizing rule, now printed by the wizard.** `create-float` derives a sentence
-from the tree it actually built — a cap of `C` delivers at most about
-`C / 1.02` cross-chain — using `XCHAIN_HEADROOM = 0.02`. That is deliberately
-above the measured worst case (1.52% at 0.50) rather than the ~1.03% the
-spread converges to, because under-reserving produces a refusal while
-over-reserving costs nothing unless a payment is actually that large. For a
-cap of 10 it advertises 9.80 against a true boundary of 9.89 — conservative by
-design, so a user who follows the advice succeeds.
+**The mainnet defaults are now pre-sized for this.** They used to be flat
+(`perTx: 10` at every level), which meant a new user's first instinct — paying
+a round 10 cross-chain — was refused by their own caps. The mainnet tree in
+`create-float` now derives each cap through `xchainCap(desired)`, i.e.
+`ceil(desired × 1.02)` to the cent:
 
-It is a guidance figure for a printed sentence, not a protocol constant:
-nothing validates against it, no contract reads it, and
-`scripts/oneclick-probe.mjs` re-measures it. Slippage tolerance and market
-depth both move the real number, which is exactly why it is not compiled into
-anything.
+| node | wants to deliver | cap | charged to deliver it (live) | slack |
+| --- | --- | --- | --- | --- |
+| root daily | 100 | 102 | 101.032936 | 0.967064 |
+| research daily | 60 | 61.2 | 60.620733 | 0.579267 |
+| r1/r2 daily | 50 | 51 | 50.517682 | 0.482318 |
+| per-tx | 10 | 10.2 | 10.105478 | 0.094522 |
 
-The shipped mainnet default tree uses `perTx: 10` at every level, so this is
-not hypothetical — a new mainnet user's first instinct, paying a round 10
-cross-chain, is refused by their own default caps.
+All four confirmed against live quotes, not just the formula. Written as a
+derivation rather than as literal `102` / `10.2` so the intent survives — a
+bare `10.2` invites someone to tidy it back to `10`, which silently
+reintroduces the refusal.
+
+**Testnet keeps round caps**, because Intents is mainnet-only: there is no
+spread to absorb there, and inflating them would loosen limits for no benefit.
+
+**The trade, which is a real loosening.** These caps apply to BOTH rails. A
+per-tx cap of 10.2 lets a `NearDirect` payment spend 10.2, not 10 — 2% more
+direct-payment headroom than the operator asked for, bought to make round
+cross-chain amounts clear. The wizard says so explicitly rather than leaving it
+to be discovered, and anyone who cares more about an exact direct-payment
+ceiling should flatten the caps and accept delivering ~98% of them.
+
+`XCHAIN_HEADROOM = 0.02` sits above the measured worst case (1.52% at 0.50)
+rather than the ~1.03% the spread converges to, because under-reserving
+produces a refusal while over-reserving costs nothing unless a payment is
+actually that large. It is a guidance figure, not a protocol constant: nothing
+validates against it, no contract reads it, and `scripts/oneclick-probe.mjs`
+re-measures it. Slippage tolerance and market depth both move the real number,
+which is exactly why it is not compiled into anything.
 
 **A failure mode worth recognising.** `refundTo` must be a MAINNET NEAR
 account. Both callers pass `refundTo: vault` (`mcp/src/server.ts:208`,

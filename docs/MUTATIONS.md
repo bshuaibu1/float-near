@@ -629,3 +629,31 @@ nothing at all. Nothing looks exactly like a clean pass. The mutation was only
 caught because an empty result from a command that should always print
 *something* is itself the anomaly worth checking.
 
+
+### M31 — `XCHAIN_HEADROOM` 0.02 → 0.01
+
+The cross-chain cap headroom, dropped below the worst measured spread (1.52%
+at 0.50). Covers `packages/create-float/test/xchain.test.mjs`.
+
+- **Edit:** `packages/create-float/bin/xchain.mjs`, `XCHAIN_HEADROOM = 0.01`.
+- **Predicted:** 3 of the 5 new tests red — "a derived cap covers what a live
+  quote actually charged", "xchainCap rounds UP", "the headroom exceeds the
+  worst measured spread". The smallest-size and round-trip rows PASS, because
+  0.50 still clears at 1% (cap 0.51 vs charged 0.507579) and the round-trip
+  holds for any positive headroom.
+- **Actual:** ✅ **3 failed, 6 passed** — exact match, including which rows
+  survived. The live-charge row failed at **10**, not at 0.50:
+  `cap for 10 is 10100000 but delivering it was charged 10105478`.
+
+Worth recording for the shape rather than the row. The fixtures are charges
+from live 1Click dry quotes, not `desired * 1.02`, for the same reason
+`binding.test.mjs` pins bytes emitted by the Rust struct: a fixture derived
+from the thing under test only proves self-consistency. Had `MEASURED` been
+computed from the constant, every row would have stayed green at 1%, 0.5% or
+0% headroom — the suite would have asserted nothing at all while looking like
+coverage.
+
+The property row (`headroom > worst measured spread`) exists for the opposite
+drift: someone re-measures a worse spread, updates the fixtures, and does not
+revisit the constant. That row notices; the per-row assertions would all still
+pass against their own updated numbers.
