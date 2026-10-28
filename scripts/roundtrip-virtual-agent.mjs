@@ -29,7 +29,11 @@ const PAYEE = "floatv4.testnet";
 const NODE_ID = 0;
 const STATE = join(process.cwd(), ".demo", "roundtrip-state.json");
 
-const provider = new JsonRpcProvider({ url: "https://rpc.testnet.near.org" });
+// fastnear, matching verify-upgrade.mjs / scan-blocked.mjs / create-float.
+// `rpc.testnet.near.org` is deprecated and returns -429 with a "STOP USING IT
+// NOW" message on sustained use.
+const RPC = process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com";
+const provider = new JsonRpcProvider({ url: RPC });
 
 function credPath(account) {
   return join(homedir(), ".near-credentials", "testnet", `${account}.json`);

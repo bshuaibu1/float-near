@@ -27,12 +27,58 @@ calls, reading from NEAR vault views.
 | `GET /v1/settings` | `get_config().owner` |
 | `POST /v1/pay` | signs `request_payment` with the restricted agent key |
 
+## Which vault is the demo
+
+| vault | code | state | role |
+| --- | --- | --- | --- |
+| `v4.floatv4.testnet` | **current** | 24 nodes, 16 virtual agents | the demo. Deployed 2026-10-28, migrated past the `BaseConfig` removal, and the virtual-agent round trip is proven on it. |
+| `v3.floatvault-12329.testnet` | pre-virtual-agent | 21 nodes, 15 requests | **still running, deliberately.** Left serving on the old code it matches. |
+
+v3 is not broken and was not replaced in place. It runs code that matches its
+own state, so it answers every view call today. What it cannot do is accept an
+upgrade: its 284 state bytes have no `pubkey_to_node`/`pubkey_to_nonce`, so
+`migrate` cannot read them and `scripts/upgrade-testnet.sh` will abort
+atomically rather than brick it. Retiring it is a redeploy, not an upgrade, and
+needs its own full-access key — which is held by whoever created it, not by the
+`floatv4` keys the rest of this doc assumes.
+
+The two trees are the same shape on purpose, so the cost difference is the only
+variable:
+
+```
+root
+├── research ── r1, r2          r1+r2 caps (500) > research pool (250)
+└── swarm ───── s0 .. s15       16 siblings, each capped at the whole 250 pool
+```
+
+v3's 16 swarm members are real sub-accounts at 0.55 NEAR each — **8.8 NEAR**,
+and per `DEFERRED-agent-key-recovery.md` that NEAR is stranded, because an
+agent's only key is function-call scoped and cannot sign `DeleteAccount`. v4's
+16 are keypairs bound with `bind_virtual_agent`: **~0.016 NEAR** of contract
+state, most of it reclaimable by unbinding.
+
+Rebuild or extend the tree with `node scripts/seed-demo.mjs` (idempotent —
+existing labels are skipped, so an interrupted run can be finished rather than
+duplicating the tree). `--dry-run` prints the plan; `--prove` demonstrates the
+shared pool binding on chain:
+
+```
+s0   spend  50 -> SETTLED             | s0 own avail    0 | SWARM POOL avail    0   (x5)
+s5   spend  50 -> PARENT_DAILY_BUDGET | s5 own avail  250 | SWARM POOL avail    0
+```
+
+s5 has spent nothing and its own cap is fully available, yet it is refused —
+by `PARENT_DAILY_BUDGET`, not `DAILY_BUDGET`. That distinction is the hierarchy
+being load-bearing rather than decorative, and the dashboard renders the two as
+deliberately different sentences. `--prove` can only run once per UTC day; the
+pool is genuinely spent afterwards.
+
 ## Run it
 
 ```sh
-# 1. the adapter
-export NEAR_VAULT_CONTRACT=your-vault.testnet
-export NEAR_VAULT_TOKEN=usdc.testnet          # the NEP-141 the vault pays in
+# 1. the adapter — pointed at the demo vault above
+export NEAR_VAULT_CONTRACT=v4.floatv4.testnet
+export NEAR_VAULT_TOKEN=ft.floatv4.testnet    # the NEP-141 the vault pays in
 export NEAR_VAULT_TOKEN_DECIMALS=6
 # only needed for the pay flow - the RESTRICTED key from create_agent_account:
 export NEAR_VAULT_AGENT_ID=a0.your-vault.testnet
