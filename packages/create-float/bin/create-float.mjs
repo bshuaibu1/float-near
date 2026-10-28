@@ -382,11 +382,20 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     );
     console.log(`      vault balance        ${fmtNear(vaultIdle)} NEAR  ${C.dim("refundable — stakes budget-tree state")}`);
     if (agents.length) {
-      // Honest about which half comes back. The 0.5 float is SPENT on the
-      // agent's own calls — that is its purpose. The 0.05 storage needs a
-      // full-access key to reclaim, and the agent's key is function-call only.
+      // MEASURED on live testnet agents, which contradicted the first version
+      // of this label. The 0.5 is a RESERVE, not a spend: NEAR locks the full
+      // prepaid gas of a call against the signer and refunds the unused part,
+      // so a key needs ~0.5 of headroom to transact at all while burning a
+      // tiny fraction of it. The busiest demo agent had spent 0.0077 NEAR.
+      //
+      // So nearly the whole 0.55 per agent sits intact — and is currently
+      // STRANDED, because the agent's own key is function-call only and cannot
+      // sign DeleteAccount. Say so rather than implying it gets consumed.
       console.log(
-        `      ${agents.length} agent accounts     ${fmtNear(agentTotal)} NEAR  ${C.dim(`${fmtNear(agentFloat)} spent on their gas + ${fmtNear(agentStake)} staked`)}`,
+        `      ${agents.length} agent accounts     ${fmtNear(agentTotal)} NEAR  ${C.dim(`${fmtNear(agentFloat)} gas reserve, barely consumed`)}`,
+      );
+      console.log(
+        `      ${C.dim("")}                     ${C.dim("not yet reclaimable — see float-exit")}`,
       );
     } else {
       console.log(

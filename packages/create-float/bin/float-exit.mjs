@@ -205,10 +205,15 @@ async function main() {
   }
 
   if (unreclaimed) {
+    // ~0.55 each, not ~0.05. Measured on live agents: the gas reserve is
+    // barely consumed (busiest demo agent had burned 0.0077 NEAR), because
+    // NEAR locks prepaid gas and refunds it. So almost the entire deposit is
+    // sitting in those accounts, and without a full-access key it stays there.
     info(
-      `${unreclaimed} agent account(s) keep ~${(unreclaimed * 0.05).toFixed(2)} NEAR of staked storage.`,
+      `${unreclaimed} agent account(s) hold ~${(unreclaimed * 0.55).toFixed(2)} NEAR that CANNOT be reclaimed.`,
     );
-    info("Their gas float was already consumed by their own calls, as intended.");
+    info("Their gas reserve is near-untouched, but a function-call key cannot");
+    info("sign DeleteAccount, and no full-access key for them exists.");
   }
 
   // ---- 4. The vault itself.
