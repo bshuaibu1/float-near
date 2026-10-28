@@ -696,9 +696,10 @@ would catch this row. But the thing that caught the real bug was running
 plan's exact lines are pinned too: a tree with correct caps that prints the
 wrong node's numbers is still the first thing a user sees.
 
-**What these tests cannot do.** The faithful check would be shelling out to
-`--dry-run`, and the `--dry-run` GATE itself is not reachable — step 3 ends with
-`await ownerAcct.getBalance()`, which a hermetic run cannot get past.
+**What these tests cannot do.** Nothing, as of M35/M36 — the `--dry-run` gate
+is covered too, via a localhost RPC stub that answers `getBalance()`. The
+earlier claim that it was unreachable assumed the only options were a dead port
+or the real network.
 
 Step ordering and argument parsing, listed here as uncovered when this row was
 written, are now covered — see M33 and M34. A subprocess test turned out to be
@@ -753,3 +754,66 @@ step list, which reads as "no steps ran" rather than "the matcher cannot see
 them". Every assertion now goes through a `plain()` stripper. Same hazard as
 asserting on coloured text anywhere, and the same shape as injecting `dim` into
 `planTreeLines`.
+
+
+### M35 — remove the `--dry-run` gate
+
+- **Edit:** `create-float.mjs`, `if (DRY)` → `if (false && DRY)`.
+- **Predicted:** 1 red — "`--dry-run` stops at the gate". The control already
+  runs past the gate, and the affordability check is upstream of it, so both
+  should survive.
+- **Actual:** ✅ **1 failed, 7 passed** — exact match.
+
+**This row was first recorded as a SURVIVAL, and that was wrong.** The
+`str.replace` that applied it matched nothing, the `grep` meant to confirm it
+printed nothing, and I did not assert on the count — so the suite ran against
+UNMUTATED code and eight greens looked like evidence the gate was untested. It
+is the M1 lesson verbatim, from this same file: *"the edit never landed and the
+suite ran UNMUTATED. Without the count assertion that run's 8 greens would have
+been recorded as 'M1 survives'."* Documented and then repeated.
+
+What caught it was running the wizard by hand with the mutation supposedly
+applied and seeing `dry run — nothing was sent` print anyway. The fix is the
+one M1 already prescribes: assert the occurrence count BEFORE trusting the run,
+and abort if it is not exactly 1.
+
+### M36 — hoist the gate ABOVE the balance read
+
+The more interesting direction, because the gate's POSITION is the claim.
+
+- **Edit:** move the `if (DRY)` block above
+  `console.log(... your balance ...)` and the `available < total` check.
+- **Predicted:** 2 red — "`--dry-run` stops at the gate" (it would still print
+  the dry-run line but no longer the balance) and "an unaffordable plan is
+  refused BEFORE the dry-run gate". The control survives.
+- **Actual:** ✅ **2 failed, 6 passed** — exact match.
+
+The property: a dry run reports what the plan COSTS and whether it is
+affordable. Hoisting the gate would make `--dry-run` answer "fine" on a balance
+too small to proceed, which is worse than having no dry run — it would be a
+confident green. The contract comment now says so, pointing at both rows.
+
+**How the gate became reachable at all.** Two earlier attempts concluded it was
+not: the `--dry-run` check sits after `await ownerAcct.getBalance()`, so the
+dead-port runs die first. The missing option was a localhost HTTP stub speaking
+just enough JSON-RPC — `EXPERIMENTAL_protocol_config` for
+`storage_amount_per_byte`, then `query`/`view_account` — discovered by logging
+what the wizard actually asked for rather than guessing. `available = amount -
+max(locked, storage_usage * rate)`, so the stub controls the reported balance
+and M36's affordability row can be driven with `nearBalance: 1`.
+
+Reordering production code to put the gate before the balance would also have
+made it testable, and was rejected: the balance is part of what a dry run is
+for, so that would have degraded the feature to suit the test.
+
+**One deadlock worth recording.** The stub is created in the test process, and
+`run()` used `execFileSync` — which BLOCKS the event loop, so the stub could
+never answer and the child sat at `getBalance()` until the 60s timeout. The
+symptom reads as "the stub does not work"; the cause is that a synchronous wait
+cannot serve a request. `run()` is now async via `promisify(execFile)`.
+
+**And one guard.** `run()` asserts `--rpc` is present and on `127.0.0.1`. Step 4
+is the first step that spends, and these tests deliberately reach it in the
+control row — against loopback, where the "transaction" goes nowhere. An edit
+that dropped `--rpc` would fall back to the real testnet RPC and spend actual
+NEAR, so that is enforced structurally rather than promised in a comment.

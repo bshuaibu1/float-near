@@ -396,6 +396,11 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       );
     }
 
+    // The gate sits AFTER the balance read and the affordability check, not
+    // before. A dry run reports what the plan COSTS and whether you can afford
+    // it; hoisting this above them would make `--dry-run` answer "fine" on a
+    // balance too small to proceed. Pinned from both sides by M35 and M36 in
+    // docs/MUTATIONS.md.
     if (DRY) {
       console.log(`\n${C.y("dry run")} — nothing was sent.\n`);
       return;
