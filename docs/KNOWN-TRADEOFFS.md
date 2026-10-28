@@ -808,3 +808,34 @@ was load-bearing.
 
 Handled in `scripts/intents-pay.mjs::ensureRegistered`, which registers before
 anything is signed, so a failure happens while the quote is still only a quote.
+
+### 13a. The round trip, proven end to end (2026-10-28)
+
+First real cross-chain payment, `float.test015.near` -> Base:
+
+| leg | evidence |
+| --- | --- |
+| vault debited | `1.000000` -> `0.492421` USDC, exactly `-0.507579` |
+| budget charged | node 0 `executed 0.507579`, `available 1.532421` (= 2.040000 - 0.507579) |
+| NEAR transfer | `SETTLED` / `SETTLED`, request `base-2-07167232` |
+| **Base delivery** | **0.500000 USDC**, block 53216624, 21:23:15Z, tx `0xceda1273…` |
+
+Spread 0.007579 = 1.52%, matching the quote to the base unit, and inside the
+0.510000 per-tx cap with 2421 units spare. The cap pre-sizing in
+`packages/create-float/bin/xchain.mjs` did exactly what it was measured for.
+
+**A verification mistake worth recording, because it was nearly believed.** The
+first attempt to confirm the Base leg scanned `eth_getLogs` and read the
+response as `(await call(...)).result ?? []`. The public endpoint answers
+HTTP 429 to a wide range, so the error became an empty array, and "0 inbound
+transfers" was reported as evidence of non-delivery. The transfer was in block
+53216624 — inside the scanned range the whole time. Zero matches and "the query
+could not run" are the same output unless the error is checked for.
+
+`intents-pay.mjs::baseUsdcBalance` now throws on a non-200, on a JSON-RPC
+`error`, and on a null result; `verify` prints READ FAILED and says explicitly
+that it is not evidence of non-delivery. It also records the payee's Base
+balance BEFORE paying, because the balance afterwards was 0.501935 for a
+0.500000 payment — 0.001935 was already there, and without a before-picture
+that is indistinguishable from a short fill. All three guard branches were
+exercised (bad method, wide range, bad host) rather than assumed.

@@ -373,6 +373,41 @@ async function ensureRegistered(acct, depositAddress) {
   console.log("  registered");
 }
 
+/**
+ * The payee's USDC balance on Base, read straight from a Base RPC.
+ *
+ * WHY THIS IS IN HERE AT ALL. `verify` can only prove the NEAR leg: SETTLED
+ * means the NEP-141 transfer to the deposit address landed, and says nothing
+ * about the solver. So the far side has to be read — and read against a
+ * BEFORE-PICTURE, because the payee may already hold USDC. On the first live
+ * run the balance afterwards was 0.501935 for a 0.500000 payment, and with no
+ * before value there was no way to tell that from a wrong delivery.
+ *
+ * AN ERROR IS NOT A ZERO. My first attempt to verify this scanned eth_getLogs
+ * and read the response as `(await call(...)).result ?? []`, so an RPC error —
+ * the public endpoint capping the block range — became an empty array, and
+ * "0 inbound transfers" got reported as evidence the payment had not arrived.
+ * It had: the transfer was in block 53216624, inside the scanned range the
+ * whole time. Hence throwing on `error` and on a null result rather than
+ * defaulting, and hence balanceOf rather than a log scan — one call at `latest`
+ * has no block range that can be silently truncated.
+ */
+const BASE_RPC = process.env.BASE_RPC ?? "https://mainnet.base.org";
+const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+async function baseUsdcBalance(addr) {
+  const data = "0x70a08231" + "0".repeat(24) + addr.replace(/^0x/, "");
+  const r = await fetch(BASE_RPC, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call",
+      params: [{ to: BASE_USDC, data }, "latest"] }),
+  });
+  if (!r.ok) throw new Error(`Base RPC HTTP ${r.status}`);
+  const j = await r.json();
+  if (j.error) throw new Error(`Base RPC: ${JSON.stringify(j.error)}`);
+  if (!j.result) throw new Error("Base RPC returned no result");
+  return BigInt(j.result);
+}
+
 async function pay() {
   const s = load();
   if (!s.agentSecret) throw new Error("run keygen first");
@@ -466,6 +501,16 @@ async function pay() {
     signature: asig,
   };
 
+  // The before-picture, taken BEFORE the money moves. Best effort: a Base RPC
+  // hiccup must not abort a payment whose NEAR side is ready to go.
+  let baseBefore = null;
+  try {
+    baseBefore = await baseUsdcBalance(PAYEE);
+    console.log(`  payee on Base  : ${usdc(baseBefore)} (before)`);
+  } catch (err) {
+    console.log(`  payee on Base  : unavailable (${String(err.message).slice(0, 60)})`);
+  }
+
   console.log("\n  submitting request_payment_signed...");
   const acct = ownerAccount(); // a RELAYER here: it pays gas, it does not authorise
   const out = await acct.callFunction({
@@ -475,6 +520,8 @@ async function pay() {
   console.log("  outcome:", JSON.stringify(out));
 
   s.lastRequestId = requestId;
+  s.lastPayeeBaseBefore = baseBefore === null ? null : String(baseBefore);
+  s.lastDeliver = String(DELIVER);
   s.lastDepositAddress = q.depositAddress;
   s.lastAmountIn = String(amount);
   save(s);
@@ -496,6 +543,29 @@ async function verify() {
     console.log("\n  SETTLED means the NEP-141 transfer to the deposit address landed.");
     console.log("  It does NOT mean the solver delivered on Base — that is off-chain.");
     console.log(`  Check the payee: https://basescan.org/address/${PAYEE}`);
+    try {
+      const now = await baseUsdcBalance(PAYEE);
+      console.log(`\n  payee on Base   : ${usdc(now)}`);
+      if (s.lastPayeeBaseBefore != null) {
+        const delta = now - BigInt(s.lastPayeeBaseBefore);
+        const want = BigInt(s.lastDeliver ?? DELIVER);
+        console.log(`  before payment  : ${usdc(s.lastPayeeBaseBefore)}`);
+        console.log(
+          `  DELIVERED       : ${usdc(delta)}   expected ${usdc(want)}   ${
+            delta === want ? "exact"
+              : delta > want ? "above the minimum"
+              : "SHORT — not filled yet, or short-filled"
+          }`,
+        );
+      } else {
+        console.log("  (no before-picture recorded, so this balance proves nothing alone)");
+      }
+    } catch (err) {
+      // Say the READ failed. Reporting a failed read as a zero delivery is the
+      // exact mistake this helper exists to prevent.
+      console.log(`\n  payee on Base   : READ FAILED — ${String(err.message).slice(0, 80)}`);
+      console.log("  That is NOT evidence of non-delivery. Check basescan directly.");
+    }
   }
   const lim = await view("get_node_budget", { node_id: NODE_ID, token: TOKEN });
   console.log(`\n  node ${NODE_ID} today: executed ${usdc(lim.executed)} pending ${usdc(lim.pending)} available ${usdc(lim.available)}`);
