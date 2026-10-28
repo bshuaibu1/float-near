@@ -46,7 +46,21 @@ So:
   contract**
 
 This change is therefore **forward-only**. The 18 agents under
-`v3.floatvault-12329.testnet` hold ~9.9 NEAR that stays stranded regardless.
+`v3.floatvault-12329.testnet` hold NEAR that stays stranded regardless.
+
+Measured account-by-account on 2026-10-28 rather than estimated: **10.7752 NEAR
+across all 18**, with 0 accounts unreadable — which is what makes the total
+trustworthy, since a partial read would have silently under-reported it. An
+earlier revision of this line said "~9.9 NEAR"; the real figure is ~0.9 higher.
+
+    r1 0.9923   r2 0.9993   s0..s15  ~0.5485–0.5497 each
+
+The restriction was confirmed by reading a live key, not inferred from the
+design: `r1.v3.floatvault-12329.testnet`'s sole access key is
+`only do ["request_payment"] function calls on v3.floatvault-12329.testnet with
+an allowance of 0.4923 NEAR`. There is no full-access key on it, so it cannot
+sign `DeleteAccount` — and retiring the parent vault does not change that. The
+sub-accounts simply outlive it.
 
 ## Design: reuse the vault's own key
 
