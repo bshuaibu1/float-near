@@ -133,8 +133,8 @@ Bounded honestly:
 - The lock is per-day: the ledger is keyed by `(node, token, day)`, so a stuck
   reservation stops mattering once the day rolls over.
 - The callbacks are deliberately small and bound how much of the promise result
-  they copy (`MAX_PROMISE_RESULT_LEN`, `MAX_MPC_RESULT_LEN`) precisely so they
-  cannot be pushed out of gas by a large return value.
+  they copy (`MAX_PROMISE_RESULT_LEN`) precisely so they cannot be pushed out of
+  gas by a large return value.
 
 `sweep_stuck_pending(limit)` closes this. Owner-only, it releases such a
 reservation through `resolve_reservation` — the same single place both rails
