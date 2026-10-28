@@ -90,9 +90,32 @@ esac
 export NEAR_VAULT_RPC_URL="${NEAR_VAULT_RPC_URL:-$DEFAULT_RPC}"
 echo "==> network: $NETWORK   vault: $VAULT   rpc: $NEAR_VAULT_RPC_URL"
 
-command -v near >/dev/null || { echo "near CLI not found" >&2; exit 1; }
-command -v cargo-near >/dev/null || {
-  echo "cargo-near not found. Install: cargo install cargo-near --locked" >&2; exit 1; }
+# ---- Tooling, with the Windows trap named.
+#
+# On Windows, plain `bash` in PowerShell resolves to C:\WINDOWS\system32ash.exe
+# — WSL — and NOT git-bash. A non-login WSL shell has no ~/.cargo/bin on PATH,
+# so cargo-near reports "not found" while being perfectly well installed on the
+# Windows side. The toolchain this script needs lives in git-bash:
+#   near       -> /c/Users/<you>/AppData/Roaming/npm/near
+#   cargo-near -> /c/Users/<you>/.cargo/bin/cargo-near
+#
+# So the check reports WHICH SHELL it is running in. "not found" in WSL is a
+# wrong-shell problem; "not found" in MINGW64 is a missing-install problem, and
+# the two have completely different fixes.
+missing() {
+  echo "FATAL: $1 not found.   shell: $(uname -s)" >&2
+  case "$(uname -s)" in
+    Linux*)
+      echo "       This is WSL. On Windows, plain 'bash' is WSL's bash and its PATH" >&2
+      echo "       omits ~/.cargo/bin. Use git-bash explicitly:" >&2
+      echo "         & 'C:\Program Files\Gitinash.exe' -c \"...\"" >&2
+      ;;
+    *) echo "       Install it: $2" >&2 ;;
+  esac
+  exit 1
+}
+command -v near       >/dev/null || missing near       "npm i -g near-cli-rs"
+command -v cargo-near >/dev/null || missing cargo-near "cargo install cargo-near --locked"
 
 # ---- 1. Record what is there now.
 #
