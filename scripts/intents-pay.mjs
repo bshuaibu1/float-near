@@ -31,6 +31,7 @@
  *
  * Usage:
  *   node --experimental-strip-types scripts/intents-pay.mjs keygen
+ *   node --experimental-strip-types scripts/intents-pay.mjs check   # read-only
  *   node --experimental-strip-types scripts/intents-pay.mjs setup   # 2 owner txs
  *   node --experimental-strip-types scripts/intents-pay.mjs quote   # price only
  *   node --experimental-strip-types scripts/intents-pay.mjs pay
@@ -42,7 +43,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Account, JsonRpcProvider, KeyPair, KeyPairSigner } from "near-api-js";
-import { getQuote } from "../packages/mcp/src/quote.ts";
+import { getQuote, signBinding, publicKeyOf, toBase64 } from "../packages/mcp/src/quote.ts";
 
 const NETWORK = "mainnet";
 const VAULT = process.env.FLOAT_VAULT ?? "float.test015.near";
@@ -124,17 +125,36 @@ function ownerAccount() {
 }
 
 /**
- * The quote signer's secret, from .float/adapter.env.
+ * The quote signer's secret, from .float/adapter.env, as 32 RAW BYTES.
  *
- * Never printed. The only thing echoed is the derived PUBLIC key, which is
- * already on chain.
+ * FLOAT_QUOTE_SIGNER_KEY is 32-byte HEX, not near-api-js's
+ * `ed25519:<base58>`. Both production consumers read it that way —
+ * packages/mcp/src/server.ts:199 and packages/float-adapter/src/server.ts:328
+ * — and this script originally fed it to `KeyPair.fromString`, which rejected
+ * it outright with "Invalid encoded key format". A loud failure, fortunately;
+ * the quiet version of this mistake is a key that parses and signs with the
+ * wrong bytes, which is indistinguishable from a borsh drift.
+ *
+ * Parsed with the same one-liner as the MCP server, deliberately, rather than
+ * a tidier equivalent — if that ever changes, this should fail to match rather
+ * than silently diverge.
+ *
+ * Never printed. Only the derived PUBLIC key is echoed, and that is on chain.
  */
 function quoteSecret() {
   const p = join(".float", "adapter.env");
   if (!existsSync(p)) throw new Error(`${p} not found — the wizard writes it at step 8`);
   const m = readFileSync(p, "utf8").match(/^FLOAT_QUOTE_SIGNER_KEY=(.+)$/m);
   if (!m) throw new Error(`FLOAT_QUOTE_SIGNER_KEY absent from ${p}`);
-  return KeyPair.fromString(m[1].trim());
+  const hex = m[1].trim().replace(/^0x/, "");
+  const sk = Uint8Array.from(Buffer.from(hex, "hex"));
+  if (sk.length !== 32) {
+    throw new Error(
+      `FLOAT_QUOTE_SIGNER_KEY must be 32-byte hex; got ${sk.length} bytes. ` +
+        `An ed25519:<base58> value will not work here — see packages/mcp/src/server.ts:199.`,
+    );
+  }
+  return sk;
 }
 
 // ---- borsh. Byte-identical to intents-dryrun.mjs, which is byte-identical to
@@ -145,11 +165,11 @@ const bu64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); 
 const bu128 = (n) => { const b = Buffer.alloc(16); let v = BigInt(n); for (let i = 0; i < 16; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
 const bbytes = (buf) => { const l = Buffer.alloc(4); l.writeUInt32LE(buf.length); return Buffer.concat([l, buf]); };
 
-/** QuoteBinding: vault, request_id, token, amount, payee, deposit_address, deadline_ns */
-const encodeQuote = (q) => Buffer.concat([
-  bstr(q.vault), bstr(q.requestId), bstr(q.token), bu128(q.amount),
-  bstr(q.payee), bstr(q.depositAddress), bu64(q.deadlineNs),
-]);
+// QuoteBinding is NOT re-encoded here. encodeBinding/signBinding in
+// packages/mcp/src/quote.ts are the production encoder, asserted against the
+// Rust side by `quote_binding_borsh_vector`; a second copy in this file would
+// be one more thing that can drift into a silent QUOTE_BAD_SIGNATURE. The
+// VirtualAgentBinding encoder below has no equivalent there, so it stays.
 
 /** VirtualAgentBinding + Route::Intents. The Route tag is POSITIONAL: Intents = 1. */
 const encodeAgent = (b) => Buffer.concat([
@@ -195,7 +215,7 @@ async function setup() {
   const acct = ownerAccount();
 
   const registered = await view("get_quote_signer");
-  const derived = Buffer.from(quoteSecret().getPublicKey().data).toString("base64");
+  const derived = toBase64(publicKeyOf(quoteSecret()));
   console.log("  quote signer registered :", JSON.stringify(registered));
   console.log("  derived from adapter.env:", derived);
   if (!registered) throw new Error("no quote signer registered — the Intents rail is closed");
@@ -243,6 +263,45 @@ async function setup() {
   }
 }
 
+/**
+ * Everything `setup` and `pay` depend on, READ ONLY.
+ *
+ * Split out because the quote-signer comparison is the single most valuable
+ * check here and it used to be reachable only by running `setup`, which also
+ * sends two owner transactions. A check you cannot run without spending is a
+ * check people skip.
+ */
+async function check() {
+  const s = load();
+  const registered = await view("get_quote_signer");
+  console.log("  quote signer registered :", JSON.stringify(registered));
+  let derived = null;
+  try {
+    derived = toBase64(publicKeyOf(quoteSecret()));
+    console.log("  derived from adapter.env:", derived);
+  } catch (err) {
+    console.log("  derived from adapter.env: FAILED —", String(err.message ?? err));
+  }
+  console.log("  signer match            :",
+    registered && derived === registered ? "yes" : "NO — Intents payments would be refused");
+
+  const node = await getNode(NODE_ID);
+  const rec = node.recipients ?? [];
+  console.log(`  node ${NODE_ID} recipients     :`, JSON.stringify(rec));
+  console.log("  payee allowlisted       :", rec.includes(PAYEE) ? "yes" : "no — run setup");
+
+  if (s.agentPublic) {
+    const bound = await view("get_virtual_agent_node", { public_key: s.agentPublic });
+    console.log("  agent key               :", s.agentPublic);
+    console.log("  bound to node           :",
+      bound === null || bound === undefined ? "NOT BOUND — run setup" : bound);
+  } else {
+    console.log("  agent key               : none — run keygen");
+  }
+  const bal = BigInt(await ftView("ft_balance_of", { account_id: VAULT }));
+  console.log(`  vault balance           : ${usdc(bal)}`);
+}
+
 /** A dry quote: a price, not an instruction. No deposit address is issued. */
 async function quote() {
   const q = await getQuote({
@@ -268,7 +327,7 @@ async function pay() {
   const s = load();
   if (!s.agentSecret) throw new Error("run keygen first");
   const agent = KeyPair.fromString(s.agentSecret);
-  const qkp = quoteSecret();
+  const qsk = quoteSecret();
 
   // Refuse before buying a quote, not after. Every one of these is a condition
   // the contract would reject anyway — but it would reject it AFTER a real
@@ -300,10 +359,10 @@ async function pay() {
   const requestId = `base-${nonce}-${String(nowNs).slice(-8)}`;
 
   // The quote signer binds deposit address <-> payee.
-  const qsig = sign(qkp, encodeQuote({
+  const qsig = toBase64(signBinding({
     vault: VAULT, requestId, token: TOKEN, amount,
-    payee: PAYEE, depositAddress: q.depositAddress, deadlineNs: q.deadlineNs,
-  }));
+    payee: PAYEE, depositAddress: q.depositAddress, deadlineNs: BigInt(q.deadlineNs),
+  }, qsk));
 
   // The agent authorises the spend. Its own deadline is separate from the
   // quote's and must also be in the future at execution.
@@ -367,7 +426,7 @@ async function verify() {
   console.log(`\n  node ${NODE_ID} today: executed ${usdc(lim.executed)} pending ${usdc(lim.pending)} available ${usdc(lim.available)}`);
 }
 
-const steps = { keygen, setup, quote, pay, verify };
+const steps = { keygen, check, setup, quote, pay, verify };
 const step = process.argv[2];
 if (!steps[step]) {
   console.error(`usage: node --experimental-strip-types scripts/intents-pay.mjs <${Object.keys(steps).join("|")}>`);
