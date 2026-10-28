@@ -919,3 +919,48 @@ or the solver's own eta plus slack elapses, and then says which it ended on:
 `SHORT FILL — less than the minimum, which should not happen`. `pay` records the
 submission time and the eta so the bound comes from the counterparty's promise
 rather than a guess.
+
+### 13d. The per-tx cap, tested at its edge on mainnet
+
+Run via `scripts/intents-pay.mjs capedge`. An over-cap amount derived from a
+LIVE dry quote, then bought as a real quote and signed exactly as a real
+payment:
+
+```
+per-tx cap     : 0.510000 USDC
+chose deliver  : 0.510000 USDC -> amountIn 0.517682 USDC
+over cap by    : 0.007682 USDC
+outcome: {"status":"BLOCKED","reason_code":"PER_TX_LIMIT"}
+vault 0.245044 -> 0.245044   executed 0.762583 -> 0.762583
+```
+
+All seven assertions passed: BLOCKED, PER_TX_LIMIT, no tokens moved, budget not
+charged, nothing left pending, nonce consumed, blocked request not stored.
+
+**Why this is attributable to the cap and nothing else.** The Intents quote gate
+runs BEFORE the pass-one cap loop (`lib.rs:1153`). A malformed quote, stale
+deadline or bad signature would have been refused EARLIER, and the test would
+have looked like a pass while proving nothing. So `capedge` shares
+`buildSignedArgs` with `pay`: the quote signature, the agent signature, the
+payee, the deposit-address binding and the deadline were all valid and
+accepted. The ONLY defect was the amount.
+
+That is the budget tree's central claim, enforced on mainnet against real money:
+a payment that satisfies every authorisation check is still refused when it
+exceeds its limit.
+
+**The refusal is also free and safe.** The check precedes any charging and the
+transfer, so nothing moved; the test cost gas and one nonce. The deposit address
+was deliberately left unregistered, so even a cap check that failed to fire
+could only have reached TRANSFER_FAILED, never SETTLED.
+
+Two behaviours confirmed as designed rather than assumed:
+
+- **the nonce is consumed by a blocked attempt.** Burned before dispatch on
+  purpose, so any attempt reaching dispatch is single-use. A relayer cannot
+  retry a refused payload.
+- **a blocked request is not stored.** The contract returns it and emits an
+  event instead, so rejected attempts cannot grow the vault's storage bill at
+  an agent's will. `get_request` returning null afterwards is correct, not a
+  lost record — and any dashboard must say so rather than render an empty
+  "blocked" list and imply none ever happened.
