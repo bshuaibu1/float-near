@@ -173,12 +173,26 @@ async function main() {
   }
 
   // ---- 3. Agents. Their unspent float returns to the vault.
+  // ---- 3. Agents.
+  //
+  // An agent's own key is a FUNCTION-CALL access key restricted to
+  // request_payment. Such keys can sign exactly one FunctionCall action — they
+  // cannot sign DeleteAccount. So an agent account is only deletable if a
+  // FULL-access key for it happens to exist locally, which the wizard does not
+  // create. For the normal case this step deletes nothing, and says so.
+  //
+  // What is actually at stake is small: of each 0.55 NEAR, the 0.50 gas float
+  // is consumed by the agent's own calls (its purpose, not a loss) and 0.05 is
+  // staked storage. Stating that plainly beats "its float stays there", which
+  // implied the whole 0.55 was stranded.
   step(3, "Agent accounts");
   if (!agentIds.length) info("no agents bound");
+  let unreclaimed = 0;
   for (const id of agentIds) {
     const secret = loadKey(id);
     if (!secret) {
-      info(`${id} — no local key, skipping (its float stays there)`);
+      unreclaimed++;
+      info(`${id} — no full-access key locally, leaving in place`);
       continue;
     }
     if (DRY) {
@@ -188,6 +202,13 @@ async function main() {
     const acct = new Account(id, provider, new KeyPairSigner(KeyPair.fromString(secret)));
     await acct.deleteAccount(vault);
     ok(`${id} deleted — unspent float returned to ${vault}`);
+  }
+
+  if (unreclaimed) {
+    info(
+      `${unreclaimed} agent account(s) keep ~${(unreclaimed * 0.05).toFixed(2)} NEAR of staked storage.`,
+    );
+    info("Their gas float was already consumed by their own calls, as intended.");
   }
 
   // ---- 4. The vault itself.

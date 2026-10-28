@@ -317,7 +317,29 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
 
     // ---- 3. The bill, before a single transaction.
     const nodes = flatten(DEFAULT_TREE);
-    const agents = nodes.filter((n) => n.agent);
+
+    // Agent ACCOUNTS are opt-in; the budget TREE is always built.
+    //
+    // The tree is the product — the overcommit contention is visible from
+    // get_tree() with no agent accounts at all — and its nodes are cheap
+    // contract state. Agent accounts are 0.55 NEAR each and can be bound at
+    // any time afterwards via create_agent_account. Creating them up front
+    // charged every new user 1.1 NEAR of gas float for agents they had not
+    // configured yet, which is the most skippable part of the ask.
+    //
+    // Default is to defer. --agents <n> opts in; --agents all takes the lot.
+    const candidateAgents = nodes.filter((n) => n.agent);
+    const agentOpt =
+      opt("--agents", null) ??
+      (YES ? "0" : await ask(rl, `Create agent accounts now? (0-${candidateAgents.length}, 0.55 NEAR each)`, "0"));
+    const agentCount =
+      agentOpt === "all"
+        ? candidateAgents.length
+        : Math.max(0, Math.min(candidateAgents.length, Number.parseInt(agentOpt, 10) || 0));
+    if (agentOpt !== "all" && !Number.isFinite(Number.parseInt(agentOpt, 10)) && agentOpt !== "0") {
+      throw new Error(`--agents expects a number or "all", got "${agentOpt}"`);
+    }
+    const agents = candidateAgents.slice(0, agentCount);
     const total = VAULT_FUNDING + AGENT_COST * BigInt(agents.length);
 
     step(3, "Plan");
@@ -360,8 +382,15 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     );
     console.log(`      vault balance        ${fmtNear(vaultIdle)} NEAR  ${C.dim("refundable — stakes budget-tree state")}`);
     if (agents.length) {
+      // Honest about which half comes back. The 0.5 float is SPENT on the
+      // agent's own calls — that is its purpose. The 0.05 storage needs a
+      // full-access key to reclaim, and the agent's key is function-call only.
       console.log(
-        `      ${agents.length} agent accounts     ${fmtNear(agentTotal)} NEAR  ${C.dim(`${fmtNear(agentStake)} staked + ${fmtNear(agentFloat)} gas float, both refundable`)}`,
+        `      ${agents.length} agent accounts     ${fmtNear(agentTotal)} NEAR  ${C.dim(`${fmtNear(agentFloat)} spent on their gas + ${fmtNear(agentStake)} staked`)}`,
+      );
+    } else {
+      console.log(
+        `      ${C.dim("agent accounts")}       ${C.dim("none — add later with --agents, 0.55 NEAR each")}`,
       );
     }
     console.log(`      ${C.b("you send")}             ${C.b(fmtNear(total))} NEAR`);
