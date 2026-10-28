@@ -173,11 +173,14 @@ function mcpConfigPath() {
 }
 
 function findWasm() {
-  // Only ever the cargo-near output. A plain
-  // `cargo build --target wasm32-unknown-unknown` produces a wasm that RUNS
-  // but links near-sdk's pure-Rust fallbacks, after which env::panic_str never
-  // reaches the host: every reason code this vault's UX depends on becomes
-  // "unreachable opcode". Nothing warns you. So that path is not searched.
+  // res/ first, and that is the path that matters: it is populated by
+  // `prepack`, so an INSTALLED create-float carries the contract and the user
+  // needs no Rust toolchain. The target/ paths are the repo-local fallback for
+  // development.
+  //
+  // Only ever cargo-near output. It is the supported build path and emits the
+  // checksum used to verify a deployment; a plain
+  // `cargo build --target wasm32-unknown-unknown` artifact is not searched.
   const candidates = [
     join(HERE, "..", "res", "vault.wasm"),
     resolve(process.cwd(), "target", "near", "vault", "vault.wasm"),
