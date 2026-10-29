@@ -964,3 +964,46 @@ Two behaviours confirmed as designed rather than assumed:
   an agent's will. `get_request` returning null afterwards is correct, not a
   lost record — and any dashboard must say so rather than render an empty
   "blocked" list and imply none ever happened.
+
+### 13e. The MCP agent cannot complete a cross-chain payment on its own
+
+Found by `scripts/mcp-dryrun.mjs` before any demo recording, not during one.
+
+`vault_pay rail=intents` through the MCP server reaches the vault, passes every
+budget check and both signature gates, and then **fails at the transfer** with
+`The account … is not registered`. The reason is the one from §13: 1Click's
+deposit address is a fresh implicit account needing a `storage_deposit` on the
+TOKEN before it can receive.
+
+The agent cannot make that call. Its key, read from chain state after creation:
+
+```
+ed25519:AsNRXo3bdCr3G4ahD26ne9dFkErVPtY6Bb1Mbiy26WAG
+  receiver_id : float.test015.near
+  method_names: ["request_payment"]
+  allowance   : 0.500 NEAR
+total keys on r1.float.test015.near: 1   (no full-access key)
+```
+
+`receiver_id` is the vault, so the key cannot call the token contract at all —
+which is exactly the property that stops an agent calling `ft_transfer`
+directly and bypassing every budget check. And `grep -rn storage_deposit
+packages/mcp/src/` returns nothing, so MCP holds no other key to do it with.
+
+**This is the agent/operator split working as designed, not a defect.** An
+agent should not be able to pay a token contract for storage. But it means the
+cross-chain rail requires an OPERATOR-side registration step, and nothing in
+the agent-facing surface can supply it.
+
+Today that step lives in `scripts/intents-pay.mjs::ensureRegistered`, which
+uses the owner key. Consequences, stated plainly:
+
+- `rail=near` works end to end through MCP. The payee is an ordinary NEAR
+  account that is already registered, so no extra call is needed.
+- `rail=intents` through MCP needs an operator component that watches for a
+  quote and registers its deposit address — or a contract change letting the
+  vault register from its own balance, since the vault does hold NEAR.
+
+The roadmap item is the operator daemon, not a change to the key's permissions.
+Widening the agent key to reach the token would hand it the vault's transfer
+authority and make the whole budget tree advisory.

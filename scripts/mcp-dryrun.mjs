@@ -31,7 +31,25 @@ const arg = (k, d = null) => {
   return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : d;
 };
 const PAY = arg("--pay");
-const RAIL = arg("--rail", "intents");
+/**
+ * `near` by default, matching the MCP tool's own default — and that is the
+ * safer one for a reason worth stating.
+ *
+ * rail=intents CANNOT COMPLETE THROUGH MCP TODAY. 1Click's deposit address is a
+ * fresh implicit account that must be registered on the token before it can
+ * receive (KNOWN-TRADEOFFS §13), and registering means calling storage_deposit
+ * on the TOKEN. The agent key is a function-call key pinned to
+ * receiver_id=<vault>, method_names=["request_payment"] — verified on chain —
+ * so it structurally cannot make that call, and MCP holds no other key. The
+ * payment would reach the vault, pass every budget and signature check, and
+ * then fail at the transfer with TRANSFER_FAILED.
+ *
+ * That is the agent/operator split working as designed, not a defect: an agent
+ * is not supposed to be able to pay the token contract for storage. It does
+ * mean the cross-chain rail needs an OPERATOR-side registration step, which
+ * scripts/intents-pay.mjs performs with the owner key.
+ */
+const RAIL = arg("--rail", "near");
 const TO = arg("--to", "0xba82e1acf6058d345e083624b4f841b25f755449");
 const PLAN_AGENT = arg("--plan-agent");   // node id to attach the agent to
 const SUB_LABEL = arg("--sub-label", "r1");
@@ -187,6 +205,10 @@ try {
     process.exitCode = 1;
   } else {
     console.log(`\n  --- vault_pay ${PAY} via ${RAIL} to ${TO}  (REAL MONEY)`);
+    if (RAIL === "intents") {
+      console.log("  NOTE: expect TRANSFER_FAILED. The agent key cannot register the");
+      console.log("        one-time deposit address on the token — see the comment above.");
+    }
     const r = await call("vault_pay", { amount: PAY, recipient: TO, rail: RAIL, memo: "mcp dry run" });
     console.log(`  ${r.ok ? "ok  " : "FAIL"} ${r.text.slice(0, 600)}`);
     if (!r.ok) process.exitCode = 1;
