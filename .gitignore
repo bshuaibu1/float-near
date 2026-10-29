@@ -26,3 +26,4 @@ apps/dashboard/git
 # entry is the one that does not depend on anything else being present.
 .float/
 .tmpcreds/
+packages/create-float/SKILL.md

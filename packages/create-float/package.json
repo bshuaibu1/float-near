@@ -10,7 +10,8 @@
   "files": [
     "bin/",
     "res/",
-    "scripts/"
+    "scripts/",
+    "SKILL.md"
   ],
   "engines": {
     "node": ">=20"
@@ -22,6 +23,6 @@
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
     "bundle-wasm": "node scripts/bundle-wasm.mjs",
-    "prepack": "node scripts/bundle-wasm.mjs"
+    "prepack": "node scripts/bundle-wasm.mjs && node -e \"require('fs').copyFileSync('../../SKILL.md','SKILL.md')\""
   }
 }
