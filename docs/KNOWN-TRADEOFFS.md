@@ -1007,3 +1007,44 @@ uses the owner key. Consequences, stated plainly:
 The roadmap item is the operator daemon, not a change to the key's permissions.
 Widening the agent key to reach the token would hand it the vault's transfer
 authority and make the whole budget tree advisory.
+
+### 13f. The MCP path, end to end on mainnet — and the hierarchy observed
+
+`node scripts/mcp-dryrun.mjs --pay 0.05 --rail near --to test015.near`, spoken
+to the MCP server over stdio as a client, with no library imports:
+
+```
+agent key  : r1.float.test015.near
+vault_pay 0.05 via near to test015.near
+{ "request_id": "b990d950-…", "node_id": 2, "status": "SETTLED" }
+```
+
+So the full agent chain works: an AI client calls a tool, the MCP server signs
+with a key that can do exactly one thing, the vault applies the budget tree,
+and a NEP-141 transfer settles. Conservation exact — vault `0.245044 ->
+0.195044`, owner `10.817454 -> 10.867454`.
+
+**THE HIERARCHICAL CHARGE, observed rather than asserted.** Both earlier
+payments came from node 0, so this is the first that could show it. Paying
+0.05 from node 2:
+
+| node | executed | available / cap | |
+| --- | --- | --- | --- |
+| 0 root | 0.050000 | 1.990000 / 2.040000 | ancestor, charged |
+| 1 research | 0.050000 | 1.480000 / 1.530000 | ancestor, charged |
+| 2 r1 | 0.050000 | 0.970000 / 1.020000 | the payer |
+| 3 r2 | **0.000000** | 1.020000 / 1.020000 | **sibling, untouched** |
+
+Every ancestor charged, the sibling not. That is what makes the tree a shared
+POOL rather than four independent limits, and it is the property the product
+exists to demonstrate.
+
+It also sets up the contention the default tree is designed around: r1 and r2
+may now each spend 0.97 and 1.02 — 1.99 between them — against research's
+remaining 1.48. One of them will be refused by its PARENT's daily limit while
+its own still shows room. `PARENT_DAILY_LIMIT` remains the one reason code with
+no mainnet observation; demonstrating it needs ~1.5 USDC of payments and the
+vault holds 0.195044.
+
+**rail=near, not intents** — see §13e. The agent key cannot register a
+cross-chain deposit address, by design.
