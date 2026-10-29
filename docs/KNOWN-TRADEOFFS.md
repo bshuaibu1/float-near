@@ -1048,3 +1048,41 @@ vault holds 0.195044.
 
 **rail=near, not intents** — see §13e. The agent key cannot register a
 cross-chain deposit address, by design.
+
+### 13g. RESOLVED — the vault registers the deposit address itself
+
+§13e said `rail=intents` could not complete through MCP, and that the fix was an
+operator daemon. Building it showed the daemon cannot work, for two independent
+reasons that are worth keeping:
+
+- **Ordering.** `dispatch_payment` builds `ft_transfer -> on_transfer_result` as
+  one promise chain inside the same transaction as the request. A daemon
+  watching the chain learns the deposit address only once the transfer is
+  already in flight.
+- **Authority.** `storage_deposit` requires an attached deposit, and a NEAR
+  function-call key cannot attach one at all. An operator-side registrar
+  therefore needs a FULL-ACCESS key in a long-running network service — the
+  opposite of the restricted-key design everything else here rests on.
+
+So the vault registers the address itself, from its own balance, as the first
+link in the Intents promise chain. It is the only party that can: it already
+holds NEAR, and it already knows the address.
+
+**This is not a way to drain the vault's NEAR.** The arm is reached only AFTER
+the quote-signature gate, so every registration costs an owner-signed binding.
+Asserted: `a_bad_quote_signature_registers_nothing`.
+
+**Cost:** 0.00125 NEAR per cross-chain payment, from the vault. Its 3 NEAR of
+funding covers roughly 2,400. `registration_only: true` refunds any excess on a
+token with cheaper storage; on a more expensive one the registration fails, the
+transfer then fails exactly as it did before, and the reservation is released by
+the usual path — so it degrades to today's behaviour rather than to a new one.
+
+**Still true from §13:** a cross-chain payment is two NEAR actions. They are now
+both inside one transaction the agent signs, rather than one of them being a
+human's job.
+
+Three sandbox tests, and the decisive mutation — deleting the registration from
+the chain — was predicted to fail exactly one of them and did. The revert
+rebuilt a byte-identical wasm (`102f7b966521bb46`), which is what proves the
+revert was exact rather than approximately right.

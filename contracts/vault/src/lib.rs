@@ -25,6 +25,19 @@ pub use crate::types::*;
 
 pub const GAS_FOR_FT_TRANSFER: Gas = Gas::from_tgas(10);
 pub const GAS_FOR_TRANSFER_CALLBACK: Gas = Gas::from_tgas(10);
+/// Registering the quote's one-time deposit address, on the cross-chain rail.
+pub const GAS_FOR_STORAGE_DEPOSIT: Gas = Gas::from_tgas(10);
+/// What NEP-145 registration costs on the tokens this vault is used with:
+/// 0.00125 NEAR, both the min AND the max of `storage_balance_bounds` on
+/// mainnet USDC (measured 2026-10-28).
+///
+/// Fixed rather than read from the token, which would cost another
+/// cross-contract round trip on every payment. It degrades safely both ways:
+/// `registration_only: true` refunds the excess on a cheaper token, and on a
+/// more expensive one the registration simply fails, the transfer then fails as
+/// it does today, and the reservation is released by the usual path.
+pub const DEPOSIT_ADDRESS_STORAGE: NearToken =
+    NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
 /// Checked up front so a call cannot reserve budget and then run out of gas
 /// part-way through dispatch. The ONLY gas floor — both `Route` variants use
 /// it, so this is the number a relay has to clear.
@@ -80,6 +93,9 @@ pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 #[allow(dead_code)]
 trait FungibleTokenCore {
     fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>);
+    /// NEP-145. `registration_only: true` refunds anything above the minimum,
+    /// so a fixed attached amount cannot overpay a token with cheaper storage.
+    fn storage_deposit(&mut self, account_id: Option<AccountId>, registration_only: Option<bool>);
 }
 
 #[near(serializers = [borsh])]
@@ -1293,10 +1309,38 @@ impl Vault {
             // the NEAR rail, so a failed transfer releases the reservation by
             // exactly the same path.
             Route::Intents { deposit_address, .. } => PromiseOrValue::Promise(
-                ext_ft::ext(token)
-                    .with_attached_deposit(ONE_YOCTO)
-                    .with_static_gas(GAS_FOR_FT_TRANSFER)
-                    .ft_transfer(deposit_address, amount, Some(format!("vault:{request_id}")))
+                // REGISTER THE DEPOSIT ADDRESS FIRST.
+                //
+                // 1Click mints a fresh IMPLICIT account per quote, which has no
+                // storage balance on the token, and NEP-141 refuses an
+                // unregistered receiver. That killed the first real mainnet
+                // cross-chain payment (KNOWN-TRADEOFFS 13).
+                //
+                // The vault pays because nothing else can. An operator daemon
+                // cannot get ahead of it: the transfer is built HERE, in the
+                // same transaction as the request, so the address is not
+                // observable until it is already in flight. And a restricted
+                // function-call key cannot attach a deposit at all, so an
+                // operator-side registrar would need a full-access key living in
+                // a long-running service.
+                //
+                // It cannot be used to drain the vault's NEAR: this arm is
+                // reached only AFTER the quote-signature gate above, so every
+                // registration costs the owner's own signature.
+                //
+                // If registration fails the chain still proceeds, the transfer
+                // fails exactly as it does today, and the callback releases the
+                // reservation by the usual path.
+                ext_ft::ext(token.clone())
+                    .with_attached_deposit(DEPOSIT_ADDRESS_STORAGE)
+                    .with_static_gas(GAS_FOR_STORAGE_DEPOSIT)
+                    .storage_deposit(Some(deposit_address.clone()), Some(true))
+                    .then(
+                        ext_ft::ext(token)
+                            .with_attached_deposit(ONE_YOCTO)
+                            .with_static_gas(GAS_FOR_FT_TRANSFER)
+                            .ft_transfer(deposit_address, amount, Some(format!("vault:{request_id}"))),
+                    )
                     .then(
                         Self::ext(env::current_account_id())
                             .with_static_gas(GAS_FOR_TRANSFER_CALLBACK)

@@ -118,7 +118,15 @@ impl MockFt {
     /// Registration only. Storage accounting is irrelevant here, so any
     /// attached deposit is accepted and ignored.
     #[payable]
-    pub fn storage_deposit(&mut self, account_id: Option<AccountId>) {
+    /// `registration_only` is accepted and ignored. It exists so this double's
+    /// SIGNATURE matches a real NEP-145 token's — a mock taking fewer arguments
+    /// than production hides exactly the integration bug it exists to catch.
+    pub fn storage_deposit(
+        &mut self,
+        account_id: Option<AccountId>,
+        registration_only: Option<bool>,
+    ) {
+        let _ = registration_only;
         let who = account_id.unwrap_or_else(env::predecessor_account_id);
         if self.accounts.get(&who).is_none() {
             self.accounts.insert(who, 0);

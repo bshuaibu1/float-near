@@ -35,7 +35,8 @@ const PAY = arg("--pay");
  * `near` by default, matching the MCP tool's own default — and that is the
  * safer one for a reason worth stating.
  *
- * rail=intents CANNOT COMPLETE THROUGH MCP TODAY. 1Click's deposit address is a
+ * rail=intents NOW WORKS (vault commit for KNOWN-TRADEOFFS 13g). It did not
+ * before, and the reason is worth keeping: 1Click's deposit address is a
  * fresh implicit account that must be registered on the token before it can
  * receive (KNOWN-TRADEOFFS §13), and registering means calling storage_deposit
  * on the TOKEN. The agent key is a function-call key pinned to
@@ -206,8 +207,9 @@ try {
   } else {
     console.log(`\n  --- vault_pay ${PAY} via ${RAIL} to ${TO}  (REAL MONEY)`);
     if (RAIL === "intents") {
-      console.log("  NOTE: expect TRANSFER_FAILED. The agent key cannot register the");
-      console.log("        one-time deposit address on the token — see the comment above.");
+      console.log("  NOTE: the VAULT registers the deposit address as the first link in");
+      console.log("        the promise chain, from its own balance (0.00125 NEAR). The");
+      console.log("        agent key still cannot touch the token — see KNOWN-TRADEOFFS 13g.");
     }
     const r = await call("vault_pay", { amount: PAY, recipient: TO, rail: RAIL, memo: "mcp dry run" });
     console.log(`  ${r.ok ? "ok  " : "FAIL"} ${r.text.slice(0, 600)}`);
