@@ -108,8 +108,17 @@ function scratchCreds(network, account) {
  * than guessed: EXPERIMENTAL_protocol_config for storage_amount_per_byte, then
  * query/view_account. available = amount - max(locked, storage_usage * rate).
  */
-function rpcStub({ nearBalance = 5, existingAccounts = ["me.testnet"] } = {}) {
+function rpcStub({
+  nearBalance = 5,
+  existingAccounts = ["me.testnet"],
+  // Real shapes, measured on mainnet 2026-10-29: an unregistered account gets
+  // `null` from storage_balance_of, and the bounds min on Circle USDC is
+  // 0.00125 NEAR (min and max are equal there, which is why both are set).
+  tokenRegistered = null,
+  ownerTokens = "0",
+} = {}) {
   const YOCTO_PER_BYTE = "10000000000000000000";
+  const STORAGE_MIN = "1250000000000000000000";
   const amount = (BigInt(Math.round(nearBalance * 1e6)) * 10n ** 18n).toString();
   const seen = [];
   const srv = createServer((req, res) => {
@@ -142,18 +151,43 @@ function rpcStub({ nearBalance = 5, existingAccounts = ["me.testnet"] } = {}) {
         );
         return;
       }
+      // A call_function branch that answers EVERY method with ft_metadata is
+      // the same "yes to everything" bug as the view_account branch above, one
+      // layer down. The wizard now also reads storage_balance_of and
+      // ft_balance_of, and metadata-for-everything made an unregistered vault
+      // look registered (an object is not null) while BigInt({...}) threw on
+      // the balance. Dispatch on method_name, and make an UNSTUBBED method an
+      // explicit error rather than a plausible-looking object.
+      if (method === "query" && body?.params?.request_type === "call_function") {
+        const fn = body?.params?.method_name;
+        const answers = {
+          ft_metadata: { spec: "ft-1.0.0", name: "T", symbol: "T", decimals: 6 },
+          storage_balance_of: tokenRegistered,
+          storage_balance_bounds: { min: STORAGE_MIN, max: STORAGE_MIN },
+          ft_balance_of: ownerTokens,
+        };
+        if (!(fn in answers)) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0", id,
+            error: { name: "HANDLER_ERROR", message: `stub has no answer for ${fn}` },
+          }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          jsonrpc: "2.0", id,
+          result: {
+            result: [...Buffer.from(JSON.stringify(answers[fn]))],
+            logs: [], block_height: 1,
+            block_hash: "11111111111111111111111111111111",
+          },
+        }));
+        return;
+      }
       const result =
         method === "EXPERIMENTAL_protocol_config"
           ? { runtime_config: { storage_amount_per_byte: YOCTO_PER_BYTE } }
-          : method === "query" && body?.params?.request_type === "call_function"
-            ? {
-                // ft_metadata, base64 — step 2 now proves the token is a NEP-141
-                // before the vault exists. Without this the run dies at step 2.
-                result: [...Buffer.from(JSON.stringify({ spec: "ft-1.0.0", name: "T", symbol: "T", decimals: 6 }))],
-                logs: [],
-                block_height: 1,
-                block_hash: "11111111111111111111111111111111",
-              }
           : method === "query"
             ? {
                 amount,
@@ -361,7 +395,9 @@ test("an unaffordable plan is refused BEFORE the dry-run gate", async () => {
     );
     const txt = plain(r.out);
     assert.notEqual(r.code, 0, "cannot be a success when the plan is unaffordable");
-    assert.match(txt, /insufficient balance: need 3\.000, have 0\.998/);
+    // 3.001, not 3.000: the gate now includes the 0.00125 NEAR to register the
+  // vault on the token, which the wizard performs instead of printing.
+  assert.match(txt, /insufficient balance: need 3\.001, have 0\.998/);
     assert.doesNotMatch(txt, /dry run — nothing was sent/, "the gate sits after this check");
   } finally {
     await rpc.close();
@@ -386,6 +422,10 @@ test("a RESUME is not billed for a vault that already exists", async () => {
   const rpc = await rpcStub({
     nearBalance: 0.9,
     existingAccounts: ["me.testnet", "v.me.testnet"],
+    // Fully resumed: the vault exists AND is already registered on the token,
+    // so there is genuinely nothing left to send. Without this the run still
+    // owes the 0.00125 registration and "you send 0.000" would be wrong.
+    tokenRegistered: { total: "1250000000000000000000", available: "0" },
   });
   try {
     const r = await run(
@@ -435,7 +475,7 @@ test("a resume still bills for the agents it has not created", async () => {
     );
     const txt = plain(r.out);
     assert.notEqual(r.code, 0, "two agents at 0.55 do not fit in 0.9 NEAR");
-    assert.match(txt, /insufficient balance: need 1\.100/);
+    assert.match(txt, /insufficient balance: need 1\.101/);  // + token registration
   } finally {
     await rpc.close();
     rmSync(creds, { recursive: true, force: true });

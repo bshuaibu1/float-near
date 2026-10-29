@@ -35,6 +35,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { xchainCeiling } from "./xchain.mjs";
 import { defaultTree, flatten, planTreeLines, toBaseUnits } from "./tree.mjs";
 import { parseArgs, makeReaders, agentCount } from "./args.mjs";
+import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -322,6 +323,25 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       warn(`${token} reports ${meta.decimals} decimals, not ${decimalsFlag} — using ${meta.decimals}`);
     }
     const decimals = meta.decimals;
+
+    // THE TWO STEPS THIS WIZARD USED TO DISOWN. It holds the owner's
+    // full-access key and already moves 3 NEAR, so "cannot do these for you"
+    // was never true — it just cost every user two hand-typed commands that
+    // fail on PowerShell unless the inner quotes are escaped.
+    //
+    // Read from the token rather than assumed: `storage_balance_of` returns
+    // null when unregistered, and the bounds minimum is 0.00125 NEAR on
+    // mainnet USDC but is not guaranteed to be anywhere else.
+    const tokenRegistered = await viewSafe(provider, token, "storage_balance_of", { account_id: vault });
+    const tokenBounds = await viewSafe(provider, token, "storage_balance_bounds");
+    const ownerTokenBalance = await viewSafe(provider, token, "ft_balance_of", { account_id: owner });
+    const tokenPlan = planTokenSetup({
+      token, vault, decimals,
+      storageMin: tokenBounds?.min ?? "1250000000000000000000",
+      registered: tokenRegistered ?? null,
+      ownerBalance: ownerTokenBalance ?? "0",
+      fundAmount: opt("--fund", null),
+    });
     ok(`${vault} paying in ${meta.symbol ?? token} (${token}, ${meta.decimals} dp)`);
 
     // ---- 3. The bill, before a single transaction.
@@ -365,7 +385,13 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     } catch {
       vaultExists = false;
     }
-    const total = (vaultExists ? 0n : VAULT_FUNDING) + AGENT_COST * BigInt(agents.length);
+    // tokenPlan.nearCost is the storage deposit for registering the vault on
+    // the token. Leaving it out would let a run clear this gate and then fail
+    // with the vault already created — the exact shape of the resume bug.
+    const total =
+      (vaultExists ? 0n : VAULT_FUNDING) +
+      AGENT_COST * BigInt(agents.length) +
+      tokenPlan.nearCost;
 
     step(3, "Plan");
     console.log(`    ${C.dim("tree")}`);
@@ -536,6 +562,37 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     const vaultAcct = new Account(vault, provider, new KeyPairSigner(KeyPair.fromString(vaultSecret)));
 
     // ---- 5. Contract.
+    // ---- 4b. The two things this wizard used to disown.
+    //
+    // Registration must precede the transfer: ft_transfer to an unregistered
+    // account panics with "The account ... is not registered". Measured on
+    // mainnet, where the first cross-chain payment failed exactly this way.
+    // planTokenSetup orders the steps; this just runs them.
+    if (tokenPlan.steps.length) {
+      for (const a of tokenPlan.steps) {
+        if (a.action === "storage_deposit") {
+          await ownerAcct.callFunction({
+            contractId: token,
+            methodName: "storage_deposit",
+            args: { account_id: a.account, registration_only: true },
+            gas: 30n * 10n ** 12n,
+            deposit: a.deposit,
+          });
+          ok(`${vault} registered on ${token} ${C.dim(`(${fmtNear(a.deposit)} NEAR, refundable)`)}`);
+        } else {
+          await ownerAcct.callFunction({
+            contractId: token,
+            methodName: "ft_transfer",
+            args: { receiver_id: a.to, amount: String(a.amount) },
+            gas: 30n * 10n ** 12n,
+            deposit: 1n,
+          });
+          ok(`funded ${vault} with ${opt("--fund", "")} ${token}`);
+        }
+      }
+    }
+    for (const w of tokenPlan.warnings) warn(w);
+
     step(5, "Deploying the contract");
     // `wasm` was resolved in the preflight, before anything was spent.
     const code = readFileSync(wasm);
@@ -784,21 +841,11 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     console.log(`
 ${C.g("Done.")} ${vault} is live.
 
-${C.b("Still to do — the wizard cannot do these for you:")}
+${C.b("Still to do:")}
 
-  1. Fund the vault with ${token}. It has NEAR for gas, but no tokens to pay
-     with, so every payment will fail until you send some:
+${fundingNotice(tokenPlan, { token, vault, owner, network: NETWORK, decimals }).map((l) => `  ${l}`).join("\n")}
 
-       near contract call-function as-transaction ${token} storage_deposit \\
-         json-args '{"account_id":"${vault}"}' \\
-         prepaid-gas '30 Tgas' attached-deposit '0.00125 NEAR' \\
-         sign-as ${owner} network-config ${NETWORK} sign-with-legacy-keychain send
-
-       ...then ft_transfer the amount you want the agents to share. Note that
-       ft_transfer requires exactly 1 yoctoNEAR attached, and that the vault
-       must be registered FIRST — a transfer to an unregistered account fails.
-
-  2. Restart your MCP client so it picks up the new server.
+  1. Restart your MCP client so it picks up the new server.
 
 ${C.b("Then:")}
 

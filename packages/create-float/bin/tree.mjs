@@ -112,16 +112,16 @@ export function defaultTree(mainnet) {
  * 0.0000001 into 0 on a 6dp token would set a cap of zero and look like a
  * configuration choice.
  */
-export function toBaseUnits(human, decimals) {
+export function toBaseUnits(human, decimals, label = "cap") {
   const s = String(human);
   if (!/^\d+(\.\d+)?$/.test(s)) {
-    throw new Error(`cap "${human}" is not a positive decimal number`);
+    throw new Error(`${label} "${human}" is not a positive decimal number`);
   }
   const [whole, frac = ""] = s.split(".");
   if (frac.length > decimals) {
     throw new Error(
-      `cap ${human} has ${frac.length} decimal places but the token has ${decimals}. ` +
-        `Rounding it would change the limit silently.`,
+      `${label} ${human} has ${frac.length} decimal places but the token has ${decimals}. ` +
+        `Rounding it would change the ${label === "cap" ? "limit" : "amount"} silently.`,
     );
   }
   return BigInt(whole + frac.padEnd(decimals, "0"));
