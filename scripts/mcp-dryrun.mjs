@@ -35,20 +35,25 @@ const PAY = arg("--pay");
  * `near` by default, matching the MCP tool's own default — and that is the
  * safer one for a reason worth stating.
  *
- * rail=intents NOW WORKS (vault commit for KNOWN-TRADEOFFS 13g). It did not
- * before, and the reason is worth keeping: 1Click's deposit address is a
- * fresh implicit account that must be registered on the token before it can
- * receive (KNOWN-TRADEOFFS §13), and registering means calling storage_deposit
- * on the TOKEN. The agent key is a function-call key pinned to
- * receiver_id=<vault>, method_names=["request_payment"] — verified on chain —
- * so it structurally cannot make that call, and MCP holds no other key. The
- * payment would reach the vault, pass every budget and signature check, and
- * then fail at the transfer with TRANSFER_FAILED.
+ * rail=intents NOW WORKS in the repo, and the reason it did not is worth
+ * keeping. 1Click's deposit address is a fresh implicit account that must be
+ * registered on the token before it can receive (KNOWN-TRADEOFFS §13), and
+ * registering means calling storage_deposit on the TOKEN. The agent key is a
+ * function-call key pinned to receiver_id=<vault> and
+ * method_names=["request_payment"] — verified on chain — so it structurally
+ * cannot make that call, and MCP holds no other key.
  *
  * That is the agent/operator split working as designed, not a defect: an agent
- * is not supposed to be able to pay the token contract for storage. It does
- * mean the cross-chain rail needs an OPERATOR-side registration step, which
- * scripts/intents-pay.mjs performs with the owner key.
+ * is not supposed to be able to pay a token contract for storage. The fix was
+ * therefore NOT to widen the key. The VAULT now registers the address itself,
+ * from its own balance, as the first link in the Intents promise chain — the
+ * only party that can, since it already holds NEAR and already knows the
+ * address. See KNOWN-TRADEOFFS §13g.
+ *
+ * CAVEAT WORTH CHECKING BEFORE TRUSTING --rail intents AGAINST MAINNET: that
+ * change is in the repo, not necessarily on the deployed contract. A vault
+ * running an older build still answers TRANSFER_FAILED. Redeploy with
+ * NO_MIGRATE=1 (no struct field changed) before relying on it.
  */
 const RAIL = arg("--rail", "near");
 const TO = arg("--to", "0xba82e1acf6058d345e083624b4f841b25f755449");
