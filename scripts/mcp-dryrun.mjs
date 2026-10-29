@@ -65,6 +65,26 @@ const SUB_LABEL = arg("--sub-label", "r1");
 const STATE = join(".float", "mainnet-intents.json");
 const st = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {};
 
+/**
+ * The quote-signer key, from .float/adapter.env.
+ *
+ * `rail=intents` needs it: it binds the payee to the one-time deposit address,
+ * and without it the vault refuses with QUOTE_SIGNER_UNSET. It is the
+ * OPERATOR's key, not an agent's — which is exactly why this harness may load
+ * it and an agent's environment may not. scripts/intents-pay.mjs reads the same
+ * file for the same reason.
+ *
+ * Never printed, and never passed as an argument. It goes into the child's
+ * environment and nowhere else; the only thing reported is whether it is there.
+ */
+function quoteSignerKey() {
+  const p = join(".float", "adapter.env");
+  if (!existsSync(p)) return null;
+  const m = readFileSync(p, "utf8").match(/^FLOAT_QUOTE_SIGNER_KEY=(.+)$/m);
+  return m ? m[1].trim() : null;
+}
+const QUOTE_KEY = process.env.FLOAT_QUOTE_SIGNER_KEY ?? quoteSignerKey();
+
 const env = {
   ...process.env,
   NEAR_VAULT_CONTRACT: process.env.NEAR_VAULT_CONTRACT ?? "float.test015.near",
@@ -76,6 +96,7 @@ const env = {
   NEAR_VAULT_TOKEN_DECIMALS: process.env.NEAR_VAULT_TOKEN_DECIMALS ?? "6",
   ...(st.agentAccountId ? { NEAR_VAULT_AGENT_ID: st.agentAccountId } : {}),
   ...(st.agentAccountKey ? { NEAR_VAULT_AGENT_KEY: st.agentAccountKey } : {}),
+  ...(QUOTE_KEY ? { FLOAT_QUOTE_SIGNER_KEY: QUOTE_KEY } : {}),
 };
 
 const child = spawn(process.execPath, [SERVER], {
@@ -154,6 +175,11 @@ try {
 
   const hasAgent = Boolean(env.NEAR_VAULT_AGENT_ID && env.NEAR_VAULT_AGENT_KEY);
   console.log(`  agent key  : ${hasAgent ? env.NEAR_VAULT_AGENT_ID : "ABSENT — vault_pay will refuse"}`);
+  // Presence only. The value is the operator's signing key and belongs in the
+  // child's environment, not in a terminal someone might paste into an issue.
+  console.log(
+    `  quote key  : ${QUOTE_KEY ? "present (.float/adapter.env)" : "ABSENT — rail=intents will refuse"}`,
+  );
 
   console.log("\n  --- read-only tools against mainnet");
   for (const [name, args] of [
