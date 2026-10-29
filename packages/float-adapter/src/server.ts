@@ -18,6 +18,7 @@
  */
 
 import { createServer } from "node:http";
+import { resolveHost, corsHeaders, authorize } from "./gate.js";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { toBaseUnits, fromBaseUnits } from "@near-vault/mcp/amounts";
@@ -50,6 +51,12 @@ const env = {
   // is deprecated and now returns -429 for every call.
   rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com",
   token: process.env.NEAR_VAULT_TOKEN ?? "",
+  // Loopback unless explicitly overridden — exposure is opted into.
+  host: resolveHost(process.env.HOST),
+  // Required for mutating routes. Absent => those routes are disabled, not open.
+  apiToken: process.env.FLOAT_API_TOKEN,
+  // Exact-match CORS origin; the dashboard's dev server by default.
+  allowedOrigin: process.env.FLOAT_ALLOWED_ORIGIN ?? "http://localhost:3000",
   decimals: Number(process.env.NEAR_VAULT_TOKEN_DECIMALS ?? "6"),
   agentId: process.env.NEAR_VAULT_AGENT_ID,
   agentKey: process.env.NEAR_VAULT_AGENT_KEY,
@@ -133,11 +140,26 @@ const view = <T,>(method: string, args: unknown = {}) =>
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${env.port}`);
 
-  // The dashboard runs on another port in dev.
-  res.setHeader("access-control-allow-origin", "*");
-  res.setHeader("access-control-allow-headers", "content-type, authorization");
-  res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  // CORS echoes ONLY the configured origin. The previous wildcard plus an
+  // approving preflight meant any page the operator had open could POST JSON
+  // here, and /v1/pay signs with the agent key.
+  for (const [k, v] of Object.entries(corsHeaders(env.allowedOrigin, req.headers.origin))) {
+    res.setHeader(k, v);
+  }
   if (req.method === "OPTIONS") return res.writeHead(204).end();
+
+  // AUTH BEFORE ANY HANDLER. Previously a POST reached body validation and
+  // answered 400 — there was nothing to fail at. Mutating routes now require a
+  // bearer token; GETs stay open behind a loopback bind.
+  const verdict = authorize({
+    method: req.method ?? "GET",
+    authHeader: req.headers.authorization,
+    token: env.apiToken,
+  });
+  if (!verdict.ok) {
+    res.writeHead(verdict.status, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: verdict.error }));
+  }
 
   const send = (code: number, body: unknown) => {
     res.writeHead(code, { "content-type": "application/json" });
@@ -450,9 +472,21 @@ if (env.followBlocked) {
   process.once("SIGTERM", shutdown);
 }
 
-server.listen(env.port, () => {
+server.listen(env.port, env.host, () => {
   console.log(`float-adapter -> ${env.vault} on ${env.rpcUrl}`);
-  console.log(`listening on http://127.0.0.1:${env.port}`);
+  // The address the socket is ACTUALLY on. The old line hardcoded 127.0.0.1
+  // while listen() had bound 0.0.0.0 — a claim that stopped anyone checking.
+  const addr = server.address();
+  const shown =
+    typeof addr === "object" && addr ? `${addr.address}:${addr.port}` : `${env.host}:${env.port}`;
+  console.log(`listening on http://${shown}`);
+  if (env.host !== "127.0.0.1" && env.host !== "::1" && env.host !== "localhost") {
+    console.log(`  WARNING: bound to ${env.host} — reachable beyond this machine.`);
+  }
+  console.log(
+    `  mutating routes: ${env.apiToken ? "require a bearer token" : "DISABLED until FLOAT_API_TOKEN is set"}`,
+  );
+  console.log(`  cors origin    : ${env.allowedOrigin}`);
   console.log(`point the dashboard at it: NEXT_PUBLIC_FLOAT_API_URL=http://127.0.0.1:${env.port}`);
   console.log(`token ${env.token} (${env.decimals} decimals), 1 unit = ${fromBaseUnits(10n ** BigInt(env.decimals), env.decimals)}`);
 });

@@ -312,3 +312,64 @@ difference is that this time a test caught it before it was published as fact.
 | F3 cooldown not hierarchical | LOW | reasoned from source only |
 
 31 sandbox tests (was 30).
+
+
+---
+
+# Addendum 3 — F1 FIXED, verified by re-running its own PoC
+
+The fix is judged by inverting the three facts that proved the finding. Same
+commands, same hostile origin.
+
+| | before | after |
+| --- | --- | --- |
+| bind | `0.0.0.0:8799` **and** `[::]:8799` | `127.0.0.1:8801` only |
+| preflight from `https://evil.example` | `204` + `allow-origin: *` | `204`, **no allow-origin** — browser blocks |
+| `POST /v1/pay`, no credential | **`400`** (reached body validation) | **`401`** `{"error":"missing bearer token"}` |
+| `POST /v1/pay`, correct token | n/a | `400` — authorized, then failed on the empty body |
+
+That last row is the negative control and the one that matters: the gate
+refuses the attack **without** refusing legitimate use. A fix that returned 401
+to everything would pass the first three rows and be useless.
+
+The startup banner now reports what is true:
+
+```
+listening on http://127.0.0.1:8801
+  mutating routes: require a bearer token
+  cors origin    : http://localhost:3000
+```
+
+It prints `server.address()` rather than a hardcoded string, and warns when
+`HOST` has been set to something non-loopback.
+
+## What changed
+
+- `packages/float-adapter/src/gate.ts` — new. `resolveHost`, `corsHeaders`,
+  `authorize`, each a pure function with tests.
+- `server.ts` — binds `env.host` (default loopback), echoes CORS only for an
+  exact-match origin, and runs `authorize` **before any handler**.
+- `create-float` generates a per-vault `FLOAT_API_TOKEN` into
+  `.float/adapter.env`.
+
+## Why this layer was open in the first place
+
+`server.ts` had **no tests**. The 89 adapter tests covered handlers, map,
+keyring and blocked-scan — every module except the one holding the bind, the
+CORS policy and the (absent) auth check. The vulnerable layer was precisely the
+untested one, which is not a coincidence and is the more useful lesson than the
+bug.
+
+13 gate tests now exist. 102 adapter tests, up from 89.
+
+**A missing token is `503`, not `401`.** Those are different problems: 401
+tells a caller to find a credential, and when none is configured there is none
+to find. Conflating them sends an operator hunting for a secret that does not
+exist.
+
+## Still open
+
+- **F2** — MEDIUM, executable PoC exists, unfixed. Needs a product decision:
+  minimum amount, non-zero default cooldown, or a per-day NEAR ceiling in the
+  contract.
+- **F3** — LOW, unfixed.
