@@ -19,6 +19,11 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { deliveryVerdict, deliveryLine } from "../packages/create-float/bin/delivery.mjs";
+import { toBaseUnits } from "../packages/create-float/bin/tree.mjs";
+
+/** USDC is 6dp. Only ever used for display. */
+const fmtUsdc = (n) => `${(Number(n) / 1e6).toFixed(6)} USDC`;
 
 const SERVER = "packages/mcp/dist/server.js";
 if (!existsSync(SERVER)) {
@@ -84,6 +89,75 @@ function quoteSignerKey() {
   return m ? m[1].trim() : null;
 }
 const QUOTE_KEY = process.env.FLOAT_QUOTE_SIGNER_KEY ?? quoteSignerKey();
+
+// ---- the far side of an Intents payment
+//
+// `verify` on the NEAR side only proves the transfer to the deposit address
+// landed. Whether a solver delivered on Base is off-chain and has to be read
+// from Base, and reading it has gone wrong three times — see
+// packages/create-float/bin/delivery.mjs for which three. The rules those
+// produced: the transfer EVENT decides, a failed query is not an empty one, and
+// the block number to scan from is captured BEFORE paying.
+const BASE_RPCS = [
+  // publicnode first: mainnet.base.org rate-limits eth_getLogs with HTTP 429,
+  // which is the exact failure that once got read as "nothing was delivered".
+  "https://base-rpc.publicnode.com",
+  "https://mainnet.base.org",
+];
+const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+/** Throws on anything that is not a real answer. Never returns a default. */
+async function baseCall(method, params) {
+  let last;
+  for (const rpc of BASE_RPCS) {
+    try {
+      const r = await fetch(rpc, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      if (j.error) throw new Error(JSON.stringify(j.error).slice(0, 90));
+      if (j.result === undefined || j.result === null) throw new Error("null result");
+      return j.result;
+    } catch (e) {
+      last = `${rpc}: ${e.message}`;
+    }
+  }
+  throw new Error(last ?? "no endpoint");
+}
+
+const baseBlock = async () => BigInt(await baseCall("eth_blockNumber", []));
+
+async function baseBalance(addr) {
+  const data = `0x70a08231${"0".repeat(24)}${addr.replace(/^0x/, "")}`;
+  return BigInt(await baseCall("eth_call", [{ to: BASE_USDC, data }, "latest"]));
+}
+
+/** Inbound USDC transfers to `addr` since `fromBlock`, or NULL if unreadable. */
+async function inboundSince(addr, fromBlock) {
+  try {
+    const logs = await baseCall("eth_getLogs", [
+      {
+        address: BASE_USDC,
+        fromBlock: `0x${fromBlock.toString(16)}`,
+        toBlock: "latest",
+        topics: [TRANSFER_TOPIC, null, `0x${"0".repeat(24)}${addr.replace(/^0x/, "")}`],
+      },
+    ]);
+    return logs.map((l) => ({
+      amount: BigInt(l.data),
+      tx: l.transactionHash,
+      block: BigInt(l.blockNumber),
+    }));
+  } catch {
+    // NULL, not []. deliveryVerdict treats these as different states precisely
+    // because collapsing them is how a 429 became "not delivered".
+    return null;
+  }
+}
 
 const env = {
   ...process.env,
@@ -242,9 +316,45 @@ try {
       console.log("        the promise chain, from its own balance (0.00125 NEAR). The");
       console.log("        agent key still cannot touch the token — see KNOWN-TRADEOFFS 13g.");
     }
+    // THE BEFORE-PICTURE, taken before the money moves. Best effort: a Base RPC
+    // hiccup must not abort a payment whose NEAR side is ready.
+    let fromBlock = null;
+    let beforeBalance = null;
+    if (RAIL === "intents") {
+      try {
+        [fromBlock, beforeBalance] = await Promise.all([baseBlock(), baseBalance(TO)]);
+        console.log(`  payee on Base  : ${fmtUsdc(beforeBalance)} at block ${fromBlock} (before)`);
+      } catch (e) {
+        console.log(`  payee on Base  : unavailable (${String(e.message).slice(0, 60)})`);
+      }
+    }
+
     const r = await call("vault_pay", { amount: PAY, recipient: TO, rail: RAIL, memo: "mcp dry run" });
     console.log(`  ${r.ok ? "ok  " : "FAIL"} ${r.text.slice(0, 600)}`);
     if (!r.ok) process.exitCode = 1;
+
+    if (r.ok && RAIL === "intents" && fromBlock != null) {
+      const expected = toBaseUnits(PAY, 6, "amount");
+      const etaMs = 90_000;
+      const started = Date.now();
+      let v;
+      for (;;) {
+        const inbound = await inboundSince(TO, fromBlock);
+        v = deliveryVerdict({
+          inbound,
+          expected,
+          beforeBalance,
+          afterBalance: await baseBalance(TO).catch(() => null),
+          elapsedMs: Date.now() - started,
+          etaMs,
+        });
+        if (v.state !== "pending") break;
+        process.stdout.write("  waiting for the solver...\r");
+        await new Promise((res) => setTimeout(res, 5000));
+      }
+      console.log(`  ${deliveryLine(v, fmtUsdc)}`);
+      if (v.state === "short" || v.state === "not-seen") process.exitCode = 1;
+    }
   }
 } catch (err) {
   console.error("  ERROR:", err.message);
