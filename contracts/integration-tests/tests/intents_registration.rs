@@ -107,6 +107,35 @@ async fn arrange(e: &Env) -> Result<()> {
     Ok(())
 }
 
+/// Same as `intents_route`, but for an arbitrary deposit address — 1Click mints
+/// a FRESH one per quote, so a drain uses a different address every time and
+/// never benefits from an already-registered one.
+fn intents_route_to(
+    e: &Env,
+    request_id: &str,
+    amount: u128,
+    payee: &str,
+    deposit: &str,
+) -> serde_json::Value {
+    let msg = encode_quote(
+        e.vault.id().as_str(),
+        request_id,
+        e.ft.id().as_str(),
+        amount,
+        payee,
+        deposit,
+        FAR_FUTURE_NS,
+    );
+    let sig = quote_key().sign(&msg);
+    json!({
+        "intents": {
+            "deposit_address": deposit,
+            "quote_deadline_ns": FAR_FUTURE_NS.to_string(),
+            "signature": B64.encode(sig.to_bytes()),
+        }
+    })
+}
+
 fn intents_route(e: &Env, request_id: &str, amount: u128, payee: &str) -> serde_json::Value {
     let msg = encode_quote(
         e.vault.id().as_str(),
@@ -233,5 +262,95 @@ async fn registering_twice_is_harmless() -> Result<()> {
     .await?;
     assert!(out.is_success(), "{out:#?}");
     assert_eq!(request(&e, "intents-reg-3").await?.status, "SETTLED");
+    Ok(())
+}
+
+/// F2 — the vault's NEAR is spent PER TRANSACTION while the budget tree bounds
+/// token VALUE, so many small cross-chain payments drain a resource no cap
+/// governs.
+///
+/// This is the executable PoC the self-review said it lacked. The arithmetic
+/// and the live measurement were already there (0.1329 NEAR spendable on
+/// mainnet, ~106 registrations); what was missing was a test that actually
+/// makes N payments and watches the balance fall.
+///
+/// A fresh deposit address per payment, because that is what 1Click mints — a
+/// drain never benefits from an already-registered address.
+#[tokio::test]
+async fn many_small_payments_drain_near_that_no_cap_bounds() -> Result<()> {
+    let e = setup(1, CAP * 10).await?;
+    arrange(&e).await?;
+    let payee = e.payee.id().to_string();
+
+    const N: u128 = 5;
+    // 0.01 at 6dp — confirmed quotable against the live 1Click API
+    // (amountIn 0.012531), so this is not a dust amount the real rail refuses.
+    const TINY: u128 = 10_000;
+
+    let before = e.vault.view_account().await?.balance.as_yoctonear();
+    let budget_before = budget(&e, ROOT, None).await?.executed();
+
+    for i in 0..N {
+        let rid = format!("drain-{i}");
+        let dep = format!("dep{i}.oneclick.test.near");
+        let out = pay_raw_route(
+            &e.agents[0],
+            &e,
+            &rid,
+            TINY,
+            &payee,
+            intents_route_to(&e, &rid, TINY, &payee, &dep),
+        )
+        .await?;
+        assert!(out.is_success(), "payment {i} should be accepted: {out:#?}");
+        assert_eq!(request(&e, &rid).await?.status, "SETTLED", "payment {i}");
+    }
+
+    let after = e.vault.view_account().await?.balance.as_yoctonear();
+    let budget_after = budget(&e, ROOT, None).await?.executed();
+
+    let near_spent = before.saturating_sub(after);
+    let token_spent = budget_after - budget_before;
+    let per_payment = near_spent / N;
+
+    println!(
+        "  {N} payments of {TINY} base units:\n\
+             token charged to the budget : {token_spent} base units\n\
+             NEAR spent by the vault     : {near_spent} yocto ({per_payment} per payment)"
+    );
+
+    // The budget saw a trivial amount...
+    assert_eq!(token_spent, N * TINY, "the tree charges token value only");
+
+    // ...while the vault paid a substantial FIXED NEAR cost per transaction
+    // that no cap governs.
+    //
+    // THE BOUND HERE IS MEASURED, NOT DERIVED. The first version of this test
+    // asserted `>= 0.00125 * 0.9` on the reasoning that 0.00125 is attached per
+    // registration, so roughly that much must leave. It failed: the observed
+    // net is ~1.104e21 yocto (0.0011 NEAR) per payment, about 12% less than the
+    // attached deposit. Some of the attached NEAR evidently comes back through
+    // refund accounting; the exact mechanism is not asserted here because it
+    // was not measured, only the net effect was.
+    //
+    // That correction matters to the finding's arithmetic and makes it slightly
+    // WORSE: at ~0.0011 rather than 0.00125, the ~0.1329 NEAR spendable on the
+    // live mainnet vault funds roughly 120 payments rather than 106.
+    let floor = N * 1_000_000_000_000_000_000_000u128; // 0.001 NEAR each
+    assert!(
+        near_spent >= floor,
+        "expected at least {floor} yocto to leave the vault across {N} payments, \
+         saw {near_spent}. If this is now far lower, a bound on per-transaction \
+         NEAR spend has been added — update this test to assert THAT bound."
+    );
+
+    // The finding, stated as the property rather than a number: the NEAR cost
+    // does not scale with the amount. Paying one base unit costs the vault the
+    // same NEAR as paying the per-tx cap, which is what makes the drain cheap.
+    // 1000x the token value here, in NEAR terms, for a payment worth 0.01.
+    assert!(
+        per_payment >= 1_000_000_000_000_000_000_000u128,
+        "each payment costs the vault ~0.0011 NEAR regardless of its size; saw {per_payment}"
+    );
     Ok(())
 }

@@ -264,3 +264,51 @@ Nothing about the findings' substance, and that is worth saying plainly: both
 survived the attempt to kill them. What changed is that F1 is now evidence
 rather than argument, and F2 and F3 carry honest labels about how far their
 evidence actually goes.
+
+
+---
+
+# Addendum 2 — F2 now has an executable PoC, and it corrected the arithmetic
+
+`contracts/integration-tests/tests/intents_registration.rs ::
+many_small_payments_drain_near_that_no_cap_bounds`
+
+Five payments of 0.01 USDC, each to a FRESH deposit address (which is what
+1Click mints, so a drain never benefits from an already-registered one):
+
+```
+  5 payments of 10000 base units:
+token charged to the budget : 50000 base units
+NEAR spent by the vault     : 5520368048093700000005 yocto
+                              (1104073609618740000001 per payment)
+```
+
+**0.05 USDC of budget consumed 0.00552 NEAR.** The token cost scales with the
+amount; the NEAR cost does not scale at all.
+
+## The PoC corrected my arithmetic, and not in the product's favour
+
+The first version asserted `>= 0.00125 * 0.9` per payment, reasoning that
+0.00125 NEAR is attached per registration so roughly that much must leave. **It
+failed.** The measured net is ~0.0011 NEAR — about 12% less than the attached
+deposit, some of which evidently returns through refund accounting. The test
+now asserts a measured floor and says so; the exact refund mechanism is not
+claimed, because it was not measured.
+
+That makes the finding slightly **worse**: at ~0.0011 rather than 0.00125, the
+~0.1329 NEAR spendable on the live mainnet vault funds roughly **120**
+payments, not 106.
+
+This is the same mistake the first pass of this document made in a different
+place — asserting a number I reasoned to instead of one I measured. The
+difference is that this time a test caught it before it was published as fact.
+
+## Evidence status, final
+
+| finding | severity | evidence |
+| --- | --- | --- |
+| F1 adapter unauthenticated, all interfaces | HIGH | **executable PoC** — netstat bind, 204 preflight from a hostile origin, 400-not-401 on POST |
+| F2 agent drains vault NEAR | MEDIUM | **executable PoC** — sandbox test, 5 payments, measured balance fall; plus a live refutation test showing 0.01 USDC is quotable |
+| F3 cooldown not hierarchical | LOW | reasoned from source only |
+
+31 sandbox tests (was 30).
