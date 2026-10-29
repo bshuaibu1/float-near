@@ -166,3 +166,101 @@ Recorded so a later reader knows these were examined rather than skipped.
   here.
 - The Rust unit tier and the sandbox tier themselves.
 - `packages/mcp` beyond the signing path and env handling.
+
+
+---
+
+# Addendum — PoCs and refutation tests
+
+The first pass of this document shipped F1 as HIGH on a code trace alone. The
+commander skill is explicit that a High does not ship without an executable
+PoC, so this addendum either earns each finding or labels it as reasoned-only.
+
+## F1 — PROVEN, executably, with a precondition
+
+Adapter started on port 8799 with NO agent key, so nothing could be spent.
+
+**1. Bound to every interface**, not loopback:
+
+```
+TCP    0.0.0.0:8799    0.0.0.0:0    LISTENING    30172
+TCP    [::]:8799       [::]:0       LISTENING    30172
+```
+
+IPv4 and IPv6, all interfaces. The server's own log line claims
+`listening on http://127.0.0.1:8799`. That is false.
+
+**2. Cross-origin preflight from a hostile origin is approved:**
+
+```
+curl -X OPTIONS http://127.0.0.1:8799/v1/pay   -H "Origin: https://evil.example"   -H "Access-Control-Request-Method: POST"   -H "Access-Control-Request-Headers: content-type"
+
+HTTP/1.1 204 No Content
+access-control-allow-origin: *
+access-control-allow-methods: GET, POST, OPTIONS
+```
+
+A browser will therefore proceed with the real POST.
+
+**3. There is no auth gate — the NEGATIVE control:**
+
+```
+POST /v1/pay  Origin: https://evil.example  {"amount":"0.01",...}
+HTTP/1.1 400 Bad Request
+```
+
+**400, not 401.** The request reached body validation. A server with
+authentication rejects before parsing the body; this one has nothing to reject
+at. That is the decisive evidence, and it is why the test was run with no agent
+key: a 400 on the body proves reachability without moving money.
+
+**PRECONDITION, found by devil's advocate.** `/v1/pay` can only sign when
+`NEAR_VAULT_AGENT_KEY` is present. The wizard writes it to `.float/adapter.env`
+**only when an agent account was created** (create-float.mjs:772-773); with the
+default `--agents 0` both lines are commented out, which is why this machine's
+file has none. So:
+
+| configuration | exposure |
+| --- | --- |
+| `--agents 0` (default) | GET routes leak vault state to the network and to any website. No spending. |
+| `--agents 1+` (documented, prompted for) | full — anyone reachable can spend the remaining daily budget |
+
+Kept at HIGH rather than downgraded: creating agents is the product's entire
+purpose and the wizard prompts for it, so the vulnerable configuration is the
+intended one. The allowlist and caps are what keep it out of Critical.
+
+**Devil's advocate, answered:** "nobody runs the adapter" is false — the
+wizard's own closing text instructs
+`set -a && . .float/adapter.env && set +a && npx @near-vault/float-adapter`
+(create-float.mjs:885), which sources exactly the file holding the key.
+
+## F2 — CONFIRMED by refutation test, no executable PoC
+
+The attack needs many small payments. The cheapest thing that could kill it is
+1Click refusing to quote small amounts — then the daily cap would bound the
+payment COUNT, not just the value. Tested live:
+
+```
+deliver 0.010000 -> amountIn 0.012531  QUOTABLE
+deliver 0.020000 -> amountIn 0.022634  QUOTABLE
+deliver 0.050000 -> amountIn 0.052943  QUOTABLE
+```
+
+Not refuted. 106 payments at 0.012531 charge **1.328 USDC against a 2.04 daily
+cap**, so the NEAR is exhausted first and well inside one day.
+
+**Honest label: this has arithmetic plus live measurement, not an executable
+PoC.** A proper one is a sandbox test making N payments and asserting the
+vault's NEAR falls — buildable in the existing tier, not yet built. Treat F2 as
+a well-evidenced MEDIUM, not a proven one.
+
+## F3 — reasoned only
+
+Read from source. No PoC, no live test. Labelled LOW partly for that reason.
+
+## What this addendum changes about the first pass
+
+Nothing about the findings' substance, and that is worth saying plainly: both
+survived the attempt to kill them. What changed is that F1 is now evidence
+rather than argument, and F2 and F3 carry honest labels about how far their
+evidence actually goes.
