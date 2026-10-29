@@ -36,6 +36,7 @@ import { xchainCeiling } from "./xchain.mjs";
 import { defaultTree, flatten, planTreeLines, toBaseUnits } from "./tree.mjs";
 import { parseArgs, makeReaders, agentCount } from "./args.mjs";
 import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
+import { mcpTargets, mergeMcpEntry } from "./mcp-config.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -120,15 +121,6 @@ async function ask(rl, q, dflt) {
  */
 const credPath = (acct) =>
   join(process.env.NEAR_CREDENTIALS_DIR ?? join(homedir(), ".near-credentials"), NETWORK, `${acct}.json`);
-
-/** Where the MCP client keeps its server list, per platform. */
-function mcpConfigPath() {
-  const h = homedir();
-  if (platform() === "win32") return join(process.env.APPDATA ?? h, "Claude", "claude_desktop_config.json");
-  if (platform() === "darwin")
-    return join(h, "Library", "Application Support", "Claude", "claude_desktop_config.json");
-  return join(h, ".config", "Claude", "claude_desktop_config.json");
-}
 
 function findWasm() {
   // res/ first, and that is the path that matters: it is populated by
@@ -807,34 +799,62 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       if (!existsSync(gi)) writeFileSync(gi, "*\n");
     }
 
-    // Merge into the MCP client config — read, modify one key, write back.
-    const cfgPath = mcpConfigPath();
-    let cfg = {};
-    if (existsSync(cfgPath)) {
-      try {
-        cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-        copyFileSync(cfgPath, `${cfgPath}.bak`);
-      } catch {
-        warn(`${cfgPath} is not valid JSON — leaving it untouched`);
-        cfg = null;
+    // Merge into EVERY MCP client on this machine — read, modify one key,
+    // write back, once per client.
+    //
+    // This used to target Claude Desktop alone, at one hardcoded path, and
+    // `mkdirSync(..., { recursive: true })` ran whether or not the app was
+    // installed — so it created `%APPDATA%\Claude\` on machines that had never
+    // run Claude Desktop, and told users driving Claude Code or Cursor that
+    // their client was configured when nothing they read had changed.
+    //
+    // mcpTargets only returns clients whose own directory already exists, so a
+    // client we cannot detect is skipped rather than fabricated. The exception
+    // is the per-project `.mcp.json`, where writing the file IS the install.
+    const entry = {
+      command: "npx",
+      args: ["-y", "@near-vault/mcp"],
+      env: {
+        NEAR_VAULT_CONTRACT: vault,
+        NEAR_VAULT_RPC_URL: RPC,
+        NEAR_VAULT_TOKEN: token,
+        NEAR_VAULT_TOKEN_DECIMALS: String(decimals),
+        ...(first ? { NEAR_VAULT_AGENT_ID: first.agentId, NEAR_VAULT_AGENT_KEY: first.secret } : {}),
+      },
+    };
+    const targets = mcpTargets({
+      home: homedir(),
+      appData: process.env.APPDATA,
+      platform: platform(),
+      cwd: process.cwd(),
+      exists: existsSync,
+      join,   // node:path.join — without it Windows gets mixed separators
+    });
+    for (const t of targets) {
+      let cfg = {};
+      if (existsSync(t.path)) {
+        try {
+          cfg = JSON.parse(readFileSync(t.path, "utf8"));
+          copyFileSync(t.path, `${t.path}.bak`);
+        } catch {
+          warn(`${t.path} is not valid JSON — leaving it untouched`);
+          continue;
+        }
+      } else if (!t.perProject) {
+        // Only a per-project file may be created from nothing. Anything else
+        // would be inventing config for software that is not here.
+        continue;
       }
+      mkdirSync(dirname(t.path), { recursive: true });
+      writeFileSync(t.path, JSON.stringify(mergeMcpEntry(cfg, entry), null, 2) + "\n");
+      ok(`${t.name}: ${t.path} ${C.dim("(only the 'float' entry was changed)")}`);
     }
-    if (cfg) {
-      cfg.mcpServers ??= {};
-      cfg.mcpServers.float = {
-        command: "npx",
-        args: ["-y", "@near-vault/mcp"],
-        env: {
-          NEAR_VAULT_CONTRACT: vault,
-          NEAR_VAULT_RPC_URL: RPC,
-          NEAR_VAULT_TOKEN: token,
-          NEAR_VAULT_TOKEN_DECIMALS: String(decimals),
-          ...(first ? { NEAR_VAULT_AGENT_ID: first.agentId, NEAR_VAULT_AGENT_KEY: first.secret } : {}),
-        },
-      };
-      mkdirSync(dirname(cfgPath), { recursive: true });
-      writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
-      ok(`${cfgPath} ${C.dim("(only the 'float' entry was changed; .bak kept)")}`);
+    if (!targets.some((t) => !t.perProject)) {
+      warn(
+        "no global MCP client detected (Claude Desktop, Cursor) — wrote the " +
+          "project .mcp.json only. Add the 'float' entry by hand if your client " +
+          "reads somewhere else.",
+      );
     }
 
     // ---- 9. What is still a manual step, stated plainly.
