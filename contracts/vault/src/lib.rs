@@ -38,6 +38,20 @@ pub const GAS_FOR_STORAGE_DEPOSIT: Gas = Gas::from_tgas(10);
 /// it does today, and the reservation is released by the usual path.
 pub const DEPOSIT_ADDRESS_STORAGE: NearToken =
     NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
+/// How much of the vault's OWN NEAR agents may cause it to spend per day.
+///
+/// The budget tree bounds token VALUE. The deposit-address registration above
+/// costs NEAR per TRANSACTION, so a cap of 2.04 USDC permitted far more
+/// payments than the vault's NEAR could fund: ~120 payments of 0.01 USDC —
+/// 1.2 USDC, well inside the cap — exhausted it and killed the cross-chain
+/// rail. Measured, with an executable PoC in
+/// `intents_registration.rs::near_cost_is_per_transaction_not_per_value`.
+///
+/// 0.05 NEAR is ~45 registrations a day at the measured ~0.0011 each, which is
+/// an order of magnitude above what the default tree can pay for (2.04 USDC at
+/// a 0.51 per-tx cap is at most 4 payments). An owner running higher volume
+/// raises it with `set_max_daily_near`.
+pub const DEFAULT_MAX_DAILY_NEAR: NearToken = NearToken::from_millinear(50);
 /// Checked up front so a call cannot reserve budget and then run out of gas
 /// part-way through dispatch. The ONLY gas floor — both `Route` variants use
 /// it, so this is the number a relay has to clear.
@@ -320,6 +334,67 @@ impl Vault {
     //
     // Stored under its own key, like the other additions, so the borsh layout
     // of `Vault` is untouched.
+
+    /// The vault's own-NEAR budget. Kept OUTSIDE `Vault` for the same reason
+    /// `QUOTE_SIGNER` and `PENDING_OWNER` are: adding a struct field is a borsh
+    /// layout change and every deployed vault would need `migrate()` in the
+    /// same transaction as the deploy. A dedicated storage key needs neither.
+    const MAX_DAILY_NEAR_KEY: &'static [u8] = b"MAX_DAILY_NEAR";
+    /// `(day, spent)` for the CURRENT day. A stored day that is not today reads
+    /// as zero spent, so the counter resets without anyone sweeping it.
+    const NEAR_SPENT_KEY: &'static [u8] = b"NEAR_SPENT";
+
+    fn max_daily_near() -> u128 {
+        env::storage_read(Self::MAX_DAILY_NEAR_KEY)
+            .and_then(|b| <[u8; 16]>::try_from(b).ok())
+            .map(u128::from_le_bytes)
+            .unwrap_or(DEFAULT_MAX_DAILY_NEAR.as_yoctonear())
+    }
+
+    fn near_spent_today(day: u64) -> u128 {
+        let Some(raw) = env::storage_read(Self::NEAR_SPENT_KEY) else { return 0 };
+        let Ok(buf) = <[u8; 24]>::try_from(raw) else { return 0 };
+        let stored_day = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        if stored_day != day {
+            return 0;
+        }
+        u128::from_le_bytes(buf[8..24].try_into().unwrap())
+    }
+
+    fn charge_near(day: u64, amount: u128) {
+        let next = Self::near_spent_today(day).saturating_add(amount);
+        let mut buf = [0u8; 24];
+        buf[0..8].copy_from_slice(&day.to_le_bytes());
+        buf[8..24].copy_from_slice(&next.to_le_bytes());
+        env::storage_write(Self::NEAR_SPENT_KEY, &buf);
+    }
+
+    /// Raise or lower the daily ceiling on the vault's own NEAR spend.
+    /// `None` restores the default.
+    #[payable]
+    pub fn set_max_daily_near(&mut self, amount: Option<U128>) {
+        self.assert_owner();
+        match amount {
+            None => env::storage_remove(Self::MAX_DAILY_NEAR_KEY),
+            Some(a) => {
+                env::storage_write(Self::MAX_DAILY_NEAR_KEY, &a.0.to_le_bytes());
+                true
+            }
+        };
+    }
+
+    /// Today's NEAR budget, so an operator can see the drain coming.
+    pub fn get_near_budget(&self) -> NearBudgetView {
+        let day = self.today();
+        let cap = Self::max_daily_near();
+        let spent = Self::near_spent_today(day);
+        NearBudgetView {
+            day,
+            max_daily: U128(cap),
+            spent: U128(spent),
+            available: U128(cap.saturating_sub(spent)),
+        }
+    }
 
     const QUOTE_SIGNER_KEY: &'static [u8] = b"QUOTE_SIGNER";
 
@@ -1203,6 +1278,20 @@ impl Vault {
                 if !env::ed25519_verify(&sig, &msg, &signer) {
                     return blocked(&request_id, node_id, ReasonCode::QuoteBadSignature);
                 }
+
+                // THE VAULT'S OWN NEAR IS A BUDGETED RESOURCE TOO.
+                //
+                // Registering the deposit address below costs NEAR per
+                // TRANSACTION while the tree bounds token VALUE, so without
+                // this an agent drains the vault's NEAR with payments that
+                // never approach any cap. Checked HERE — after the signature,
+                // before anything is charged or sent — so a refusal costs
+                // nothing and a bad signature is still rejected first.
+                let spend_day = self.today();
+                let cost = DEPOSIT_ADDRESS_STORAGE.as_yoctonear();
+                if Self::near_spent_today(spend_day).saturating_add(cost) > Self::max_daily_near() {
+                    return blocked(&request_id, node_id, ReasonCode::NearBudget);
+                }
             }
         }
 
@@ -1308,7 +1397,11 @@ impl Vault {
             // no nonce to allocate. It resolves through the same callback as
             // the NEAR rail, so a failed transfer releases the reservation by
             // exactly the same path.
-            Route::Intents { deposit_address, .. } => PromiseOrValue::Promise(
+            Route::Intents { deposit_address, .. } => PromiseOrValue::Promise({
+                // Charged at dispatch, not in the callback: the deposit is
+                // attached whether or not the transfer later succeeds, so
+                // booking it on success would under-count every failure.
+                Self::charge_near(day, DEPOSIT_ADDRESS_STORAGE.as_yoctonear());
                 // REGISTER THE DEPOSIT ADDRESS FIRST.
                 //
                 // 1Click mints a fresh IMPLICIT account per quote, which has no
@@ -1345,8 +1438,8 @@ impl Vault {
                         Self::ext(env::current_account_id())
                             .with_static_gas(GAS_FOR_TRANSFER_CALLBACK)
                             .on_transfer_result(request_id),
-                    ),
-            ),
+                    )
+            }),
         }
     }
 

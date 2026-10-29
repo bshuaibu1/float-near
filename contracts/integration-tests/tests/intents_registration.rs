@@ -266,8 +266,13 @@ async fn registering_twice_is_harmless() -> Result<()> {
 }
 
 /// F2 — the vault's NEAR is spent PER TRANSACTION while the budget tree bounds
-/// token VALUE, so many small cross-chain payments drain a resource no cap
-/// governs.
+/// token VALUE. That asymmetry is what made the drain possible.
+///
+/// RENAMED after the fix: this used to be called
+/// `many_small_payments_drain_near_that_no_cap_bounds`, which stopped being
+/// true the moment a ceiling existed. It still earns its place — the
+/// per-transaction cost is unchanged and is WHY the ceiling is needed — but a
+/// test whose name asserts something false is worse than no test.
 ///
 /// This is the executable PoC the self-review said it lacked. The arithmetic
 /// and the live measurement were already there (0.1329 NEAR spendable on
@@ -277,7 +282,7 @@ async fn registering_twice_is_harmless() -> Result<()> {
 /// A fresh deposit address per payment, because that is what 1Click mints — a
 /// drain never benefits from an already-registered address.
 #[tokio::test]
-async fn many_small_payments_drain_near_that_no_cap_bounds() -> Result<()> {
+async fn near_cost_is_per_transaction_not_per_value() -> Result<()> {
     let e = setup(1, CAP * 10).await?;
     arrange(&e).await?;
     let payee = e.payee.id().to_string();
@@ -352,5 +357,69 @@ async fn many_small_payments_drain_near_that_no_cap_bounds() -> Result<()> {
         per_payment >= 1_000_000_000_000_000_000_000u128,
         "each payment costs the vault ~0.0011 NEAR regardless of its size; saw {per_payment}"
     );
+    Ok(())
+}
+
+/// F2 FIX — the vault's NEAR is a budgeted resource, like its tokens.
+///
+/// The drain worked because the budget tree bounds token VALUE while the
+/// registration cost is per TRANSACTION, so a cap of 2.04 USDC permitted far
+/// more payments than the vault's NEAR could fund. The fix is the product's own
+/// idea applied to the resource it forgot: a per-day ceiling on NEAR the vault
+/// spends on its own behalf.
+///
+/// Set deliberately tiny here so the boundary is reached in three payments
+/// rather than a hundred.
+#[tokio::test]
+async fn a_daily_near_ceiling_stops_the_drain() -> Result<()> {
+    let e = setup(1, CAP * 10).await?;
+    arrange(&e).await?;
+    let payee = e.payee.id().to_string();
+
+    // Room for two registrations, not three. 0.0011 is the measured net cost;
+    // 0.0025 covers two with slack and cannot cover three.
+    e.owner
+        .call(e.vault.id(), "set_max_daily_near")
+        .args_json(json!({ "amount": "2500000000000000000000" }))
+        .deposit(near_workspaces::types::NearToken::from_yoctonear(1))
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
+    for i in 0..2u128 {
+        let rid = format!("cap-{i}");
+        let dep = format!("capdep{i}.oneclick.test.near");
+        let out = pay_raw_route(&e.agents[0], &e, &rid, 10_000, &payee,
+            intents_route_to(&e, &rid, 10_000, &payee, &dep)).await?;
+        assert!(out.is_success(), "payment {i} should be accepted: {out:#?}");
+        assert_eq!(request(&e, &rid).await?.status, "SETTLED", "payment {i} should pass");
+    }
+
+    // The third must be refused, and refused BEFORE spending anything.
+    let rid = "cap-3";
+    let dep = "capdep3.oneclick.test.near";
+    let before = e.vault.view_account().await?.balance.as_yoctonear();
+    let out = pay_raw_route(&e.agents[0], &e, rid, 10_000, &payee,
+        intents_route_to(&e, rid, 10_000, &payee, dep)).await?;
+    assert!(out.is_success(), "a refusal is a value, not a failure");
+    let after = e.vault.view_account().await?.balance.as_yoctonear();
+
+    // A blocked request is not stored, so the outcome is the return value.
+    let json: serde_json::Value = out.json()?;
+    assert_eq!(json["reason_code"], "NEAR_BUDGET", "got {json}");
+    assert_eq!(json["status"], "BLOCKED");
+
+    assert!(
+        before.saturating_sub(after) < 100_000_000_000_000_000_000u128,
+        "a refused payment must not have paid to register anything"
+    );
+
+    // And the NEAR rail must still work — the ceiling bounds the cross-chain
+    // registration, not payments in general.
+    allow_recipients(&e, ROOT, vec![payee.clone()]).await?;
+    let near_out = pay(&e.agents[0], &e, "near-still-ok", 10_000, &payee).await?;
+    assert!(near_out.is_success(), "the NEAR rail must be unaffected");
+    assert_eq!(request(&e, "near-still-ok").await?.status, "SETTLED");
     Ok(())
 }

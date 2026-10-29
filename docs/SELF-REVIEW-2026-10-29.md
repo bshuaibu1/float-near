@@ -373,3 +373,85 @@ exist.
   minimum amount, non-zero default cooldown, or a per-day NEAR ceiling in the
   contract.
 - **F3** — LOW, unfixed.
+
+
+---
+
+# Addendum 4 — F2 fixed: the vault's NEAR is now a budgeted resource
+
+The bug in one line: **the vault had a budget tree for tokens and no budget for
+its own NEAR.** The fix is the product's own idea applied to the resource it
+forgot.
+
+## Why this shape and not the alternatives
+
+- **A minimum payment amount** would be arbitrary and token-dependent — what
+  counts as "too small" differs between a 6-decimal stablecoin and an
+  18-decimal token, and the contract has no price feed to decide.
+- **A non-zero default cooldown** only helps NEW vaults, and cooldown is
+  per-node (F3), so two sibling leaves halve it.
+- **A per-day NEAR ceiling** bounds the actual resource, works on vaults
+  already deployed, and reuses a concept the product already has.
+
+## No migration
+
+`MAX_DAILY_NEAR` and `NEAR_SPENT` live under their own storage keys, the same
+idiom `QUOTE_SIGNER` and `PENDING_OWNER` already use. Adding a field to `Vault`
+would have been a borsh layout change requiring `migrate()` in the same
+transaction as every deploy; a dedicated key needs neither. `ReasonCode::NearBudget`
+is APPENDED, never inserted, because borsh tags variants by position.
+
+The spent counter stores `(day, amount)` together, so a stored day that is not
+today reads as zero and the budget resets without anyone sweeping it.
+
+## Where the check sits
+
+After the quote signature, before anything is charged or sent. A refused
+payment therefore costs nothing, and a bad signature is still rejected first —
+asserted by `a_bad_quote_signature_registers_nothing`, which still passes.
+
+## What it is honestly worth
+
+| | before | after |
+| --- | --- | --- |
+| drain the live vault's 0.1329 spendable NEAR | ~120 payments, one sitting | 45/day — **2.7 days** |
+
+**This rate-limits; it does not prevent.** A determined agent still drains the
+rail over about three days. What changed is that the attack is now slow,
+bounded, and visible: `get_near_budget` reports `day / max_daily / spent /
+available`, so an operator can see it happening instead of discovering a dead
+rail.
+
+Preventing it outright would need a floor on the vault's balance, which the
+runtime already enforces for storage stake — the account cannot brick itself,
+it just stops paying. Rate-limiting plus visibility is proportionate to a
+recoverable availability bug; a stricter default would break legitimate volume.
+
+Default 0.05 NEAR/day is ~45 registrations, an order of magnitude above what
+the default tree can fund (2.04 USDC at a 0.51 per-tx cap is at most 4
+payments). `set_max_daily_near` raises it.
+
+## Tests
+
+- `a_daily_near_ceiling_stops_the_drain` — two payments pass, the third is
+  `BLOCKED` / `NEAR_BUDGET`, the refusal spends nothing, and the NEAR rail
+  still works afterwards.
+- `near_cost_is_per_transaction_not_per_value` — renamed from
+  `many_small_payments_drain_near_that_no_cap_bounds`, which stopped being true
+  the moment a ceiling existed. It still earns its place by proving the
+  per-transaction cost is unchanged, which is *why* the ceiling is needed, but
+  a test whose name asserts something false is worse than no test.
+
+32 sandbox (was 31) / 100 unit / 107 wizard / 102 adapter / 90 MCP.
+
+## Status
+
+| finding | severity | state |
+| --- | --- | --- |
+| F1 adapter unauthenticated | HIGH | **fixed**, verified by re-running its PoC |
+| F2 agent drains vault NEAR | MEDIUM | **bounded**, verified; rate-limited not prevented |
+| F3 cooldown not hierarchical | LOW | open |
+
+**Not deployed.** Both fixes are in the repo; mainnet still runs the build from
+earlier today. The contract change adds no struct field, so it is a
+`NO_MIGRATE=1` redeploy.

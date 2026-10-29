@@ -85,6 +85,20 @@ pub struct DailyLedger {
     pub pending: u128,
 }
 
+/// Today's ceiling on the vault's OWN NEAR spend, and how much is left.
+///
+/// Separate from BudgetView, which is per-node and denominated in a token.
+/// This one is vault-wide and denominated in NEAR, because the resource it
+/// bounds is the vault's balance rather than an agent's allowance.
+#[near(serializers = [json])]
+#[derive(Debug, Clone)]
+pub struct NearBudgetView {
+    pub day: u64,
+    pub max_daily: U128,
+    pub spent: U128,
+    pub available: U128,
+}
+
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BudgetView {
@@ -232,6 +246,12 @@ pub enum ReasonCode {
     UnknownNode,
     InsufficientGas,
     LedgerInvariant,
+    /// The vault's own NEAR budget for the day is exhausted.
+    ///
+    /// APPENDED, never inserted: borsh tags enum variants by POSITION, so
+    /// adding this anywhere but the end would silently reinterpret every
+    /// reason code already stored in a PaymentRequest.
+    NearBudget,
     // virtual agents
     //
     // APPENDED, not inserted. Borsh tags enum variants by position and a
@@ -290,6 +310,7 @@ impl ReasonCode {
             UnknownNode => "UNKNOWN_NODE",
             InsufficientGas => "INSUFFICIENT_GAS",
             LedgerInvariant => "LEDGER_INVARIANT",
+            NearBudget => "NEAR_BUDGET",
             NotVirtualAgent => "NOT_VIRTUAL_AGENT",
             BadAgentSignature => "BAD_AGENT_SIGNATURE",
             NonceNotFresh => "NONCE_NOT_FRESH",
