@@ -37,6 +37,7 @@ import { defaultTree, flatten, planTreeLines, toBaseUnits } from "./tree.mjs";
 import { parseArgs, makeReaders, agentCount } from "./args.mjs";
 import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
 import { mcpTargets, mergeMcpEntry } from "./mcp-config.mjs";
+import { handoffLinks, handoffLines } from "./handoff.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -866,6 +867,17 @@ ${C.b("Still to do:")}
 ${fundingNotice(tokenPlan, { token, vault, owner, network: NETWORK, decimals }).map((l) => `  ${l}`).join("\n")}
 
   1. Restart your MCP client so it picks up the new server.
+
+${C.b("Check it yourself — every account the wizard touched:")}
+
+${handoffLines(
+  handoffLinks({
+    vault, owner, token, symbol: meta.symbol, network: NETWORK,
+    canFundFromOwner: tokenPlan.canFundFromOwner,
+    agentIds: created.map((c) => c.agentId),
+  }),
+  C.dim,
+).map((l) => (l ? `  ${l}` : "")).join("\n")}
 
 ${C.b("Then:")}
 
