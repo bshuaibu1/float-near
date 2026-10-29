@@ -292,6 +292,19 @@ async fn near_cost_is_per_transaction_not_per_value() -> Result<()> {
     // (amountIn 0.012531), so this is not a dust amount the real rail refuses.
     const TINY: u128 = 10_000;
 
+    // Raise the NEAR ceiling well clear of this test. It measures the
+    // per-transaction COST; the ceiling is a different property with its own
+    // test. Left coupled, adding one payment here would fail on the ceiling
+    // and read as the cost assertion breaking.
+    e.owner
+        .call(e.vault.id(), "set_max_daily_near")
+        .args_json(json!({ "amount": "1000000000000000000000000" }))
+        .deposit(near_workspaces::types::NearToken::from_yoctonear(1))
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
     let before = e.vault.view_account().await?.balance.as_yoctonear();
     let budget_before = budget(&e, ROOT, None).await?.executed();
 

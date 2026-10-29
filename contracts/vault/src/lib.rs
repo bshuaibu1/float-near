@@ -47,11 +47,21 @@ pub const DEPOSIT_ADDRESS_STORAGE: NearToken =
 /// rail. Measured, with an executable PoC in
 /// `intents_registration.rs::near_cost_is_per_transaction_not_per_value`.
 ///
-/// 0.05 NEAR is ~45 registrations a day at the measured ~0.0011 each, which is
-/// an order of magnitude above what the default tree can pay for (2.04 USDC at
-/// a 0.51 per-tx cap is at most 4 payments). An owner running higher volume
-/// raises it with `set_max_daily_near`.
-pub const DEFAULT_MAX_DAILY_NEAR: NearToken = NearToken::from_millinear(50);
+/// 0.01 NEAR is ~9 registrations a day at the measured ~0.0011 each.
+///
+/// Sized against what the DEFAULT TREE can actually spend rather than against
+/// a round number: root allows 2.04 USDC/day at a 0.51 per-tx cap, so at most
+/// 4 cross-chain payments, costing 0.0044 NEAR. 0.01 is 2.3x that — enough
+/// that the shipped configuration never touches the ceiling, tight enough that
+/// a drain takes a fortnight rather than an afternoon.
+///
+/// This was 0.05 (11x headroom) for one commit. Lowered deliberately: the
+/// ceiling RATE-LIMITS rather than prevents, so the number decides how long an
+/// operator has to notice. At 0.05 a vault holding 0.13 spendable NEAR drains
+/// in under three days; at 0.01 it takes about thirteen. Higher volume raises
+/// it with `set_max_daily_near`, which is a deliberate act with a visible
+/// consequence.
+pub const DEFAULT_MAX_DAILY_NEAR: NearToken = NearToken::from_millinear(10);
 /// Checked up front so a call cannot reserve budget and then run out of gas
 /// part-way through dispatch. The ONLY gas floor — both `Route` variants use
 /// it, so this is the number a relay has to clear.
