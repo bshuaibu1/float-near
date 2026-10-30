@@ -2687,3 +2687,42 @@ fn migrate_consumes_real_v4_state() {
     assert_eq!(v.node_order, vec![0u32, 1, 2, 3]);
     assert_eq!(v.next_node_id, 4, "next_node_id survived the shift");
 }
+
+// ---------------------------------------------------------------------------
+// The borsh tag of every PERSISTED reason code is pinned.
+//
+// ReasonCode is stored in state (Request.reason_code), and borsh encodes an
+// enum by DECLARATION POSITION, with no field names. So inserting a variant
+// anywhere above a persisted one silently re-tags every stored request after
+// it: a `Settled` row would read back as something else, with no error.
+//
+// This already happened in this PR and got away with it. NearBudget (F2) and
+// ParentCooldown (F3) were added BEFORE the four virtual-agent codes rather
+// than appended, which shifted NotVirtualAgent, BadAgentSignature,
+// NonceNotFresh and AgentSignatureExpired by two. It was harmless only because
+// those four are blocked-only: `blocked()` returns a value and never inserts
+// into `self.requests`, and the event it logs uses `as_str()`, not the tag.
+//
+// Exactly four codes can reach storage:
+//   TransferPending   written on insert
+//   Settled           ok_code from resolve_reservation
+//   TransferFailed    fail_code from the transfer callback
+//   SweptStuck        fail_code from sweep_stuck_pending
+// All four sit above NearBudget, so nothing was corrupted. Luck, not design.
+//
+// Pinning the bytes converts that luck into a failing test. If you need a new
+// code, APPEND it -- the end of the enum is the only safe place.
+#[test]
+fn persisted_reason_code_tags_are_pinned() {
+    use near_sdk::borsh;
+
+    let tag = |c: ReasonCode| borsh::to_vec(&c).expect("borsh")[0];
+
+    // If one of these fails, you inserted a variant above a persisted code and
+    // every stored request from that tag onward now decodes as the wrong
+    // reason. Move your variant to the END of the enum instead.
+    assert_eq!(tag(ReasonCode::TransferPending), 17, "TransferPending re-tagged");
+    assert_eq!(tag(ReasonCode::Settled), 18, "Settled re-tagged");
+    assert_eq!(tag(ReasonCode::TransferFailed), 19, "TransferFailed re-tagged");
+    assert_eq!(tag(ReasonCode::SweptStuck), 21, "SweptStuck re-tagged");
+}
