@@ -51,6 +51,66 @@ export function makeReaders(argv) {
 }
 
 /**
+ * Did the caller ask what this does, rather than ask it to do something?
+ *
+ * Must be answered BEFORE preflight. Measured 2026-10-30, right after the first
+ * publish: `npx -y @floatonnear/create-float --help` ignored the flag, ran
+ * preflight, and prompted for a NEAR account — so the one command a person
+ * types when they are *not* ready to act was the one that started an
+ * account-creating flow. On a machine with no near-cli it was worse still,
+ * answering `--help` with "no testnet credentials at ...".
+ *
+ * A bare `help` counts only in first position. `--owner help` is a (strange)
+ * account name, and refusing to run for that user would be its own bug.
+ */
+export function wantsHelp(argv) {
+  return argv.includes("--help") || argv.includes("-h") || argv[0] === "help";
+}
+
+/**
+ * What this does, what it will spend, and every flag parseArgs actually reads.
+ *
+ * Kept next to the parser on purpose: a flag documented here but absent there
+ * is a lie, and a flag there but missing here is invisible. The test asserts
+ * both directions against this text.
+ */
+export function usage() {
+  return `create-float — a Float budget vault on NEAR, in one command
+
+USAGE
+  npx @floatonnear/create-float [options]
+
+WHAT IT DOES
+  Creates a vault account, deploys the budget contract to it, builds a
+  hierarchy of spending limits, and optionally creates agent accounts whose
+  keys may ONLY call request_payment. Writes .float/adapter.env and adds a
+  'float' entry to your MCP client's config.
+
+WHAT IT COSTS
+  You need a funded NEAR account with its key in ~/.near-credentials, which
+  'near login' puts there. Roughly 3.6 NEAR for a vault plus one agent — most
+  of it a refundable storage stake. On mainnet this spends REAL funds, and the
+  wizard asks for a typed acknowledgement before it does.
+
+OPTIONS
+  --network <testnet|mainnet>  default testnet
+  --owner <account>            the account that signs and owns the vault
+  --vault <account>            vault account to create (default: derived)
+  --token <account>            fungible token to budget in (default: USDC)
+  --decimals <n>               token decimals (default 6)
+  --agents <n|all>             agent accounts to create (default none)
+  --rpc <url>                  override the RPC endpoint
+  --dry-run                    print the plan and stop, spending nothing
+  --yes                        skip confirmation prompts
+  -h, --help                   print this and exit
+
+AFTER IT RUNS
+  Restart your MCP client so it picks up the new server. The vault, every
+  account touched, and the agent keys are printed with explorer links.
+`;
+}
+
+/**
  * Parse argv into the wizard's configuration.
  *
  * @throws {UsageError} on an unrecognised `--network`.

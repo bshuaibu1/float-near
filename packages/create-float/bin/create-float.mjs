@@ -34,7 +34,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 // the tree that applies it; XCHAIN_HEADROOM is internal to both.
 import { xchainCeiling } from "./xchain.mjs";
 import { defaultTree, flatten, planTreeLines, toBaseUnits } from "./tree.mjs";
-import { parseArgs, makeReaders, agentCount } from "./args.mjs";
+import { parseArgs, makeReaders, agentCount, wantsHelp, usage } from "./args.mjs";
 import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
 import { mcpTargets, mergeMcpEntry } from "./mcp-config.mjs";
 import { handoffLinks, handoffLines } from "./handoff.mjs";
@@ -42,6 +42,22 @@ import { handoffLinks, handoffLines } from "./handoff.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const { has, opt } = makeReaders(argv);
+
+// Answer `--help` before ANYTHING else — before parseArgs, and well before
+// preflight. Two reasons, both learned the hard way on 2026-10-30:
+//
+//   - preflight needs credentials and a contract, so on a machine with nothing
+//     set up `--help` answered with "no testnet credentials at ...". The one
+//     command that must work everywhere was the one guaranteed to fail there.
+//   - it ran the interactive wizard instead, prompting for a NEAR account. A
+//     person typing --help is explicitly not ready to act.
+//
+// Ahead of parseArgs too, so `--help --network bogus` prints usage rather than
+// an error about a flag the user was asking about.
+if (wantsHelp(argv)) {
+  console.log(usage());
+  process.exit(0);
+}
 
 // Parsed in ./args.mjs, which also owns the unknown-network guard. That guard
 // used to call process.exit(2) at module scope, so importing this file to check

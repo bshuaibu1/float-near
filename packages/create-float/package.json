@@ -1,8 +1,9 @@
 {
   "name": "@floatonnear/create-float",
-  "version": "0.1.0",
-  "description": "One command to stand up a Float vault on NEAR testnet: account, contract, budget tree, agent keys, and client config.",
+  "version": "0.1.1",
+  "description": "One command to stand up a Float vault on NEAR: account, contract, budget tree, agent keys, and client config.",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "create-float": "bin/create-float.mjs",
     "float-exit": "bin/float-exit.mjs"
