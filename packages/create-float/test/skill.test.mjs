@@ -105,3 +105,46 @@ test("the skill does not promise that SETTLED means cross-chain delivery", () =>
     "must distinguish NEAR settlement from far-chain delivery",
   );
 });
+
+// ---------------------------------------------------------------------------
+// The reverse direction, which was missing.
+//
+// The checks above assert that every code SKILL.md names really exists. They
+// say nothing about codes the contract can emit and the document never
+// mentions — and that gap is silent in the worse direction: an agent meets a
+// refusal it has no entry for and reports something useless to its human.
+//
+// Proven by this exact case: appending NoRecipientsSet to the contract left
+// every test green while SKILL.md said nothing about it.
+//
+// The agent-reachable set is computable rather than maintained by hand. Every
+// refusal an agent can receive comes from a `blocked(..)` inside
+// dispatch_payment, so scanning that function's body catches both shapes —
+// the 19 call sites passing a literal AND the 3 passing a local, which between
+// them supply the six cap/cooldown codes a literal-only grep misses.
+
+test("every reason code dispatch_payment can emit is documented in SKILL.md", () => {
+  const lib = read(join(ROOT, "contracts", "vault", "src", "lib.rs"));
+
+  const start = lib.indexOf("fn dispatch_payment");
+  assert.ok(start > 0, "dispatch_payment not found — this scan is measuring nothing");
+  // The body ends at the next method at the same indentation.
+  const rest = lib.slice(start + 1);
+  const endRel = rest.search(/\n {4}(pub )?fn /);
+  const body = endRel < 0 ? rest : rest.slice(0, endRel);
+
+  const emitted = [...new Set([...body.matchAll(/ReasonCode::([A-Za-z]+)/g)].map((m) => m[1]))];
+  // Guard the guard: if this ever collapses to a handful, the slice is wrong
+  // and a clean result would mean nothing.
+  assert.ok(emitted.length >= 15, `only found ${emitted.length} codes in dispatch_payment — scan is broken`);
+
+  const screaming = (s) => s.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
+  const doc = read(SKILL);
+  const missing = emitted.map(screaming).filter((c) => !doc.includes(c));
+
+  assert.deepEqual(
+    missing,
+    [],
+    `SKILL.md does not mention ${missing.length} code(s) an agent can receive: ${missing.join(", ")}`,
+  );
+});

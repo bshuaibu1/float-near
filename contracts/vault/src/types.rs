@@ -272,6 +272,12 @@ pub enum ReasonCode {
     NonceNotFresh,
     /// The signed payload's deadline has passed.
     AgentSignatureExpired,
+    /// No node in the chain sets a recipient allowlist, so there is nothing
+    /// a payment could match. Distinct from RecipientNotAllowed on purpose:
+    /// that one means "not on the list", this one means "there is no list",
+    /// and the owner fixes them differently. APPENDED, never inserted -- see
+    /// persisted_reason_code_tags_are_pinned.
+    NoRecipientsSet,
 }
 
 impl ReasonCode {
@@ -322,6 +328,7 @@ impl ReasonCode {
             BadAgentSignature => "BAD_AGENT_SIGNATURE",
             NonceNotFresh => "NONCE_NOT_FRESH",
             AgentSignatureExpired => "AGENT_SIGNATURE_EXPIRED",
+            NoRecipientsSet => "NO_RECIPIENTS_SET",
         }
     }
 }

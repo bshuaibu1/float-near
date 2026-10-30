@@ -2726,3 +2726,51 @@ fn persisted_reason_code_tags_are_pinned() {
     assert_eq!(tag(ReasonCode::TransferFailed), 19, "TransferFailed re-tagged");
     assert_eq!(tag(ReasonCode::SweptStuck), 21, "SweptStuck re-tagged");
 }
+
+// ---------------------------------------------------------------------------
+// "No allowlist configured anywhere" is a DIFFERENT failure from "this payee
+// is not on the allowlist", and the owner's fix is different in each case.
+//
+// effective_recipients walks leaf -> root and returns the first Some(list); if
+// no node in the chain sets one it returns an empty Vec, and an empty list
+// matches nothing. So a tree built entirely through add_node with
+// `recipients: None` at every level refuses EVERY payment — correctly, since
+// fail-closed is right for a spending-control contract — while reporting
+// RECIPIENT_NOT_ALLOWED, which reads as "that payee is not approved" and sends
+// the owner hunting for a list that does not exist.
+//
+// create-float does not hit this: it sets root.recipients = [owner]
+// deliberately, so a wizard vault can always pay the owner back out. The
+// reachable path is a hand-built tree via add_node or the vault_plan_* MCP
+// tools, where recipients is Option at every level.
+#[test]
+fn an_empty_allowlist_reports_no_recipients_set_not_recipient_not_allowed() {
+    let t = tree();
+    let mut v = t.v;
+
+    // Clear every list in the chain, which is the state add_node leaves when
+    // the caller passes None all the way down.
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_recipients(t.root, None);
+    v.set_recipients(t.research, None);
+    v.set_recipients(t.n_r1, None);
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    let out = v.request_payment("e1".into(), tok(), usdc(1), payee(), "".into(), None);
+    assert_blocked(out, ReasonCode::NoRecipientsSet);
+}
+
+#[test]
+fn a_configured_allowlist_that_omits_the_payee_still_says_recipient_not_allowed() {
+    // The negative control. Without it, a change that returned NoRecipientsSet
+    // for both cases would satisfy the test above and destroy the distinction
+    // it exists to make.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_recipients(t.root, Some(vec![stranger()]));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    let out = v.request_payment("e2".into(), tok(), usdc(1), payee(), "".into(), None);
+    assert_blocked(out, ReasonCode::RecipientNotAllowed);
+}

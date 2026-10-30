@@ -116,6 +116,13 @@ These are the exact strings the contract emits. Match on them literally.
 | `QUOTE_SIGNER_UNSET` | the cross-chain rail is not configured | use `rail: "near"`, or ask the operator |
 | `QUOTE_EXPIRED` / `QUOTE_BAD_SIGNATURE` | the cross-chain quote is stale or does not verify | retry once to get a fresh quote; if it persists, the operator's signer is misconfigured |
 | `TRANSFER_FAILED` | the transfer failed; the reservation was released, nothing was spent | usually an empty vault — check the balance and tell the human |
+| `PARENT_COOLDOWN` | an **ancestor's** minimum interval has not elapsed — a sibling paid recently | wait; your own node may have no cooldown at all and still be throttled by the one above |
+| `NEAR_BUDGET` | the vault's own **NEAR** (not token) ceiling for today is spent | cross-chain is closed until UTC midnight; `rail: "near"` still works. Do **not** retry in a loop — each cross-chain attempt is what consumes this |
+| `NO_RECIPIENTS_SET` | no allowlist exists anywhere up the tree, so nothing can match | different from `RECIPIENT_NOT_ALLOWED`: there is no list to add to. Offer `vault_plan_set_recipients` on the root |
+| `INSUFFICIENT_GAS` | the call arrived with less than 50 TGas | attach more gas and retry; this is a caller setting, not a policy refusal |
+| `INVALID_REQUEST_ID` | the `requestId` is empty, too long, or has illegal characters | your own mistake; fix it or omit it and let one be generated |
+| `LEDGER_INVARIANT` | the vault's internal accounting disagrees with itself | **stop. Do not retry.** Tell the human immediately and quote the request id |
+| `TRANSFER_PENDING` | **not a refusal** — the payment is in flight | poll `vault_request` for the final state. Do **not** resubmit: a second attempt with the same id returns `DUPLICATE_REQUEST`, and with a new id it pays twice |
 
 **You cannot raise your own limit, and you must not imply otherwise.** Report
 the limit and let the human decide. A budget the agent can talk its way past is

@@ -1256,7 +1256,22 @@ impl Vault {
         // `0x…` string, which is a valid NEAR account id, so the cross-chain
         // rail inherits the allowlist with no new field and no second code
         // path that could drift from it.
-        if !self.effective_recipients(&chain).iter().any(|r| r == &recipient) {
+        let allowed = self.effective_recipients(&chain);
+        if allowed.is_empty() {
+            // Distinct from RecipientNotAllowed on purpose: the owner's fix
+            // differs. There is no list to add a payee to, and an empty list
+            // matches nothing — so this path refuses EVERY payment. That is
+            // correct fail-closed behaviour, but it previously reported itself
+            // as "that payee is not approved", which sent people hunting for a
+            // list that did not exist.
+            //
+            // Reachable from a hand-built tree: add_node takes
+            // `recipients: Option<Vec<AccountId>>` at every level and the
+            // vault_plan_* tools expose that. create-float does NOT hit it — it
+            // sets root.recipients = [owner] so funds can always come back out.
+            return blocked(&request_id, node_id, ReasonCode::NoRecipientsSet);
+        }
+        if !allowed.iter().any(|r| r == &recipient) {
             return blocked(&request_id, node_id, ReasonCode::RecipientNotAllowed);
         }
 
