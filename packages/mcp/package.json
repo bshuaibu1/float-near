@@ -1,6 +1,6 @@
 {
   "name": "@floatonnear/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "MCP server for the hierarchical budget vault. The agent key signs request_payment only; owner methods emit unsigned payloads for wallet approval.",
   "license": "MIT",

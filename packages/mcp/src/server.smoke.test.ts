@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 /**
  * Drives the BUILT server over real stdio MCP.
@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVER = resolve(here, "../dist/server.js");
+const pkg = JSON.parse(readFileSync(resolve(here, "../package.json"), "utf8")) as { version: string };
 
 interface Tool {
   name: string;
@@ -25,6 +26,7 @@ interface Tool {
 }
 
 let tools: Tool[] = [];
+let serverInfo: { name?: string; version?: string } = {};
 
 async function listTools(): Promise<Tool[]> {
   const child = spawn(process.execPath, [SERVER], {
@@ -64,13 +66,20 @@ async function listTools(): Promise<Tool[]> {
       buf += String(d);
       for (const line of buf.split("\n")) {
         if (!line.trim()) continue;
-        let msg: { id?: number; result?: { tools?: Tool[] } };
+        let msg: {
+          id?: number;
+          result?: { tools?: Tool[]; serverInfo?: { name?: string; version?: string } };
+        };
         try {
           msg = JSON.parse(line);
         } catch {
           continue; // partial line; the next chunk completes it
         }
         if (msg.id === 1) {
+          // The handshake's own payload, which this harness used to discard.
+          // It is the only place the server's advertised identity appears, and
+          // it is what a user sees in their client's server list.
+          serverInfo = msg.result?.serverInfo ?? {};
           send({ jsonrpc: "2.0", method: "notifications/initialized" });
           send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
         }
@@ -135,6 +144,21 @@ describe("the MCP server starts and registers its tools", () => {
     for (const t of tools.filter((t) => t.name.startsWith("vault_plan_"))) {
       expect(t.description ?? "").toMatch(/unsigned|not signed/i);
     }
+  });
+
+  // The name a user actually sees. A client lists its MCP servers by
+  // serverInfo.name, so this string -- not the package name, not the config
+  // key -- is the product's label in the one place the product is visible.
+  // It said "near-vault", which is the repo directory.
+  it("identifies itself as float", () => {
+    expect(serverInfo.name).toBe("float");
+  });
+
+  it("advertises the package's own version, not a hardcoded one that can drift", () => {
+    // server.ts carries the version as a literal, so it silently goes stale the
+    // first time package.json is bumped and a client then reports the wrong
+    // version forever. Pinned here so the bump has to move both.
+    expect(serverInfo.version).toBe(pkg.version);
   });
 
   it("offers no path to the test clock", () => {

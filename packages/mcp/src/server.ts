@@ -99,7 +99,17 @@ const limitShape = z
   )
   .min(1);
 
-const server = new McpServer({ name: "near-vault", version: "0.1.0" });
+// The name a client displays in its server list, so this string -- not the
+// package name, not the config key -- is the product's label in the one place
+// the product is visible. It was "near-vault": the repo's directory name,
+// leaking outward as the user-facing identity while the config key create-float
+// writes has always been `float`.
+//
+// The version stays a literal rather than being read from package.json at
+// startup: a wrong relative path would break the server outright instead of
+// merely reporting a stale version. server.smoke.test.ts asserts the two agree,
+// so a bump cannot land with only one of them moved.
+const server = new McpServer({ name: "float", version: "0.1.1" });
 
 // ----------------------------------------------------------------- reads
 
