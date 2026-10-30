@@ -5,8 +5,8 @@
   "description": "Serves the existing Float dashboard's /v1 API from NEAR vault views, so the Float UI runs unchanged against the NEAR hierarchical vault.",
   "license": "MIT",
   "bin": {
-    "float-adapter": "./dist/server.js",
-    "near-vault-float-adapter": "./dist/server.js"
+    "float-adapter": "dist/server.js",
+    "near-vault-float-adapter": "dist/server.js"
   },
   "files": [
     "dist/"
