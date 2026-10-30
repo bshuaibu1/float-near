@@ -924,8 +924,8 @@ ${handoffLines(
 
 ${C.b("Then:")}
 
-  ${C.dim("# the API the dashboard reads")}
-  set -a && . .float/adapter.env && set +a && npx @floatonnear/float-adapter
+  ${C.dim("# the API the dashboard reads (no shell sourcing; same on PowerShell)")}
+  FLOAT_ENV_FILE=.float/adapter.env npx @floatonnear/float-adapter
 
   ${C.dim("# the dashboard")}
   cd apps/dashboard && npm run dev

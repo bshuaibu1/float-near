@@ -44,6 +44,32 @@ import {
 import type { VaultNode } from "./map.js";
 import { AgentSelectionError, loadKeyring, selectAgent } from "./keyring.js";
 import { BlockedFollower, createRpc, emptyStore, type BlockedStore } from "./blocked-scan.js";
+import { parseEnvFile, applyEnvFile } from "./env-file.js";
+
+// Load FLOAT_ENV_FILE before anything reads process.env.
+//
+// This replaces `set -a && . .float/adapter.env && set +a` in every deploy
+// path. That idiom makes the SHELL execute a file holding the agent key, the
+// quote signer and the API token, and it has already failed for real on a single
+// unquoted value containing a space (see env-file.ts). It also does not exist in
+// PowerShell, which is why starting the adapter on Windows needed a bespoke
+// Get-Content incantation recorded in this project's memory.
+//
+// Real environment variables win over the file, so one service can be pointed
+// at a different port or contract without editing shared secrets.
+if (process.env.FLOAT_ENV_FILE) {
+  const envPath = process.env.FLOAT_ENV_FILE;
+  if (!existsSync(envPath)) {
+    // Fail loudly. A missing env file that is silently ignored starts an adapter
+    // with no API token, which disables every mutating route and looks like a
+    // code bug rather than a deploy mistake.
+    console.error(`FATAL: FLOAT_ENV_FILE=${envPath} does not exist`);
+    process.exit(1);
+  }
+  const applied = applyEnvFile(parseEnvFile(readFileSync(envPath, "utf8")));
+  // NAMES only, never values: this line goes to pm2's log on every restart.
+  console.log(`env file: ${envPath} — set ${applied.length} (${applied.join(", ") || "none"})`);
+}
 
 const env = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
