@@ -104,3 +104,49 @@ describe("authorize", () => {
     }
   });
 });
+
+// ---- client errors vs server errors
+//
+// The catch-all returned 500 for EVERYTHING, including input validation:
+// `{"amount":"abc"}` produced `500 invalid amount "abc"`. Verified live against
+// the running adapter on 2026-10-30.
+//
+// For an agent-facing API that is not cosmetic. 500 means "the server broke,
+// retry"; 400 means "your request is wrong, fix it". An agent that reads 500 on
+// a malformed amount retries the same malformed amount forever. SKILL.md spends
+// a whole table teaching agents which refusals to retry, and the adapter was
+// lying to them about this one.
+
+import { BadRequest, classifyError } from "./gate.js";
+
+describe("classifyError", () => {
+  it("a BadRequest is the CLIENT's fault — 400, do not retry", () => {
+    const r = classifyError(new BadRequest('invalid amount "abc"'));
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("abc");
+  });
+
+  it("anything else is the SERVER's fault — 500, retrying may help", () => {
+    const r = classifyError(new Error("RPC timed out"));
+    expect(r.status).toBe(500);
+    expect(r.body.error).toContain("RPC");
+  });
+
+  it("a non-Error thrown value does not crash the handler", () => {
+    // `throw "string"` happens, and a catch-all that assumes Error shape turns
+    // a small bug into an unhandled one.
+    expect(classifyError("boom").status).toBe(500);
+    expect(classifyError(undefined).status).toBe(500);
+  });
+
+  it("never leaks a stack trace to the caller", () => {
+    const e = new BadRequest("bad input");
+    const r = classifyError(e);
+    expect(JSON.stringify(r.body)).not.toContain("at ");
+    expect(Object.keys(r.body)).toEqual(["error"]);
+  });
+
+  it("BadRequest is still an Error, so existing catches keep working", () => {
+    expect(new BadRequest("x")).toBeInstanceOf(Error);
+  });
+});

@@ -109,3 +109,51 @@ export function authorize({
   }
   return { ok: true };
 }
+
+/**
+ * An error caused by the CALLER, not by this server.
+ *
+ * The catch-all returned 500 for everything, so `{"amount":"abc"}` came back as
+ * `500 invalid amount "abc"` — verified live against the running adapter.
+ *
+ * That is not a cosmetic status-code quibble on an agent-facing API. 500 means
+ * "the server broke, retrying may help"; 400 means "your request is wrong, fix
+ * it". An agent reading 500 on a malformed amount retries the same malformed
+ * amount forever. SKILL.md teaches agents exactly this distinction for the
+ * contract's reason codes, and the HTTP layer was contradicting it.
+ */
+export class BadRequest extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BadRequest";
+  }
+}
+
+/**
+ * Map a thrown value to a response.
+ *
+ * Takes `unknown` rather than `Error` on purpose: `throw "string"` is legal,
+ * and a catch-all that assumes `.message` exists turns a small bug into an
+ * unhandled one. Only the message is returned — never a stack, which would
+ * hand a caller the server's file paths.
+ */
+export function classifyError(e: unknown): { status: number; body: { error: string } } {
+  if (e instanceof BadRequest) return { status: 400, body: { error: e.message } };
+  const message = e instanceof Error ? e.message : "internal error";
+  return { status: 500, body: { error: message } };
+}
+
+/**
+ * Run caller-supplied parsing, re-labelling any failure as the caller's.
+ *
+ * Wraps the validation helpers that throw plain `Error` — `toBaseUnits` and
+ * friends — so their failures reach the catch-all already classified, instead
+ * of being indistinguishable from an RPC outage.
+ */
+export function fromCaller<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    throw new BadRequest(e instanceof Error ? e.message : String(e));
+  }
+}

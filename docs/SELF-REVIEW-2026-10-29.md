@@ -565,3 +565,46 @@ merely until the source reads correctly.
 
 F3 is not on mainnet. It has no live effect (all cooldowns are 0), so it can
 ride along with the next deploy rather than justify one.
+
+
+---
+
+# Addendum 7 — F4 (minor): every error was a 500, including the caller's
+
+Found while verifying the agent credentials were wired, not by looking for it.
+A probe with `{"amount":"abc"}` came back:
+
+```
+500 {"error":"invalid amount \"abc\": expected digits ..."}
+```
+
+The catch-all at `server.ts:433` returned `500` for everything, so a caller's
+malformed input was indistinguishable from an RPC outage.
+
+**Why this is not a status-code quibble.** 500 means "the server broke,
+retrying may help"; 400 means "your request is wrong, fix it". An agent reading
+500 on a malformed amount retries the same malformed amount forever. `SKILL.md`
+spends an entire table teaching agents which refusals to retry and which to
+report — and the HTTP layer was contradicting it one level up.
+
+`classifyError` now maps `BadRequest` to 400 and everything else to 500, and
+`fromCaller` wraps the caller-supplied parsing so validation failures arrive
+already classified. It takes `unknown` rather than `Error` deliberately: `throw
+"string"` is legal, and a catch-all assuming `.message` turns a small bug into
+an unhandled one. Only the message is returned, never a stack.
+
+Verified against the rebuilt adapter — the same probe, and the three things
+that must not have changed:
+
+| | before | after |
+| --- | --- | --- |
+| malformed amount | **500** | **400**, message intact |
+| POST, no token | 401 | 401 |
+| GET /v1/dashboard | 200 | 200 |
+
+18 gate tests (was 13). 107 adapter total.
+
+**Severity: LOW.** No funds at risk, no access gained. It is listed because it
+makes an agent behave wrongly in a way the product elsewhere goes to some
+length to prevent, and because it was invisible until something probed the
+layer rather than the handler.

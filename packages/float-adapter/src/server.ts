@@ -18,7 +18,7 @@
  */
 
 import { createServer } from "node:http";
-import { resolveHost, corsHeaders, authorize } from "./gate.js";
+import { resolveHost, corsHeaders, authorize, classifyError, fromCaller } from "./gate.js";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { toBaseUnits, fromBaseUnits } from "@near-vault/mcp/amounts";
@@ -338,7 +338,7 @@ const server = createServer(async (req, res) => {
       // governs real outflow rather than a nominal number.
       const requestId = newRequestId();
       let route: RouteArg = "near_direct";
-      let amountIn = toBaseUnits(amount, env.decimals);
+      let amountIn = fromCaller(() => toBaseUnits(amount, env.decimals));
 
       if (rail === "intents") {
         if (!env.quoteSignerKey) {
@@ -355,7 +355,7 @@ const server = createServer(async (req, res) => {
         try {
           const deadline = new Date(Date.now() + 20 * 60 * 1000);
           const q = await getQuote({
-            amountOut: toBaseUnits(amount, env.decimals),
+            amountOut: fromCaller(() => toBaseUnits(amount, env.decimals)),
             payee: recipient,
             refundTo: env.vault,
             destinationAsset,
@@ -431,7 +431,11 @@ const server = createServer(async (req, res) => {
 
     send(404, { error: `no such endpoint: ${url.pathname}` });
   } catch (e) {
-    send(500, { error: (e as Error).message });
+    // Classified, not assumed. A caller's malformed input is THEIR error and
+    // must not read as "the server broke, retry" — an agent that retries a
+    // bad amount retries it forever.
+    const { status, body } = classifyError(e);
+    send(status, body);
   }
 });
 
