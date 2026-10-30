@@ -252,6 +252,12 @@ pub enum ReasonCode {
     /// adding this anywhere but the end would silently reinterpret every
     /// reason code already stored in a PaymentRequest.
     NearBudget,
+    /// An ANCESTOR's cooldown is still running. Distinct from `Cooldown` for
+    /// the same reason `ParentDailyBudget` is distinct from `DailyBudget`:
+    /// the node to reconfigure is not the one that asked.
+    ///
+    /// APPENDED, never inserted — borsh tags variants by position.
+    ParentCooldown,
     // virtual agents
     //
     // APPENDED, not inserted. Borsh tags enum variants by position and a
@@ -311,6 +317,7 @@ impl ReasonCode {
             InsufficientGas => "INSUFFICIENT_GAS",
             LedgerInvariant => "LEDGER_INVARIANT",
             NearBudget => "NEAR_BUDGET",
+            ParentCooldown => "PARENT_COOLDOWN",
             NotVirtualAgent => "NOT_VIRTUAL_AGENT",
             BadAgentSignature => "BAD_AGENT_SIGNATURE",
             NonceNotFresh => "NONCE_NOT_FRESH",

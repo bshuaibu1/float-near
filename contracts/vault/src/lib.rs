@@ -1319,11 +1319,26 @@ impl Vault {
         }
 
         let now = env::block_timestamp();
-        let last = self.last_paid_ns.get(&node_id).copied().unwrap_or(0);
-        if node.cooldown_sec > 0
-            && now < last.saturating_add(u64::from(node.cooldown_sec) * NS_PER_SEC)
-        {
-            return blocked(&request_id, node_id, ReasonCode::Cooldown);
+        // HIERARCHICAL, like every other check in this function.
+        //
+        // This read `node_id` alone, while frozen, token-allowed, per-tx and
+        // daily budget all iterate `chain`. So a cooldown set on a parent was
+        // bypassed by paying from a child, and two sibling leaves halved the
+        // interval the owner thought they had set.
+        for id in &chain {
+            let n = self.get_node(*id);
+            if n.cooldown_sec == 0 {
+                continue;
+            }
+            let last = self.last_paid_ns.get(id).copied().unwrap_or(0);
+            if now < last.saturating_add(u64::from(n.cooldown_sec) * NS_PER_SEC) {
+                let code = if *id == node_id {
+                    ReasonCode::Cooldown
+                } else {
+                    ReasonCode::ParentCooldown
+                };
+                return blocked(&request_id, node_id, code);
+            }
         }
 
         let day = self.today();
@@ -1374,7 +1389,13 @@ impl Vault {
                 .unwrap_or_else(|| fail(ReasonCode::LedgerInvariant, "pending overflow"));
             self.ledgers.insert(key, led);
         }
-        self.last_paid_ns.insert(node_id, now);
+        // Every level, not just the payer. Checking the chain while recording
+        // only `node_id` would leave an ancestor's timestamp permanently
+        // stale, so its cooldown could never fire — the fix would look applied
+        // and change nothing.
+        for id in &chain {
+            self.last_paid_ns.insert(*id, now);
+        }
 
         self.requests.insert(
             request_id.clone(),

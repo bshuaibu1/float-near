@@ -509,3 +509,59 @@ only my description of its generosity was wrong.
 Day rolled 20755 → 20756 and both counters reset — `get_near_budget` reports
 `spent: 0`, and node 0's token budget likewise. The `(day, amount)` encoding
 resets without anyone sweeping it, as designed, now seen rather than assumed.
+
+
+---
+
+# Addendum 6 — F3 fixed: the cooldown is hierarchical, like every other check
+
+`dispatch_payment` iterates `chain` for frozen, token-allowed, per-tx cap and
+daily budget. Cooldown alone read `node_id`, so a parent's rate limit was
+bypassed by paying from a child.
+
+**Both halves had to move together, and that is the whole lesson.** The check
+reads the chain now — but so does the record. Fixing only the check would leave
+every ancestor's `last_paid_ns` permanently stale, so its cooldown could never
+fire: the fix would look applied and change nothing.
+
+That half-fix is the realistic future regression — someone sees the check, does
+not see the write 40 lines later — so it is the mutation that was run:
+
+| mutation | predicted | observed |
+| --- | --- | --- |
+| record `node_id` only, keep the chain check | 2 red | **2 red**, and the right two |
+
+`a_nodes_own_cooldown_is_still_reported_as_its_own` and
+`no_cooldown_anywhere_means_no_throttle` stayed green under it, which is what
+makes the result meaningful rather than "everything broke".
+
+`ParentCooldown` is a distinct reason code, following `ParentDailyBudget` and
+`ParentPerTxLimit`: the node to reconfigure is not the one that asked, and an
+agent that cannot tell them apart reports the wrong thing to its human.
+Appended, never inserted — borsh tags variants by position.
+
+**No live impact.** Every node on `float.test015.near` has `cooldown_sec = 0`,
+and the guard only engages above zero, so this changes nothing until an owner
+sets one. The test `no_cooldown_anywhere_means_no_throttle` pins that: the fix
+must not become a rate limit nobody asked for.
+
+**A stale-artifact trap worth recording.** After reverting the mutation in
+source, the full tier came back red — because `wsl-sandbox.sh test` does not
+rebuild the wasm, so it was still running the MUTANT binary. The script warns
+about exactly this ("a contract edit is NOT in the binary under test until the
+wasm is rebuilt") and provides `mut` and `all` for it; I used the mode that
+skips the build. A revert is not verified until the artifact is rebuilt, not
+merely until the source reads correctly.
+
+36 sandbox (was 32) / 100 unit / 107 wizard / 102 adapter / 90 MCP.
+
+## Final status
+
+| finding | severity | state |
+| --- | --- | --- |
+| F1 adapter unauthenticated | HIGH | fixed, verified by re-running its PoC |
+| F2 agent drains vault NEAR | MEDIUM | fixed and **deployed**; rate-limited, not prevented |
+| F3 cooldown not hierarchical | LOW | **fixed**, mutation-validated; not deployed |
+
+F3 is not on mainnet. It has no live effect (all cooldowns are 0), so it can
+ride along with the next deploy rather than justify one.
