@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freshnessProblems } from "./freshness.mjs";
+import { importsHostFn } from "./wasm-imports.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = resolve(HERE, "..");
@@ -64,12 +65,31 @@ if (srcBytes.includes(Buffer.from("set_day_len_ns"))) {
       "--no-default-features.",
   );
 }
-if (!srcBytes.includes(Buffer.from("panic_utf8"))) {
-  fails.push(
-    "it does not import panic_utf8, so it was NOT built by cargo-near. Every " +
-      "panic would arrive as 'unreachable opcode' with the reason code gone. " +
-      "Use `cargo near build`, never plain `cargo build --target wasm32-...`.",
-  );
+// Read from the IMPORT SECTION, not from a byte search.
+//
+// Honesty about why: the byte search was NOT broken. Measured 2026-10-30, the
+// shipped wasm is wasm-opt-stripped and contains "panic_utf8" exactly once --
+// at the import entry itself -- so grep and the import section agreed, and a
+// genuine plain-cargo build contains the string nowhere at all. This is an
+// exactness change, not a bug fix: it asks the question the message claims to
+// answer ("does it import") instead of a proxy that happened to be equivalent
+// for this artifact. A future build that retains a name or debug section would
+// break the proxy silently.
+//
+// A parse failure is its own failure, never "imports nothing" -- a guard that
+// treated an unparseable file as importing nothing would wave garbage through.
+try {
+  if (!importsHostFn(srcBytes, "panic_utf8")) {
+    fails.push(
+      "it does not import panic_utf8, so it was NOT built by cargo-near. Every " +
+        "panic would arrive as 'unreachable opcode' with the reason code gone -- " +
+        "all 44 of this vault's reason codes become indistinguishable from a bug. " +
+        "Use `cargo near build`, never plain `cargo build --target wasm32-...`. " +
+        "MEASURED: cargo-near 40 env imports, plain cargo 38.",
+    );
+  }
+} catch (e) {
+  fails.push(`its import section could not be parsed (${e.message}), so it is not a usable contract.`);
 }
 // ---- and interrogate it against the SOURCE, not only against itself.
 //

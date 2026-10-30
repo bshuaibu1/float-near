@@ -167,15 +167,29 @@ function findWasm() {
   // wasm and panic!() lowers to an `unreachable` opcode.
   //
   // NOTE on verifying this: counting wasm IMPORTS does distinguish the two
-  // builds, contrary to an earlier note here that said it could not. The host
-  // branch is the only caller of panic_utf8, so when it is not compiled the
-  // import is absent. Measured with scripts/wasm-imports.mjs, which parses the
-  // import section rather than grepping:
+  // builds. The host branch is the only caller of panic_utf8, so when it is not
+  // compiled the import is absent. Re-measured 2026-10-30 with
+  // scripts/wasm-imports.mjs, which parses the import section:
   //   cargo near build : 40 env imports (incl. panic_utf8, sha256)
   //   plain cargo build: 38 env imports (panic_utf8 and sha256 MISSING)
-  // `grep -c panic_utf8 <wasm>` is the unreliable check -- it matches the name
-  // section and string data too, so it can report a function that is not
-  // imported. Use the import section, or deploy both and trigger a panic.
+  //
+  // THE TRAP, which cost a wrong conclusion in this repo on 2026-10-30:
+  // target/wasm32-unknown-unknown/release/vault.wasm is NOT the plain-cargo
+  // artifact. cargo-near builds THERE first, with --cfg near, and then
+  // wasm-opts into target/near/vault/. Comparing those two paths compares
+  // cargo-near against itself and reports IDENTICAL import sets -- which reads
+  // as "the build mode makes no difference". Getting a genuine plain build
+  // means running `cargo build -p vault --target wasm32-unknown-unknown
+  // --release` on its own, which overwrites that very path.
+  //
+  // An earlier version of this note called `grep -c panic_utf8 <wasm>` the
+  // unreliable check. That is true in general -- the name is also in the name
+  // section, in debug info and in string data -- but it overstated the case
+  // here: the shipped wasm is wasm-opt-stripped and contains the string exactly
+  // ONCE, at the import entry itself, while a plain build contains it nowhere.
+  // So grep and the import section agreed for this artifact. bundle-wasm.mjs
+  // reads the import section anyway, because the proxy is only accidentally
+  // exact and a build that retained a name section would break it silently.
   const candidates = [
     join(HERE, "..", "res", "vault.wasm"),
     resolve(process.cwd(), "target", "near", "vault", "vault.wasm"),
