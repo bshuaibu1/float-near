@@ -128,8 +128,13 @@ tree, registers the vault on the token, optionally funds it, and writes the MCP
 config for every client it finds.
 
 ```bash
-npx @floatonnear/create-float --network testnet --owner you.testnet
+npx @floatonnear/create-float --owner you.near --fund 1
 ```
+
+**Mainnet is the default**, and there is no testnet path worth taking: NEAR
+Intents has no testnet, so a testnet vault cannot make a cross-chain payment at
+all. The wizard prints the full bill and requires the word `mainnet` to be typed
+before it sends anything.
 
 Useful flags: `--dry-run` (plan and cost, sends nothing), `--yes`
 (non-interactive), `--fund 5` (move that many tokens into the vault),

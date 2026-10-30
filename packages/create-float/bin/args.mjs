@@ -93,7 +93,7 @@ WHAT IT COSTS
   wizard asks for a typed acknowledgement before it does.
 
 OPTIONS
-  --network <testnet|mainnet>  default testnet
+  --network <mainnet|testnet>  default mainnet — spends REAL funds
   --owner <account>            the account that signs and owns the vault
   --vault <account>            vault account to create (default: derived)
   --token <account>            fungible token to budget in (default: USDC)
@@ -118,7 +118,15 @@ AFTER IT RUNS
 export function parseArgs(argv) {
   const { has, opt } = makeReaders(argv);
 
-  const network = opt("--network", "testnet");
+  // MAINNET by default, since 2026-10-30. NEAR Intents has no testnet, so the
+  // cross-chain rail cannot be exercised there — a testnet default quietly
+  // produced a vault missing the capability the product exists for.
+  //
+  // Only defensible because of the gate further in: the wizard prints the whole
+  // bill and requires the word "mainnet" to be TYPED before it sends anything.
+  // That acknowledgement is what makes a real-funds default safe, so the two
+  // must never be separated.
+  const network = opt("--network", "mainnet");
   // Mainnet is allowed, but never by accident. This was once a flat refusal,
   // which was right while the cross-chain rail was unproven — but NEAR Intents
   // has no testnet, so refusing mainnet outright means refusing the only

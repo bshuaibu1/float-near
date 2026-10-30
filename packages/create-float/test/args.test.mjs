@@ -18,15 +18,33 @@ function caught(fn) {
   assert.fail("expected a throw, got none");
 }
 
-test("defaults: testnet, its RPC, nothing opted into", () => {
+test("defaults: MAINNET, its RPC, nothing opted into", () => {
+  // Flipped from testnet on 2026-10-30. The product runs on mainnet: NEAR
+  // Intents has no testnet, so the cross-chain rail — the reason this exists —
+  // cannot be exercised there at all, and a default that silently produces a
+  // vault with that rail closed is a default that misrepresents the product.
+  //
+  // Defaulting to a network that spends real funds is only acceptable because
+  // of the gate further in: the wizard prints the full bill and requires the
+  // word "mainnet" to be TYPED before it sends anything. Removing that gate
+  // and leaving this default would be indefensible.
   const c = parseArgs([]);
-  assert.equal(c.network, "testnet");
-  assert.equal(c.mainnet, false);
-  assert.equal(c.rpc, RPC_DEFAULTS.testnet);
+  assert.equal(c.network, "mainnet");
+  assert.equal(c.mainnet, true);
+  assert.equal(c.rpc, RPC_DEFAULTS.mainnet);
   assert.equal(c.dry, false);
   assert.equal(c.yes, false);
   assert.equal(c.owner, null);
   assert.equal(c.decimals, 6);
+});
+
+test("testnet remains reachable as an explicit opt-in", () => {
+  // Kept as a development escape hatch: the sandbox tier, deploy-testnet.sh and
+  // the v4.floatv4.testnet virtual-agent proving ground all still use it.
+  const c = parseArgs(["--network", "testnet"]);
+  assert.equal(c.network, "testnet");
+  assert.equal(c.mainnet, false);
+  assert.equal(c.rpc, RPC_DEFAULTS.testnet);
 });
 
 test("mainnet gets a per-network RPC default, not null", () => {
