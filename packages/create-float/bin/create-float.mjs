@@ -25,7 +25,7 @@
  *      as `float-near` instead, and the collision is reported.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,7 @@ import { parseArgs, makeReaders, agentCount, wantsHelp, usage } from "./args.mjs
 import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
 import { mcpTargets, writeMcpConfigs } from "./mcp-config.mjs";
 import { handoffLinks, handoffLines } from "./handoff.mjs";
+import { rotationPlan, applyRotation } from "./rotate-key.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -564,12 +565,25 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     if (exists) {
       skip(`${vault} already exists`);
       if (!existsSync(credPath(vault))) {
-        throw new Error(
-          `${vault} exists but there is no key for it at ${credPath(vault)}.\n` +
-            `  Cannot continue: initialising the contract requires the vault to call itself.`,
-        );
+        // Expected once step 9 has run: the setup key is deleted from the vault
+        // and its file removed, leaving the owner's wallet as the only
+        // full-access key. That is the DESIRED end state, not a broken run — so
+        // refuse only if something here still needs a vault-signed action.
+        const initialised = await viewSafe(provider, vault, "get_config");
+        if (!initialised) {
+          throw new Error(
+            `${vault} exists but there is no key for it at ${credPath(vault)},\n` +
+              `  and the contract is not initialised.\n` +
+              `  Deploying and initialising require the vault to sign for itself, so this\n` +
+              `  run cannot continue. If the key was rotated to the owner, deploy with that\n` +
+              `  wallet instead.`,
+          );
+        }
+        vaultSecret = null;
+        skip("vault key already rotated to the owner — no step here needs it");
+      } else {
+        vaultSecret = JSON.parse(readFileSync(credPath(vault), "utf8")).private_key;
       }
-      vaultSecret = (JSON.parse(readFileSync(credPath(vault), "utf8")).private_key);
     } else {
       await ownerAcct.createSubAccount({
         accountOrPrefix: vault,
@@ -582,10 +596,15 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
         JSON.stringify({ account_id: vault, public_key: vaultKey.getPublicKey().toString(), private_key: vaultSecret }, null, 2),
       );
       ok(`${vault} created, funded with ${fmtNear(VAULT_FUNDING)} NEAR`);
-      ok(`key saved to ${credPath(vault)}`);
+      ok(`setup key at ${credPath(vault)} ${C.dim("(temporary — removed in step 9)")}`);
     }
 
-    const vaultAcct = new Account(vault, provider, new KeyPairSigner(KeyPair.fromString(vaultSecret)));
+    // A null secret means the key was already rotated away. Reads (and
+    // getAccessKeyList) need no signer, so build a read-only Account rather
+    // than crashing on KeyPair.fromString(null).
+    const vaultAcct = vaultSecret
+      ? new Account(vault, provider, new KeyPairSigner(KeyPair.fromString(vaultSecret)))
+      : new Account(vault, provider);
 
     // ---- 5. Contract.
     // ---- 4b. The two things this wizard used to disown.
@@ -621,9 +640,13 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
 
     step(5, "Deploying the contract");
     // `wasm` was resolved in the preflight, before anything was spent.
-    const code = readFileSync(wasm);
-    await vaultAcct.deployContract(code);
-    ok(`deployed ${(code.length / 1024).toFixed(0)} KB from ${wasm}`);
+    if (!vaultSecret) {
+      skip("contract already deployed; the vault key now lives in the owner wallet");
+    } else {
+      const code = readFileSync(wasm);
+      await vaultAcct.deployContract(code);
+      ok(`deployed ${(code.length / 1024).toFixed(0)} KB from ${wasm}`);
+    }
 
     // `new` demands predecessor == the vault itself, so that nobody can
     // initialise a freshly deployed vault with their own owner. Signing as the
@@ -783,8 +806,60 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       ?? nodes[0]?.perTx
       ?? 0;
 
-    // ---- 9. Config the user would otherwise hand-write.
-    step(9, "Writing configuration");
+    // ---- 9. Hand the vault's full-access key to the owner's wallet.
+    //
+    // Runs LAST of the on-chain steps, because every vault-signed action
+    // (deployContract, the `new` init call) needs the setup key that this
+    // removes. Rotating earlier would strand the rest of the run.
+    //
+    // Why it matters: a full-access key on the VAULT can call the token's
+    // ft_transfer as the vault and move the entire balance with no contract
+    // logic involved — bypassing caps, the allowlist, cooldowns and the pause
+    // switch — and can DeployContract or DeleteAccount. It is strictly more
+    // powerful than the owner key, and it used to be written to
+    // ~/.near-credentials and left there forever.
+    step(9, "Securing the vault key");
+    {
+      // null once rotated: rotationPlan then sees no setup key and reports done.
+      const setupPk = vaultSecret ? KeyPair.fromString(vaultSecret).getPublicKey().toString() : null;
+      const ownerPk = cred.public_key;
+      const { keys } = await vaultAcct.getAccessKeyList();
+      const plan = rotationPlan({ keys, ownerPublicKey: ownerPk, setupPublicKey: setupPk });
+
+      if (plan.action === "blocked") {
+        // Not fatal: the vault works. But say so loudly rather than printing a
+        // success line over a vault whose key is still on disk.
+        warn(`vault key NOT rotated — ${plan.reason}`);
+      } else if (plan.action === "done") {
+        skip("vault key already belongs to the owner");
+      } else {
+        // Order and failure-skipping both live in applyRotation, where they
+        // are asserted at runtime. Earlier versions inlined the loop here and
+        // "tested" the ordering by reading the source, which a mutation pass
+        // showed to be both false-negative and false-positive prone.
+        await applyRotation(plan, {
+          addOwnerKey: async () => {
+            await vaultAcct.addFullAccessKey(ownerPk);
+            ok(`${owner}'s key added to ${vault} — upgrades are now a wallet signature`);
+          },
+          removeSetupKey: async () => {
+            await vaultAcct.deleteKey(setupPk);
+            ok(`setup key removed from ${vault}`);
+          },
+          // Runs only after both chain steps resolve. If the removal failed,
+          // this file is the only thing that can finish the job on a re-run.
+          removeCredential: async () => {
+            if (existsSync(credPath(vault))) {
+              rmSync(credPath(vault));
+              ok(`deleted ${credPath(vault)} — no longer needed, and the weakest link`);
+            }
+          },
+        });
+      }
+    }
+
+    // ---- 10. Config the user would otherwise hand-write.
+    step(10, "Writing configuration");
     mkdirSync(".float", { recursive: true });
 
     const envPath = join(".float", "adapter.env");
