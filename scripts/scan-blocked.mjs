@@ -12,7 +12,7 @@
  * and the one that breaks quietly is always the one that matters, because its
  * output is an empty list that reads exactly like "no refusals happened".
  *
- * Requires the adapter to be built:  npm run build -w @near-vault/float-adapter
+ * Requires the adapter to be built:  npm run build -w @floatonnear/float-adapter
  *
  * Usage:
  *   node scripts/scan-blocked.mjs [--max-blocks 400] [--from <height>]
@@ -26,7 +26,7 @@ import { resolve } from "node:path";
 const DIST = resolve("packages/float-adapter/dist/blocked-scan.js");
 if (!existsSync(DIST)) {
   console.error(`Built scanner not found at ${DIST}`);
-  console.error("Build it first:  npm run build -w @near-vault/float-adapter");
+  console.error("Build it first:  npm run build -w @floatonnear/float-adapter");
   process.exit(1);
 }
 const { scanRange, mergeScan, emptyStore, createRpc } = await import(pathToFileURL(DIST).href);

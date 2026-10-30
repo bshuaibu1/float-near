@@ -27,7 +27,7 @@ const fmtUsdc = (n) => `${(Number(n) / 1e6).toFixed(6)} USDC`;
 
 const SERVER = "packages/mcp/dist/server.js";
 if (!existsSync(SERVER)) {
-  console.error(`${SERVER} not found — run: npm run build --workspace @near-vault/mcp`);
+  console.error(`${SERVER} not found — run: npm run build --workspace @floatonnear/mcp`);
   process.exit(2);
 }
 

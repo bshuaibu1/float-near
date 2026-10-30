@@ -94,7 +94,7 @@ test("every detected client is returned, not just the first", () => {
 
 const entry = {
   command: "npx",
-  args: ["-y", "@near-vault/mcp"],
+  args: ["-y", "@floatonnear/mcp"],
   env: { NEAR_VAULT_CONTRACT: "v.me.near" },
 };
 

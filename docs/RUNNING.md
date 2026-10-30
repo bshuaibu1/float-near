@@ -84,9 +84,9 @@ export NEAR_VAULT_TOKEN_DECIMALS=6
 export NEAR_VAULT_AGENT_ID=a0.your-vault.testnet
 export NEAR_VAULT_AGENT_KEY=ed25519:...
 
-npm -w @near-vault/mcp run build
-npm -w @near-vault/float-adapter run build
-npm -w @near-vault/float-adapter start
+npm -w @floatonnear/mcp run build
+npm -w @floatonnear/float-adapter run build
+npm -w @floatonnear/float-adapter start
 
 curl -s http://127.0.0.1:8787/healthz
 

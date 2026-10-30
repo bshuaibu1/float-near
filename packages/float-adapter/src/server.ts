@@ -21,17 +21,17 @@ import { createServer } from "node:http";
 import { resolveHost, corsHeaders, authorize, classifyError, fromCaller } from "./gate.js";
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { toBaseUnits, fromBaseUnits } from "@near-vault/mcp/amounts";
-import { newRequestId, viewAccessKeys, viewFunction } from "@near-vault/mcp";
-import { buildRoute, sendRequestPayment, type RouteArg } from "@near-vault/mcp/sign";
-import { getQuote, signBinding, toBase64 } from "@near-vault/mcp/quote";
+import { toBaseUnits, fromBaseUnits } from "@floatonnear/mcp/amounts";
+import { newRequestId, viewAccessKeys, viewFunction } from "@floatonnear/mcp";
+import { buildRoute, sendRequestPayment, type RouteArg } from "@floatonnear/mcp/sign";
+import { getQuote, signBinding, toBase64 } from "@floatonnear/mcp/quote";
 import {
   planFreezeNode,
   planSetCooldown,
   planSetNodeCaps,
   planSetRecipients,
   toCliCommand,
-} from "@near-vault/mcp/payloads";
+} from "@floatonnear/mcp/payloads";
 
 import {
   getAgentKeys,
@@ -47,7 +47,7 @@ import { BlockedFollower, createRpc, emptyStore, type BlockedStore } from "./blo
 
 const env = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
-  // See DEFAULT_RPC_URL in @near-vault/mcp: the old public testnet endpoint
+  // See DEFAULT_RPC_URL in @floatonnear/mcp: the old public testnet endpoint
   // is deprecated and now returns -429 for every call.
   rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com",
   token: process.env.NEAR_VAULT_TOKEN ?? "",

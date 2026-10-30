@@ -85,7 +85,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setOwner(null);
       setError(
         `Could not reach the vault via ${API_BASE_URL}: ${(e as Error).message}. ` +
-          `Start the adapter (npm -w @near-vault/float-adapter start) and check ` +
+          `Start the adapter (npm -w @floatonnear/float-adapter start) and check ` +
           `NEAR_VAULT_CONTRACT.`,
       );
     } finally {

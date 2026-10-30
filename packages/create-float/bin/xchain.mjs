@@ -5,7 +5,7 @@
  * `main()` unconditionally at the bottom, so importing it from a test would
  * launch the wizard. The alternative — guarding main with an
  * `import.meta.url === process.argv[1]` check — is riskier than it looks:
- * `npx @near-vault/create-float` runs through a bin shim where argv[1] can be
+ * `npx @floatonnear/create-float` runs through a bin shim where argv[1] can be
  * a symlink that does not match import.meta.url, and the failure mode is the
  * wizard silently doing NOTHING for installed users while still working from a
  * clone. A separate module costs one import and cannot break the entry point.

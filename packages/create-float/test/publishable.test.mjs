@@ -30,12 +30,13 @@ test("none of the shipped packages is private — a private package 404s for eve
 });
 
 test("a scoped package has a bin matching its SCOPE-STRIPPED name, which is what npx runs", () => {
-  // The rule that bit us: `npx @near-vault/mcp` does not look for a bin called
-  // "@near-vault/mcp" or "near-vault-mcp". It strips the scope and looks for
-  // "mcp". The package shipped only "near-vault-mcp", so the documented command
-  // could never have resolved an executable.
+  // The rule that bit us: `npx @floatonnear/mcp` does not look for a bin named
+  // after the full package. It strips the scope and looks for "mcp".
   //
-  // float-adapter had no bin field at all.
+  // On 2026-10-30 the package declared only "near-vault-mcp", so the command in
+  // the wizard's own banner could never have resolved an executable — and
+  // float-adapter had no bin field at all. Both were invisible to `npm pack`,
+  // which links whatever bins exist without caring what npx will ask for.
   for (const dir of SHIPPED) {
     const m = manifest(dir);
     const stripped = m.name.replace(/^@[^/]+\//, "");

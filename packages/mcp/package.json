@@ -1,12 +1,12 @@
 {
-  "name": "@near-vault/mcp",
+  "name": "@floatonnear/mcp",
   "version": "0.1.0",
   "type": "module",
   "description": "MCP server for the hierarchical budget vault. The agent key signs request_payment only; owner methods emit unsigned payloads for wallet approval.",
   "license": "MIT",
   "bin": {
-    "near-vault-mcp": "dist/server.js",
-    "mcp": "dist/server.js"
+    "mcp": "dist/server.js",
+    "float-mcp": "dist/server.js"
   },
   "files": [
     "dist/"

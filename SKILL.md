@@ -128,7 +128,7 @@ tree, registers the vault on the token, optionally funds it, and writes the MCP
 config for every client it finds.
 
 ```bash
-npx @near-vault/create-float --network testnet --owner you.testnet
+npx @floatonnear/create-float --network testnet --owner you.testnet
 ```
 
 Useful flags: `--dry-run` (plan and cost, sends nothing), `--yes`

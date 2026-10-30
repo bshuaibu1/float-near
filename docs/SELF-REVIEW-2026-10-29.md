@@ -231,7 +231,7 @@ intended one. The allowlist and caps are what keep it out of Critical.
 
 **Devil's advocate, answered:** "nobody runs the adapter" is false — the
 wizard's own closing text instructs
-`set -a && . .float/adapter.env && set +a && npx @near-vault/float-adapter`
+`set -a && . .float/adapter.env && set +a && npx @floatonnear/float-adapter`
 (create-float.mjs:885), which sources exactly the file holding the key.
 
 ## F2 — CONFIRMED by refutation test, no executable PoC

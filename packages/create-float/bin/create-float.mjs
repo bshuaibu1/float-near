@@ -457,7 +457,7 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       `      ${C.dim("burned")}               ${C.dim("~0.02 NEAR of gas — the only part that does not come back")}`,
     );
     console.log(
-      `\n    ${C.dim(`Recover it with:  npx -p @near-vault/create-float float-exit --owner ${owner}`)}`,
+      `\n    ${C.dim(`Recover it with:  npx -p @floatonnear/create-float float-exit --owner ${owner}`)}`,
     );
     console.log(
       `    ${C.dim("That withdraws tokens, deletes the accounts, and refunds you.")}`,
@@ -822,7 +822,7 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     // is the per-project `.mcp.json`, where writing the file IS the install.
     const entry = {
       command: "npx",
-      args: ["-y", "@near-vault/mcp"],
+      args: ["-y", "@floatonnear/mcp"],
       env: {
         NEAR_VAULT_CONTRACT: vault,
         NEAR_VAULT_RPC_URL: RPC,
@@ -890,7 +890,7 @@ ${handoffLines(
 ${C.b("Then:")}
 
   ${C.dim("# the API the dashboard reads")}
-  set -a && . .float/adapter.env && set +a && npx @near-vault/float-adapter
+  set -a && . .float/adapter.env && set +a && npx @floatonnear/float-adapter
 
   ${C.dim("# the dashboard")}
   cd apps/dashboard && npm run dev

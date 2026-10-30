@@ -1,5 +1,5 @@
 {
-  "name": "@near-vault/create-float",
+  "name": "@floatonnear/create-float",
   "version": "0.1.0",
   "description": "One command to stand up a Float vault on NEAR testnet: account, contract, budget tree, agent keys, and client config.",
   "type": "module",

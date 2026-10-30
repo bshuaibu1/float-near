@@ -10,7 +10,7 @@
  * fact.
  */
 
-import { fromBaseUnits } from "@near-vault/mcp/amounts";
+import { fromBaseUnits } from "@floatonnear/mcp/amounts";
 
 export interface VaultTokenLimit {
   token: string;
