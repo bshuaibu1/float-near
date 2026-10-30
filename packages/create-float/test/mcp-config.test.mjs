@@ -159,3 +159,98 @@ test("the caller's path joiner is used, so separators match the platform", () =>
   );
   assert.doesNotMatch(cd.path, /\//, "no forward slashes when the joiner uses backslashes");
 });
+
+// ---------------------------------------------------------------------------
+// Two failures found by inspecting a real machine on 2026-10-30, not by
+// reasoning about the code.
+//
+// 1. A UTF-8 BOM made the wizard skip a perfectly valid config. Cursor's
+//    ~/.cursor/mcp.json began with U+FEFF, JSON.parse threw, and the wizard
+//    warned "is not valid JSON -- leaving it untouched" and moved on. The file
+//    IS valid JSON. On Windows this is routine: PowerShell's Out-File and
+//    Set-Content write a BOM by default.
+//
+// 2. `float` was already taken -- by `npx -y @usefloat/mcp@latest`, the
+//    Solana Float product, carrying FLOAT_OWNER_CONTROL_KEY in its env.
+//    mergeMcpEntry wrote cfg[key].float unconditionally, so the wizard would
+//    have replaced a working server holding someone's owner key, while
+//    printing "(only the 'float' entry was changed)".
+//
+// On that machine the BOM accidentally prevented the overwrite. Remove the BOM
+// and the clobber happens -- so these are one bug wearing two hats, and both
+// get fixed.
+
+import { parseConfig, entryKeyFor, isOurs } from "../bin/mcp-config.mjs";
+
+const OURS = { command: "npx", args: ["-y", "@floatonnear/mcp"], env: { NEAR_VAULT_CONTRACT: "v.near" } };
+const FOREIGN = {
+  command: "npx",
+  args: ["-y", "@usefloat/mcp@latest"],
+  env: { FLOAT_OWNER_CONTROL_KEY: "secret", FLOAT_OWNER_WALLET: "w" },
+};
+
+test("parseConfig strips a UTF-8 BOM, which is what PowerShell writes", () => {
+  const withBom = "﻿" + JSON.stringify({ mcpServers: { float: FOREIGN } });
+  assert.deepEqual(parseConfig(withBom).mcpServers.float.command, "npx");
+});
+
+test("parseConfig still throws on genuinely malformed JSON", () => {
+  // The warning path must stay reachable; a BOM fix that swallows real
+  // corruption would overwrite a file it could not read.
+  assert.throws(() => parseConfig("{ not json"));
+  assert.throws(() => parseConfig("﻿{ not json"));
+});
+
+test("isOurs recognises our entry under the CURRENT scope", () => {
+  assert.equal(isOurs(OURS), true);
+});
+
+test("isOurs recognises our entry under the OLD scope, so upgraders are not duplicated", () => {
+  // Anyone who ran the wizard before the @floatonnear rename has this. Treating
+  // it as foreign would leave them with two servers, one of them a 404.
+  assert.equal(isOurs({ command: "npx", args: ["-y", "@near-vault/mcp"] }), true);
+});
+
+test("isOurs rejects a different product that merely shares the key", () => {
+  assert.equal(isOurs(FOREIGN), false);
+  assert.equal(isOurs(undefined), false);
+  assert.equal(isOurs({ command: "node", args: ["server.js"] }), false);
+});
+
+test("an unoccupied float key is used as-is", () => {
+  assert.equal(entryKeyFor({}), "float");
+  assert.equal(entryKeyFor({ other: { command: "x" } }), "float");
+});
+
+test("our OWN entry is updated in place — a repeat run must not accumulate keys", () => {
+  assert.equal(entryKeyFor({ float: OURS }), "float");
+  assert.equal(entryKeyFor({ float: { command: "npx", args: ["-y", "@near-vault/mcp"] } }), "float");
+});
+
+test("a FOREIGN float entry is stepped around, not overwritten", () => {
+  assert.equal(entryKeyFor({ float: FOREIGN }), "float-near");
+});
+
+test("and if float-near is also taken by something else, it keeps going", () => {
+  assert.equal(entryKeyFor({ float: FOREIGN, "float-near": FOREIGN }), "float-near-2");
+  assert.equal(
+    entryKeyFor({ float: FOREIGN, "float-near": FOREIGN, "float-near-2": FOREIGN }),
+    "float-near-3",
+  );
+});
+
+test("mergeMcpEntry leaves a foreign entry and its secrets completely untouched", () => {
+  // The whole point. FLOAT_OWNER_CONTROL_KEY must survive.
+  const before = { mcpServers: { float: FOREIGN } };
+  const after = mergeMcpEntry(before, OURS);
+  assert.deepEqual(after.mcpServers.float, FOREIGN, "the other product's entry was modified");
+  assert.equal(after.mcpServers.float.env.FLOAT_OWNER_CONTROL_KEY, "secret");
+  assert.equal(after.mcpServers["float-near"].args.join(" "), "-y @floatonnear/mcp");
+});
+
+test("mergeMcpEntry still updates OUR entry in place when the key is ours", () => {
+  const before = { mcpServers: { float: OURS } };
+  const after = mergeMcpEntry(before, { ...OURS, env: { NEAR_VAULT_CONTRACT: "new.near" } });
+  assert.equal(Object.keys(after.mcpServers).length, 1, "a repeat run added a second entry");
+  assert.equal(after.mcpServers.float.env.NEAR_VAULT_CONTRACT, "new.near");
+});

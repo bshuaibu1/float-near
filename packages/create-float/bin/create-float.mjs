@@ -18,11 +18,14 @@
  *      finishes the job instead of creating a second half-built vault.
  *
  *   3. NEVER CLOBBER. The MCP client config belongs to the user and may hold
- *      a dozen other servers. It is read, merged, and written back — only the
- *      `float` key is touched.
+ *      a dozen other servers. It is read, merged, and written back, with a
+ *      `.bak` taken first. And `float` is not a key we assume is ours: if it
+ *      belongs to another product — measured 2026-10-30, it belonged to
+ *      `@usefloat/mcp` holding an owner key — this vault is added alongside it
+ *      as `float-near` instead, and the collision is reported.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +39,7 @@ import { xchainCeiling } from "./xchain.mjs";
 import { defaultTree, flatten, planTreeLines, toBaseUnits } from "./tree.mjs";
 import { parseArgs, makeReaders, agentCount, wantsHelp, usage } from "./args.mjs";
 import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
-import { mcpTargets, mergeMcpEntry } from "./mcp-config.mjs";
+import { mcpTargets, writeMcpConfigs } from "./mcp-config.mjs";
 import { handoffLinks, handoffLines } from "./handoff.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -869,24 +872,26 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       exists: existsSync,
       join,   // node:path.join — without it Windows gets mixed separators
     });
-    for (const t of targets) {
-      let cfg = {};
-      if (existsSync(t.path)) {
-        try {
-          cfg = JSON.parse(readFileSync(t.path, "utf8"));
-          copyFileSync(t.path, `${t.path}.bak`);
-        } catch {
-          warn(`${t.path} is not valid JSON — leaving it untouched`);
-          continue;
-        }
-      } else if (!t.perProject) {
-        // Only a per-project file may be created from nothing. Anything else
-        // would be inventing config for software that is not here.
+    for (const r of writeMcpConfigs({ targets, entry })) {
+      // The loop itself lives in mcp-config.mjs so it can be tested against
+      // real files. Here we only report, which is the part that cannot be
+      // asserted from a unit test anyway.
+      if (r.skipped === "unparseable") {
+        warn(`${r.target.path} could not be parsed as JSON — leaving it untouched`);
         continue;
       }
-      mkdirSync(dirname(t.path), { recursive: true });
-      writeFileSync(t.path, JSON.stringify(mergeMcpEntry(cfg, entry), null, 2) + "\n");
-      ok(`${t.name}: ${t.path} ${C.dim("(only the 'float' entry was changed)")}`);
+      if (r.skipped === "absent") continue;
+
+      ok(`${r.target.name}: ${r.target.path} ${C.dim(`(only the '${r.entryKey}' entry was changed)`)}`);
+      if (r.collided) {
+        // `float` belonged to someone else — on the machine where this was
+        // found, to @usefloat/mcp holding an owner key. The old message read
+        // "(only the 'float' entry was changed)" while changing exactly that.
+        warn(
+          `'float' in ${r.target.path} is another server — left untouched. ` +
+            `This vault was added as '${r.entryKey}'; refer to it by that name.`,
+        );
+      }
     }
     if (!targets.some((t) => !t.perProject)) {
       warn(
