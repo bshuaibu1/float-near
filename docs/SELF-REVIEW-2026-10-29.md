@@ -290,7 +290,8 @@ amount; the NEAR cost does not scale at all.
 
 The first version asserted `>= 0.00125 * 0.9` per payment, reasoning that
 0.00125 NEAR is attached per registration so roughly that much must leave. **It
-failed.** The measured net is ~0.0011 NEAR — about 12% less than the attached
+failed.** The measured net is ~0.0011 NEAR in the SANDBOX — see addendum 5,
+which retracts this figure for mainnet — about 12% less than the attached
 deposit, some of which evidently returns through refund accounting. The test
 now asserts a measured floor and says so; the exact refund mechanism is not
 claimed, because it was not measured.
@@ -427,7 +428,7 @@ runtime already enforces for storage stake — the account cannot brick itself,
 it just stops paying. Rate-limiting plus visibility is proportionate to a
 recoverable availability bug; a stricter default would break legitimate volume.
 
-Default 0.05 NEAR/day is ~45 registrations, an order of magnitude above what
+Default 0.05 NEAR/day is 40 registrations (corrected in addendum 5), well above what
 the default tree can fund (2.04 USDC at a 0.51 per-tx cap is at most 4
 payments). `set_max_daily_near` raises it.
 
@@ -455,3 +456,56 @@ payments). `set_max_daily_near` raises it.
 **Not deployed.** Both fixes are in the repo; mainnet still runs the build from
 earlier today. The contract change adds no struct field, so it is a
 `NO_MIGRATE=1` redeploy.
+
+
+---
+
+# Addendum 5 — correcting my own arithmetic, twice
+
+Two numbers in this document were wrong, in opposite directions, and both were
+quoted confidently.
+
+## 1. The allowance was off by one
+
+I said a 0.01 ceiling allows **9** payments a day. It allows **8**, exactly.
+
+`charge_near` books `DEPOSIT_ADDRESS_STORAGE` — the **attached** 0.00125 — not
+whatever net cost the token settles on, because the refund is not knowable at
+dispatch. So the allowance is `0.01 / 0.00125 = 8`, and that is a property of
+the contract rather than of any token's storage accounting.
+
+The same error propagated: 0.05 was described as ~45/day and 11x headroom; it
+is **40/day and 10x**. And 0.01 is **2x** the default tree's maximum (4 payments
+booking 0.005 NEAR), not 2.3x.
+
+## 2. The 0.0011 per-registration figure does not apply to mainnet
+
+Addendum 2 reported a measured net of ~0.0011 NEAR, 12% below the attached
+deposit, and used it to revise the drain estimate from 106 payments to ~120.
+
+**That measurement was taken in the sandbox against `mock_ft`**, whose
+`storage_deposit` accepts and ignores any attached deposit. It is not NEP-145
+behaviour and it does not transfer to mainnet, where `storage_balance_bounds`
+reports `min == max == 0.00125` and `registration_only: true` therefore refunds
+nothing.
+
+This is the project's own rule — a synthetic fixture cannot validate a claim
+about real data — applied to a number I generated and then reused three times.
+
+**The true mainnet net is still unmeasured.** The obvious check is
+contaminated: the only "before" balance I have (2.9913 NEAR) predates the
+redeploy, so the 0.00315 difference includes deploy gas and cannot be
+attributed. Rather than substitute a third guess, the documentation now quotes
+the **booked** amount, which is exact and needs no measurement.
+
+## What is unaffected
+
+The ceiling itself. It enforces 8 registrations a day regardless of what the
+token does with the deposit, because it counts what it attaches. The fix works;
+only my description of its generosity was wrong.
+
+## Observed since: the daily reset works on mainnet
+
+Day rolled 20755 → 20756 and both counters reset — `get_near_budget` reports
+`spent: 0`, and node 0's token budget likewise. The `(day, amount)` encoding
+resets without anyone sweeping it, as designed, now seen rather than assumed.

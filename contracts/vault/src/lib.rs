@@ -47,15 +47,28 @@ pub const DEPOSIT_ADDRESS_STORAGE: NearToken =
 /// rail. Measured, with an executable PoC in
 /// `intents_registration.rs::near_cost_is_per_transaction_not_per_value`.
 ///
-/// 0.01 NEAR is ~9 registrations a day at the measured ~0.0011 each.
+/// 0.01 NEAR is EXACTLY 8 registrations a day.
 ///
-/// Sized against what the DEFAULT TREE can actually spend rather than against
-/// a round number: root allows 2.04 USDC/day at a 0.51 per-tx cap, so at most
-/// 4 cross-chain payments, costing 0.0044 NEAR. 0.01 is 2.3x that — enough
-/// that the shipped configuration never touches the ceiling, tight enough that
-/// a drain takes a fortnight rather than an afternoon.
+/// The ceiling books `DEPOSIT_ADDRESS_STORAGE` — the ATTACHED amount,
+/// 0.00125 — not whatever net cost the token settles on, because the refund
+/// is not knowable at dispatch. So the allowance is 0.01 / 0.00125 = 8,
+/// exactly, and that figure is a property of this code rather than of any
+/// particular token's storage accounting.
 ///
-/// This was 0.05 (11x headroom) for one commit. Lowered deliberately: the
+/// An earlier version of this comment said ~9 at ~0.0011 each. That 0.0011
+/// was measured in the SANDBOX against mock_ft, which accepts and ignores any
+/// attached deposit — not NEP-145 behaviour, and not a number that transfers
+/// to mainnet. The true mainnet net is unmeasured: the obvious check is
+/// contaminated because a redeploy sits between the two balance readings.
+/// Quoting the booked amount sidesteps the question entirely.
+///
+/// Sized against what the DEFAULT TREE can actually spend rather than a round
+/// number: root allows 2.04 USDC/day at a 0.51 per-tx cap, so at most 4
+/// cross-chain payments, booking 0.005 NEAR. 0.01 is 2x that — enough that
+/// the shipped configuration never touches the ceiling, tight enough that a
+/// drain takes a fortnight rather than an afternoon.
+///
+/// This was 0.05 (40/day, 10x headroom) for one commit. Lowered deliberately: the
 /// ceiling RATE-LIMITS rather than prevents, so the number decides how long an
 /// operator has to notice. At 0.05 a vault holding 0.13 spendable NEAR drains
 /// in under three days; at 0.01 it takes about thirteen. Higher volume raises
