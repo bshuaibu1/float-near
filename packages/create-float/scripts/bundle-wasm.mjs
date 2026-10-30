@@ -9,14 +9,20 @@
  *
  * Run by `prepack`, so `npm publish` cannot ship a package without a contract.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { freshnessProblems } from "./freshness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = resolve(HERE, "..");
-const SRC = resolve(PKG, "..", "..", "target", "near", "vault", "vault.wasm");
+// Overridable so a caller can vet an artifact built somewhere else — a CI
+// job with its own target dir, or a release candidate downloaded to be checked
+// before it is trusted. The default is the local cargo-near output.
+const SRC = process.env.BUNDLE_WASM_SRC
+  ? resolve(process.env.BUNDLE_WASM_SRC)
+  : resolve(PKG, "..", "..", "target", "near", "vault", "vault.wasm");
 const DEST_DIR = join(PKG, "res");
 const DEST = join(DEST_DIR, "vault.wasm");
 
@@ -65,11 +71,51 @@ if (!srcBytes.includes(Buffer.from("panic_utf8"))) {
       "Use `cargo near build`, never plain `cargo build --target wasm32-...`.",
   );
 }
+// ---- and interrogate it against the SOURCE, not only against itself.
+//
+// Every check above asks "is this artifact well-formed". None asks "is this
+// artifact CURRENT", which is how three generations of wasm came to be on disk
+// at once on 2026-10-30 with nothing complaining:
+//
+//   res/vault.wasm   (what publishing ships)  : no NEAR_BUDGET, no PARENT_COOLDOWN
+//   target/.../wasm  (what this script copies) : NEAR_BUDGET,    no PARENT_COOLDOWN
+//   contracts/vault/src/                       : both
+//
+// Publishing then hands real users a vault with no NEAR spending ceiling and a
+// cooldown that ignores ancestors, and says `Done.` A stale artifact is worse
+// than a missing one: a missing one stops you.
+const SRC_DIR = resolve(PKG, "..", "..", "contracts", "vault", "src");
+const sourceFiles = readdirSync(SRC_DIR)
+  .filter((f) => f.endsWith(".rs"))
+  .map((f) => ({ path: `contracts/vault/src/${f}`, mtimeMs: statSync(join(SRC_DIR, f)).mtimeMs }));
+
+for (const p of freshnessProblems({
+  typesSrc: readFileSync(join(SRC_DIR, "types.rs"), "utf8"),
+  wasmBytes: srcBytes,
+  wasmMtimeMs: statSync(SRC).mtimeMs,
+  sources: sourceFiles,
+})) {
+  fails.push(
+    `${p}\n    The contract is STALE. Rebuild it before publishing:\n` +
+      "      cd contracts/vault && cargo near build non-reproducible-wasm --no-abi",
+  );
+}
+
 if (fails.length) {
   console.error(
     [`bundle-wasm: REFUSING to ship ${SRC}`, "", ...fails.map((f) => `  - ${f}`)].join("\n"),
   );
   process.exit(1);
+}
+
+// `--check` validates without copying, so CI (and this package's own test
+// suite) can assert the guard is wired without writing a tracked binary as a
+// side effect. The first version of the reachability test did exactly that: it
+// ran this script, the copy succeeded, and res/vault.wasm was silently replaced
+// by a test run.
+if (process.argv.includes("--check")) {
+  console.log(`bundle-wasm: ${SRC} is current with contracts/vault/src`);
+  process.exit(0);
 }
 
 mkdirSync(DEST_DIR, { recursive: true });
