@@ -100,17 +100,50 @@ call | allowance after | spent this call | tokens_burnt | spent/burnt
 ```
 
 0.150000 − 0.030919 = 0.119081 exactly, and 0.030919 is the 30 TGas reservation.
-So the reservation is deducted **once, on first use**, and is not returned to the
-allowance; subsequent calls draw their real cost. Sizing a key is therefore
-`reservation + calls × per-call-cost` — about 0.113 NEAR for a hundred 100 TGas
-calls, not 0.0124.
 
-**This corrects an earlier reading in this document's own first draft**, which
-called the 0.030919 a finality artefact. There were two separate phenomena and I
-had conflated them: this one-time deduction is real and reproducible at `final`
-finality, while a *second* effect — an allowance appearing to go **up** by
-0.030671 mid-run — was genuinely an optimistic-finality artefact. Only the
-second one went away when the reads were fixed.
+### CORRECTED by live mainnet, and this version is the one to trust
+
+The paragraph that stood here said the reservation is "deducted once, on first
+use, and is not returned to the allowance". **That is wrong**, and the live
+mainnet agent disproves it:
+
+```
+r1.float.test015.near
+  fn-call key   ed25519:AsNRXo3b…   receiver float.test015.near
+                methods ["request_payment"]
+  allowance     0.496779   (installed at 0.500000)
+  nonce         222073975000003
+```
+
+A NEAR nonce is `block_height × 1e6 + per-key counter`, so the low digits say
+this key has signed **3 transactions** — three real 100 TGas payments on
+mainnet. Had each permanently deducted the 0.1009 reservation, the allowance
+would read ~0.197. It reads **0.496779**.
+
+So **the reservation IS refunded to the allowance**; every reading in the three
+testnet runs above simply fell inside the un-refunded window, which is longer
+than a 30-second scripted run and shorter than a few days. The spike measured a
+transient three times and promoted it to a mechanism twice — once blaming
+finality, once blaming first-use. Neither was right, and it took data from a
+*different timescale* to see it.
+
+**The number that matters, measured on real payments:**
+
+| | |
+| --- | --- |
+| allowance consumed, 3 mainnet payments | 0.003221 NEAR |
+| **per payment** | **~0.00107 NEAR** |
+| allowance floor to make a 100 TGas call at all | ~0.1009 NEAR |
+| payments a 0.5 allowance affords before hitting the floor | **~370** |
+
+So the floor is a *floor*, not a burn rate. Size a key at
+`floor + payments × 0.00107`; the agent stops when the allowance falls below the
+floor, not when it reaches zero.
+
+**The lesson worth keeping:** a quantity that is reserved and refunded cannot be
+measured by reading it repeatedly over seconds. Three runs agreed with each
+other and all three were wrong together, because they shared the same window.
+What broke the tie was an account that had been idle for days.
 
 **But the protocol RESERVES far more than it spends, and the reservation is
 charged against the key.** Measured by bisection:
@@ -189,13 +222,17 @@ model the allowance floor follows. 0.683254 free / 0.100919 = 6.77, and 6 fit.
 
 ## Two notes on method, because both nearly produced a wrong answer
 
-**Optimistic finality manufactured a number — but only one of the two I blamed
-on it.** Call 5 of one run showed the allowance going **up** by 0.030671, which
-was a genuine artefact and disappeared under `finality: "final"`. The
-0.030919 on the *first* call of a key, which I attributed to the same cause, is
-real and reproducible on a funded account at final finality — it is the
-one-time reservation deduction described above. Two phenomena, one explanation,
-and the explanation only covered one of them.
+**I explained the same transient wrongly twice, and only a different timescale
+caught it.** The 0.030919 drop on a key's first call was blamed first on
+optimistic finality, then — when it survived `finality: "final"` — on a one-time
+first-use deduction. Both were wrong: it is the reservation, and it is refunded.
+Three testnet runs agreed with each other and were wrong together, because all
+three read the allowance within seconds of the call and so shared the same
+un-refunded window. The live mainnet agent, idle for days, shows 0.496779 of an
+original 0.5 after three 100 TGas payments — 0.00107 each, no reservation held.
+**A quantity that is reserved and refunded cannot be measured by reading it
+repeatedly over seconds**, and agreement between runs that share a bias is not
+corroboration.
 
 **A mean over six samples flipped a conclusion five samples supported.** One
 transient of 0.030919 against four identical rows of 0.000124 dragged the mean
