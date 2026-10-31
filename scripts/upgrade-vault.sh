@@ -163,6 +163,26 @@ done
 [ -n "$WASM" ] || { echo "FATAL: built vault.wasm not found" >&2; exit 1; }
 echo "    wasm: $WASM ($(wc -c < "$WASM") bytes)"
 
+# ---- 2b. Will it still FIT?
+#
+# NEAR locks storage_usage * 1e19 yocto. A deploy changes usage by the
+# code-size delta, so a bigger contract raises the locked amount — and if that
+# exceeds the balance the deploy fails with LackBalanceForState.
+#
+# Measured 2026-10-31: the approval gate grew the vault 284,572 -> 299,016
+# bytes, taking float.test015.near from locked 2.90165 to 3.04609 against a
+# 2.98807 balance. SHORT by 0.05802. There was no check here, so this script
+# would have sent the deploy and failed in flight. Atomic, so nothing breaks,
+# but on a live mainnet vault that reads as a broken upgrade instead of "top
+# the account up first".
+#
+# The shortfall is NOT the code delta: the account may already carry headroom.
+echo "==> checking the storage margin for $VAULT"
+if ! node scripts/check-upgrade-margin.mjs "$VAULT" "$WASM" "$NEAR_VAULT_RPC_URL"; then
+  echo "FATAL: refusing to deploy — see the top-up above." >&2
+  exit 1
+fi
+
 # ---- 3. Deploy over the top, migrating in the SAME transaction.
 #
 # Atomicity is the whole point. If `migrate` panics, NEAR reverts the deploy

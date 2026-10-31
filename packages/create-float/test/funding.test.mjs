@@ -88,3 +88,94 @@ test("REAL DATA: the wizard does not still hardcode a flat VAULT_FUNDING", () =>
   );
   assert.match(code, /vaultFunding\(/, "the wizard does not call vaultFunding");
 });
+
+// ---- will an upgrade still fit the account's balance?
+//
+// Measured 2026-10-31 against the live mainnet vault. The approval gate grew
+// the contract 284,572 -> 299,016 bytes, and float.test015.near had:
+//
+//   balance        2.98807 NEAR
+//   storage_usage  290,165 bytes -> locked 2.90165
+//   available        0.08642 NEAR
+//
+// The delta is +14,444 bytes = +0.14444 NEAR of stake, so locked becomes
+// 3.04609 against a 2.98807 balance: SHORT BY 0.05802. upgrade-vault.sh had no
+// balance check, so it would have sent the deploy and failed mid-flight with
+// LackBalanceForState — atomic, so nothing breaks, but it burns gas and reads
+// as a broken upgrade on mainnet rather than "top the account up first".
+//
+// The shortfall is NOT the delta. There was already 0.086 of headroom, so the
+// top-up needed is 0.058 plus whatever margin you want — a distinction easy to
+// get wrong by quoting the delta, which is what I did before measuring.
+
+import { storageMargin } from "../bin/funding.mjs";
+
+const MAINNET = {
+  balance: 2_988_070_000_000_000_000_000_000n,
+  storageUsage: 290_165n,
+  oldCodeBytes: 284_572n,
+  newCodeBytes: 299_016n,
+};
+
+test("REAL DATA: the live mainnet upgrade is short, and by how much", () => {
+  const m = storageMargin({ ...MAINNET, headroom: 0n });
+  assert.equal(m.fits, false);
+  // -0.05802 NEAR, to the yocto.
+  assert.equal(m.margin, -58_020_000_000_000_000_000_000n);
+  assert.equal(m.deltaBytes, 14_444n);
+  assert.equal(m.lockedAfter, 3_046_090_000_000_000_000_000_000n);
+});
+
+test("the top-up quoted is the SHORTFALL, not the code delta", () => {
+  // The distinction that matters: 0.058 to fit, not the 0.144 the code grew by.
+  const m = storageMargin({ ...MAINNET, headroom: 0n });
+  assert.equal(m.topUp, 58_020_000_000_000_000_000_000n);
+  assert.notEqual(m.topUp, m.deltaBytes * 10n ** 19n);
+});
+
+test("a requested headroom is added to the top-up", () => {
+  const m = storageMargin({ ...MAINNET, headroom: 35n * 10n ** 22n }); // 0.35
+  assert.equal(m.topUp, 58_020_000_000_000_000_000_000n + 35n * 10n ** 22n);
+  assert.equal(m.fits, false);
+});
+
+test("an upgrade that FITS reports a positive margin and no top-up", () => {
+  const m = storageMargin({
+    balance: 5n * 10n ** 24n,
+    storageUsage: 290_165n,
+    oldCodeBytes: 284_572n,
+    newCodeBytes: 299_016n,
+    headroom: 0n,
+  });
+  assert.equal(m.fits, true);
+  assert.equal(m.topUp, 0n);
+  assert.ok(m.margin > 0n);
+});
+
+test("a SHRINKING contract frees stake rather than demanding it", () => {
+  // Negative delta. Without this, a size reduction could be reported as a
+  // shortfall by an implementation that only ever adds.
+  const m = storageMargin({
+    balance: 2_988_070_000_000_000_000_000_000n,
+    storageUsage: 290_165n,
+    oldCodeBytes: 299_016n,
+    newCodeBytes: 284_572n,
+    headroom: 0n,
+  });
+  assert.equal(m.deltaBytes, -14_444n);
+  assert.equal(m.fits, true);
+  assert.ok(m.margin > 0n);
+});
+
+test("an unchanged contract neither frees nor demands anything", () => {
+  const m = storageMargin({
+    balance: 2_988_070_000_000_000_000_000_000n,
+    storageUsage: 290_165n,
+    oldCodeBytes: 284_572n,
+    newCodeBytes: 284_572n,
+    headroom: 0n,
+  });
+  assert.equal(m.deltaBytes, 0n);
+  assert.equal(m.lockedAfter, 290_165n * 10n ** 19n);
+  assert.equal(m.fits, true);
+});

@@ -41,3 +41,40 @@ export const STATE_HEADROOM = 35n * 10n ** 22n; // 0.35 NEAR
 export function vaultFunding(wasmBytes) {
   return codeStakeYocto(wasmBytes) + STATE_HEADROOM;
 }
+
+/**
+ * Will a contract upgrade still fit the account's balance?
+ *
+ * NEAR locks `storage_usage * 1e19` yocto against an account. A deploy changes
+ * usage by the code-size delta, so a bigger contract silently raises the locked
+ * amount — and if that exceeds the balance the deploy fails with
+ * LackBalanceForState.
+ *
+ * Measured 2026-10-31 on the live mainnet vault: the approval gate grew the
+ * contract 284,572 -> 299,016 bytes, locked went 2.90165 -> 3.04609 against a
+ * 2.98807 balance, SHORT by 0.05802. upgrade-vault.sh had no balance check, so
+ * it would have sent the deploy and failed mid-flight. Atomic, so nothing
+ * breaks, but on mainnet that reads as a broken upgrade rather than "top the
+ * account up first".
+ *
+ * THE SHORTFALL IS NOT THE DELTA. There was already 0.086 of headroom, so the
+ * top-up needed was 0.058, not the 0.144 the code grew by. Quoting the delta
+ * is the easy mistake and it is the one I made before measuring.
+ */
+export function storageMargin({ balance, storageUsage, oldCodeBytes, newCodeBytes, headroom = 0n }) {
+  const deltaBytes = BigInt(newCodeBytes) - BigInt(oldCodeBytes);
+  const usageAfter = BigInt(storageUsage) + deltaBytes;
+  const lockedAfter = usageAfter * 10n ** 19n;
+  const margin = BigInt(balance) - lockedAfter;
+  const needed = margin - BigInt(headroom);
+  return {
+    deltaBytes,
+    usageAfter,
+    lockedAfter,
+    margin,
+    fits: margin >= 0n,
+    // What to ADD to the account. Zero when it already fits with the requested
+    // headroom to spare.
+    topUp: needed < 0n ? -needed : 0n,
+  };
+}
