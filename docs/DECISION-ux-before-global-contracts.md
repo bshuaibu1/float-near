@@ -1,7 +1,39 @@
 # Decision: ship UX first, move to global contracts when funded
 
-Status: **accepted**, 2026-10-29.
-Supersedes nothing. Depends on `GLOBAL-CONTRACTS-NEP-591.md` for the mechanics.
+Status: **accepted 2026-10-29, AMENDED 2026-10-31 — see the amendment first.**
+Depends on `GLOBAL-CONTRACTS-NEP-591.md` for the mechanics.
+
+## Amendment, 2026-10-31: two measurements change this
+
+**1. Global contracts are not a future capability. They have been live on
+mainnet since protocol version 77 (May 2025); mainnet is now on 86.** This
+document's framing — move "when funded" — treated them as a thing to wait for.
+Nothing is being waited for.
+
+**2. The per-vault figure below is for a vault that cannot pay.** The tables
+cost a vault at "~0.05 NEAR all-in" (0.0436 stake + gas). Measured since: a
+vault needs **0.100919 NEAR of FREE balance per in-flight 100 TGas call** for
+its agents to transact at all (`SPIKE-self-fc-key-2026-10-31.md`, N=8 → 6/8
+executed, the two rejections naming the figure). A vault funded at 0.05 has
+~0.006 free and cannot make a single payment.
+
+So the realistic per-usable-vault cost is **~0.15–0.25 NEAR**, not ~0.05, and
+the "~1,439 vaults per 100 NEAR" line below is closer to **~600**. Still a large
+win over 33 — the conclusion survives, the arithmetic does not.
+
+**3. `UseGlobalContractAction` is now MEASURED, not estimated.** A reference
+costs the user **214 bytes / 0.00214 NEAR, independent of code size** (49 B and
+5,122 B globals both yield 214). The 0.0436 figure below was derived from a
+280,249-byte build's non-code state and is still the right shape; the code half
+is now settled. Break-even is ~10 vaults and always will be, because the global
+publish rate is exactly 10x the per-account rate.
+
+**4. If the onboarding you want is wallet-signed, these are NOT independent.**
+The decision below rests on "nothing in the UX work has to be redone". That
+holds for a CLI wizard. It does not hold for a browser flow: a 299,016-byte
+`DeployContract` is ~390 KB of base64 and will not fit through a redirect-based
+web wallet, whereas `UseGlobalContract` carries a 32-byte hash. For that UX,
+global contracts are a **prerequisite**, not a cost optimisation.
 
 ## The decision
 

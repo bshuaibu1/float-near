@@ -114,11 +114,61 @@ into a small permanent developer-side burn. That is a genuinely good trade for
 onboarding, and it is a real expense on our side rather than an accounting
 shuffle. Each new wasm version published under `CodeHash` is another full burn.
 
-**Unverified:** what a user pays for `UseGlobalContractAction` itself. They
-certainly still stake for their own account and their own budget-tree state —
-which this vault has, since nodes, ledgers and requests are per-vault — so
-"zero onboarding cost" is too strong. The right claim is that the *code* stake
-goes away; the state stake does not. Measure before quoting a number.
+### What a user pays for `UseGlobalContractAction` — MEASURED 2026-10-31
+
+~~Unverified.~~ Settled on testnet by `scripts/measure-global-contract.sh`.
+Four equally funded accounts, two sizes 105x apart, differential:
+
+| | storage_usage | staked | `view_code` returns |
+| --- | --- | --- | --- |
+| A deploy 49 B, normally | 231 | 0.00231 | 49 bytes |
+| B **use** the 49 B global | **214** | **0.00214** | 49 bytes |
+| C deploy 5,122 B, normally | 5,304 | 0.05304 | 5,122 bytes |
+| D **use** the 5,122 B global | **214** | **0.00214** | 5,122 bytes |
+
+- **C − A = 5,073 bytes**, exactly the padding. The control: a normal deploy
+  charges the user for every byte of code.
+- **D − B = 0 bytes.** A global reference is **size-independent**. The user
+  pays for a 214-byte pointer whether the code is 49 bytes or 5 KB.
+
+`view_code` is the guard that makes this a result rather than a coincidence: an
+account with **no** contract would also report small storage, so "small
+storage" alone would have been a false positive. B and D return the full 49 and
+5,122 bytes, so they really are running the global code.
+
+Applied to the current 299,016-byte build:
+
+| | amount |
+| --- | --- |
+| code stake today | 2.99016 NEAR |
+| stake referencing a global | **0.00214 NEAR** |
+| saved per vault | 2.98802 NEAR |
+| one-time global publish | 29.90160 NEAR, burned |
+| break-even | **~10 vaults** |
+
+Break-even lands on ten whatever the contract size, and that is structural
+rather than a coincidence: the global publish rate **is** ten times the
+per-account rate, so `10·S / S` is always ten.
+
+**"Zero onboarding cost" is still too strong, for a second reason the first
+draft did not have.** A vault stakes for its own state (nodes, ledgers,
+requests — all per-vault), *and* it needs **free** balance for its agents to
+transact at all: measured at **0.100919 NEAR per in-flight 100 TGas call**
+(`SPIKE-self-fc-key-2026-10-31.md`). A vault funded at its stake alone cannot
+make a payment. Realistically ~0.15–0.25 NEAR per usable vault, not ~0.05.
+
+### Two things the first real run of the measurement script fixed
+
+1. **The CLI form was wrong and would have stopped it at step one.**
+   `deploy-as-global use-file <wasm> as-global-hash` takes the signer as its own
+   argument; the script used `sign-as "$PARENT"` and near-cli-rs 0.30.1 answers
+   `error: unexpected argument 'floatv4.testnet' found`. Consistent with this
+   section having been marked UNVERIFIED — the script had never been run.
+2. **It could not finish on its own.** It printed the two code hashes and asked
+   the operator to re-run the B and D deploys by hand. The hashes are
+   sha256-base58 of the wasm, so `scripts/wasm-hash.mjs` now computes them —
+   verified by matching the CLI's own report for tiny byte for byte before
+   trusting it on padded.
 
 `scripts/measure-global-contract.sh` is the experiment, ready to run. It is
 **differential on purpose**, because the V2 claim is not "referencing is cheap"
