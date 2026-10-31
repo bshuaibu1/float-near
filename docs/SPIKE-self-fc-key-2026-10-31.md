@@ -86,9 +86,31 @@ unlisted method        Access key does not allow method get_calls
 
 ## The sizing constraint nobody predicted
 
-**Steady-state drain is exactly `tokens_burnt`** — 0.000124 NEAR for a trivial
-call, ratio 1.00 over four consecutive calls. So an allowance is *not* consumed
-at the prepaid-gas rate.
+**The first call of a key costs the reservation; every call after it costs only
+what it burns.** Re-measured on a funded account at `final` finality, five
+identical 30 TGas calls on one key:
+
+```
+call | allowance after | spent this call | tokens_burnt | spent/burnt
+   1 |        0.119081 |        0.030919 |     0.000124 |      249.32
+   2 |        0.118957 |        0.000124 |     0.000124 |        1.00
+   3 |        0.118833 |        0.000124 |     0.000124 |        1.00
+   4 |        0.118709 |        0.000124 |     0.000124 |        1.00
+   5 |        0.118585 |        0.000124 |     0.000124 |        1.00
+```
+
+0.150000 − 0.030919 = 0.119081 exactly, and 0.030919 is the 30 TGas reservation.
+So the reservation is deducted **once, on first use**, and is not returned to the
+allowance; subsequent calls draw their real cost. Sizing a key is therefore
+`reservation + calls × per-call-cost` — about 0.113 NEAR for a hundred 100 TGas
+calls, not 0.0124.
+
+**This corrects an earlier reading in this document's own first draft**, which
+called the 0.030919 a finality artefact. There were two separate phenomena and I
+had conflated them: this one-time deduction is real and reproducible at `final`
+finality, while a *second* effect — an allowance appearing to go **up** by
+0.030671 mid-run — was genuinely an optimistic-finality artefact. Only the
+second one went away when the reads were fixed.
 
 **But the protocol RESERVES far more than it spends, and the reservation is
 charged against the key.** Measured by bisection:
@@ -117,20 +139,63 @@ headline should say so.
 
 **An allowance is a spending LIMIT on the account's balance, not a segregated
 deposit** — so provisioning a key does not lock 0.1 NEAR; it costs the key's
-storage. **UNTESTED and load-bearing:** whether two agents each with a 0.1 limit
-can both transact against one vault's 0.1 of free balance concurrently. If the
-reservation is taken per-call against the shared balance, N agents may contend.
-That is the next thing to measure, and it decides whether "one vault, many
-agents" needs more free NEAR than one.
+storage. Measured directly: a key was given a **1.0 NEAR allowance on an account
+with 0.09 of free balance**, and the allowance was recorded in full.
+
+## Concurrency: agents DO contend, and the number is 0.100919
+
+Measured with `scripts/spike-allowance-concurrency.mjs`. N agents, one
+restricted key each, 100 TGas, all pre-signed and then broadcast together:
+
+| N concurrent | executed | distinct blocks |
+| --- | --- | --- |
+| 2 | **2/2** | 1 |
+| 4 | **4/4** | 1 |
+| 8 | **6/8** | 1 |
+
+All six landed in **one block**, so the overlap was real rather than serialised.
+The two rejections name the number outright:
+
+```
+Not enough balance for p1.floatv4.testnet
+  (balance:  94043528796161400000000   = 0.094044 NEAR)
+  (cost:    100918885126219200000000   = 0.100919 NEAR)
+```
+
+So **each in-flight call reserves 0.100919 NEAR of the account's balance**, held
+until execution and then released. That is `prepaid_gas × 1e9` (the max gas
+price, ten times the current 1e8) plus ~0.0009 of execution cost — the same
+model the allowance floor follows. 0.683254 free / 0.100919 = 6.77, and 6 fit.
+
+**Sequential agents do not contend**, once the refund has settled.
+
+### What this costs the product
+
+- The ceiling on **simultaneous** payments is `free_balance / 0.100919`, not the
+  number of agents. Ten agents taking turns are fine; three at once need ~0.31
+  of free NEAR.
+- **This is the finding that revises the global-contracts plan.**
+  `DECISION-ux-before-global-contracts.md` assumes "~0.05 NEAR all-in per vault"
+  under NEP-591 (0.0436 stake + gas). A vault funded at 0.05 has ~0.006 free —
+  **not enough for even ONE 100 TGas payment.** A vault whose agents actually
+  transact needs roughly **0.1–0.2 NEAR of free balance on top of its storage
+  stake**, which takes the "~1,439 vaults per 100 NEAR" line closer to ~600.
+  Still a large win over 33, but the headline figure was for a vault that
+  cannot pay.
+- **Prepaid gas is the lever**, and it is linear. MCP sends 100 TGas;
+  `MIN_GAS_FOR_DISPATCH` is 50. Dropping to ~60 would cut the per-call
+  reservation by ~40%. **Untested** whether 60 TGas completes a real
+  `ft_transfer` promise chain — a lever, not yet a recommendation.
 
 ## Two notes on method, because both nearly produced a wrong answer
 
-**Optimistic finality manufactured a number.** The first allowance run reported
-0.030919 spent against 0.000124 burnt — and three calls later the same 0.030919
-turned up in the *balance* delta. Call 5 of a later run showed the allowance
-going **up** by 0.030671. The figure was the reservation sloshing between two
-reads of a chain that had not settled. Switching the money reads to
-`finality: "final"` and reporting a **median** resolved it.
+**Optimistic finality manufactured a number — but only one of the two I blamed
+on it.** Call 5 of one run showed the allowance going **up** by 0.030671, which
+was a genuine artefact and disappeared under `finality: "final"`. The
+0.030919 on the *first* call of a key, which I attributed to the same cause, is
+real and reproducible on a funded account at final finality — it is the
+one-time reservation deduction described above. Two phenomena, one explanation,
+and the explanation only covered one of them.
 
 **A mean over six samples flipped a conclusion five samples supported.** One
 transient of 0.030919 against four identical rows of 0.000124 dragged the mean
@@ -138,6 +203,37 @@ to 0.006283, which cleared my own "is it prepaid?" threshold and made the script
 print `VERDICT: the allowance is charged for PREPAID GAS` — the opposite of what
 the data said. The summary statistic was the bug, not the data. A verdict that
 one bad read can flip is not a measurement.
+
+**A broken status lookup printed a confident, bolded, wrong conclusion.** The
+first concurrency attempt used `sendTransactionAsync` for "genuine" overlap.
+It returns `{final_execution_status: "NONE"}` with **no transaction hash**, so
+the hash extraction yielded undefined, every status poll came back empty, and
+both calls were recorded as failed. The script then printed `contention
+observed` and a bolded INTERPRETATION asserting that N agents need N
+reservations — a conclusion resting entirely on my own broken check, and one
+that happened to be *true*, which is worse, because nothing would have caught
+it. Rewritten to use `sendTransaction`, which returns the full outcome, and to
+report the distinct block count so "concurrent" is a measured fact.
+
+**The first two concurrency runs measured an empty account, not the protocol.**
+The probe sat 0.0014 NEAR from its own threshold — agent 1 succeeded at 0.091908
+of free balance, agent 2 failed at 0.090515 — so every reading was dominated by
+edge effects and a partly-settled refund. On that evidence the summary line read
+"the account's free balance DOES bind the reservation". After a 0.6 NEAR top-up
+the same test reported the opposite, and *both* were artefacts: the real
+mechanism is the per-call reservation above. A measurement taken at the edge of
+the thing being measured is not a measurement.
+
+**Awaiting a transaction is not awaiting its refund.** The sequential control
+ran agent 2 straight after awaiting agent 1 and agent 2 failed short by
+0.01087 — exactly agent 1's outstanding reservation. The control was not
+sequential in the only sense that mattered, so a concurrent failure could not
+have been attributed to concurrency. Fixed by polling free balance back to a
+settled value between calls.
+
+**Slicing an error message to 100 characters cut the answer in half.** The
+`cost:` figure that is the entire result of the concurrency sweep was truncated
+mid-number on the first run.
 
 ## Recommendation
 
