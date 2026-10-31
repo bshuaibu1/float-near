@@ -359,3 +359,65 @@ export function toCliCommand(p: OwnerPayload, network = "testnet"): string {
     `sign-as <YOUR-OWNER-ACCOUNT> network-config ${network} sign-with-keychain send`
   );
 }
+
+/**
+ * Require the owner to approve payments above `amount` at this node.
+ *
+ * A threshold is a gate INSIDE the caps: it can only make the vault more
+ * conservative, never less, so there is no value of it that moves more money
+ * than the budget tree already allowed. `null` removes it.
+ */
+export function planSetApprovalThreshold(
+  vault: string,
+  nodeId: number,
+  amountBase: string | null,
+): OwnerPayload {
+  return {
+    receiverId: vault,
+    methodName: "set_approval_threshold",
+    args: { node_id: nodeId, amount: amountBase },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    summary: amountBase
+      ? `Payments above ${amountBase} (base units) from node ${nodeId} will need your approval`
+      : `Remove the approval threshold on node ${nodeId} — payments up to the caps run unattended`,
+    warnings: amountBase
+      ? []
+      : ["After this, nothing at this node waits for a human: only the caps apply."],
+  };
+}
+
+/**
+ * Execute a held payment.
+ *
+ * Every limit is re-checked at approval time, so this can still be refused --
+ * by a cap tightened while it waited, or by an Intents quote that expired. That
+ * is the honest outcome and the warning says so.
+ */
+export function planApprovePayment(vault: string, requestId: string): OwnerPayload {
+  return {
+    receiverId: vault,
+    methodName: "approve_payment",
+    args: { request_id: requestId },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    summary: `Approve and send held payment ${requestId}`,
+    warnings: [
+      "This MOVES MONEY. Check the amount and payee with vault_pending_approval first.",
+      "Limits are re-checked now, so it can still be refused — a cap lowered since the request, or a cross-chain quote that has expired.",
+    ],
+  };
+}
+
+/** Decline a held payment. The ticket is discarded and nothing moves. */
+export function planRejectPayment(vault: string, requestId: string): OwnerPayload {
+  return {
+    receiverId: vault,
+    methodName: "reject_payment",
+    args: { request_id: requestId },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    summary: `Reject held payment ${requestId}`,
+    warnings: ["The agent must request again if it still needs the money."],
+  };
+}

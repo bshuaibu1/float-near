@@ -110,6 +110,10 @@ describe("the MCP server starts and registers its tools", () => {
     expect(names).toEqual(
       [
         "vault_budget",
+        "vault_pending_approval",
+        "vault_plan_approve_payment",
+        "vault_plan_reject_payment",
+        "vault_plan_set_approval_threshold",
         "vault_config",
         "vault_pay",
         "vault_plan_add_node",
@@ -135,9 +139,28 @@ describe("the MCP server starts and registers its tools", () => {
   // signs. Everything that changes policy emits an unsigned payload, which is
   // what keeps this server out of the trust path.
   it("exposes exactly ONE signing tool", () => {
-    const signing = tools.filter((t) => !t.name.startsWith("vault_plan_"));
-    const writes = signing.filter((t) => t.name === "vault_pay");
-    expect(writes).toHaveLength(1);
+    // This used to filter out vault_plan_* and then assert vault_pay appeared
+    // once -- which is satisfied by vault_pay EXISTING, and would pass just as
+    // happily with a second signing tool beside it. A weak assertion under a
+    // strong name, on the single most important property of this server.
+    //
+    // Now every tool must be classified. A new tool that is neither a known
+    // read nor a vault_plan_* fails here until someone decides, deliberately,
+    // which side of the trust boundary it belongs on.
+    const READS = new Set([
+      "vault_tree",
+      "vault_budget",
+      "vault_request",
+      "vault_config",
+      "vault_pending_approval",
+    ]);
+    const unclassified = tools
+      .map((t) => t.name)
+      .filter((n) => n !== "vault_pay" && !n.startsWith("vault_plan_") && !READS.has(n));
+    expect(unclassified).toEqual([]);
+
+    // And the signer is present, exactly once.
+    expect(tools.filter((t) => t.name === "vault_pay")).toHaveLength(1);
   });
 
   it("describes every owner action as unsigned", () => {

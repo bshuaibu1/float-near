@@ -36,6 +36,9 @@ import {
   planSetRecipients,
   toCliCommand,
   type OwnerPayload,
+  planSetApprovalThreshold,
+  planApprovePayment,
+  planRejectPayment,
 } from "./payloads.js";
 import { DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
 import { buildRoute, sendRequestPayment, type RouteArg } from "./sign.js";
@@ -316,6 +319,40 @@ server.tool(
   { nodeId: z.number().int().min(0), cooldownSec: z.number().int().min(0) },
   async ({ nodeId, cooldownSec }) =>
     renderPlan(planSetCooldown(requireVault(), nodeId, cooldownSec)),
+);
+
+server.tool(
+  "vault_pending_approval",
+  "Look up a payment that is HELD awaiting the owner's approval. Returns null if there is no ticket for that id — already approved, already rejected, or never held.",
+  { requestId: z.string().min(1) },
+  async ({ requestId }) =>
+    json(
+      (await viewFunction(cfg.rpcUrl, requireVault(), "get_pending_approval", {
+        request_id: requestId,
+      })) ?? null,
+    ),
+);
+
+server.tool(
+  "vault_plan_set_approval_threshold",
+  "Build an UNSIGNED payload requiring the owner's approval for payments above an amount at this node. A threshold sits INSIDE the caps and can only make the vault more conservative. Pass amountBase null to remove it. Not signed by this server.",
+  { nodeId: z.number().int().min(0), amountBase: z.string().min(1).nullable() },
+  async ({ nodeId, amountBase }) =>
+    renderPlan(planSetApprovalThreshold(requireVault(), nodeId, amountBase)),
+);
+
+server.tool(
+  "vault_plan_approve_payment",
+  "Build an UNSIGNED payload to APPROVE a held payment, which sends it. Every limit is re-checked at approval, so it can still be refused. Not signed by this server.",
+  { requestId: z.string().min(1) },
+  async ({ requestId }) => renderPlan(planApprovePayment(requireVault(), requestId)),
+);
+
+server.tool(
+  "vault_plan_reject_payment",
+  "Build an UNSIGNED payload to REJECT a held payment. Nothing moves and the ticket is discarded. Not signed by this server.",
+  { requestId: z.string().min(1) },
+  async ({ requestId }) => renderPlan(planRejectPayment(requireVault(), requestId)),
 );
 
 server.tool(
