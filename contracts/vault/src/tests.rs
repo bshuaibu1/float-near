@@ -3190,7 +3190,7 @@ fn approving_something_that_was_never_held_fails() {
     let t = tree();
     let mut v = t.v;
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    v.approve_payment("ghost".into());
+    let _ = v.approve_payment("ghost".into());
 }
 
 #[test]
@@ -3211,7 +3211,7 @@ fn a_ticket_cannot_be_approved_twice() {
     testing_env!(ctx(owner(), YOCTO, 2).build());
     assert_dispatched(v.approve_payment("tw".into()));
     testing_env!(ctx(owner(), YOCTO, 3).build());
-    v.approve_payment("tw".into());
+    let _ = v.approve_payment("tw".into());
 }
 
 #[test]
@@ -3230,7 +3230,7 @@ fn an_agent_cannot_approve_its_own_payment() {
         ReasonCode::ApprovalRequired,
     );
     testing_env!(ctx(r1(), YOCTO, 2).build());
-    v.approve_payment("ag".into());
+    let _ = v.approve_payment("ag".into());
 }
 
 #[test]
