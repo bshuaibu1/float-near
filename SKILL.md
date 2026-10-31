@@ -138,8 +138,12 @@ tree, registers the vault on the token, optionally funds it, and writes the MCP
 config for every client it finds.
 
 ```bash
-npx @floatonnear/create-float --owner you.near --fund 1
+npx @floatonnear/create-float --owner you.near --agents 1 --fund 1
 ```
+
+**`--agents` is not optional in practice.** No agent is created without it, and a
+vault with no agent cannot pay — the MCP server will answer *"Paying requires
+NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY, and neither is set."*
 
 **Mainnet is the default**, and there is no testnet path worth taking: NEAR
 Intents has no testnet, so a testnet vault cannot make a cross-chain payment at
@@ -156,8 +160,10 @@ NEAR and several are irreversible.
 ### What the human must do first — you cannot do these
 
 1. have a NEAR account whose key is in `~/.near-credentials`
-2. hold ~3 NEAR in it (mostly a **refundable** storage stake for the contract,
-   not a fee)
+2. hold **3.9 NEAR** in it for a vault plus one agent (**3.3** for a bare
+   vault, plus 0.55 per agent). Mostly a **refundable** storage stake for the
+   contract, not a fee — but the wizard checks the balance before it starts and
+   refuses if it is short, so a round "3" is not enough.
 3. hold some of the token the agents will spend
 
 If any is missing, stop and say which. Do not improvise around it.

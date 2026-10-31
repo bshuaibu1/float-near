@@ -88,9 +88,12 @@ WHAT IT DOES
 
 WHAT IT COSTS
   You need a funded NEAR account with its key in ~/.near-credentials, which
-  'near login' puts there. Roughly 3.9 NEAR for a vault plus one agent — most
-  of it a refundable storage stake. On mainnet this spends REAL funds, and the
-  wizard asks for a typed acknowledgement before it does.
+  'near login' puts there. Measured: 3.341 NEAR for a bare vault, 3.891 with
+  one agent — most of it a refundable storage stake, not a fee. On mainnet this
+  spends REAL funds, and the wizard asks for a typed acknowledgement first.
+
+  An agent costs 0.55 NEAR and NO AGENT IS CREATED BY DEFAULT, so without
+  --agents you get a vault that cannot pay. Run --dry-run to see the bill.
 
 OPTIONS
   --network <mainnet|testnet>  default mainnet — spends REAL funds
@@ -98,7 +101,10 @@ OPTIONS
   --vault <account>            vault account to create (default: derived)
   --token <account>            fungible token to budget in (default: USDC)
   --decimals <n>               token decimals (default 6)
-  --agents <n|all>             agent accounts to create (default none)
+  --agents <n|all>             agent accounts to create (default none —
+                               without this, nothing can spend)
+  --fund <amount>              move that many tokens into the vault, in human
+                               units, registering it on the token first
   --rpc <url>                  override the RPC endpoint
   --dry-run                    print the plan and stop, spending nothing
   --yes                        skip confirmation prompts

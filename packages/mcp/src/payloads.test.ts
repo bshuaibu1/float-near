@@ -10,6 +10,7 @@ import {
   planFreezeNode,
   planPurgeSettled,
   planSetPaused,
+  planSetApprovalThreshold,
   toCliCommand,
 } from "./payloads.js";
 
@@ -186,5 +187,82 @@ describe("toCliCommand", () => {
     const cmd = toCliCommand(planFreezeNode(VAULT, 1, true));
     expect(cmd).toContain(VAULT);
     expect(cmd).toContain("freeze_node");
+  });
+});
+
+// ---- the approval threshold takes HUMAN units, like every tool beside it
+//
+// THE BUG THIS PINS, found 2026-10-31 by walking the real schemas rather than
+// reading the docs. `vault_plan_set_approval_threshold` was the ONLY tool in the
+// set that took BASE units, and it is the one that configures a safety gate:
+//
+//   vault_pay.amount                   human  "12.50"
+//   vault_plan_set_caps.dailyCap       human  (schema even says so)
+//   vault_plan_set_approval_threshold  BASE   <- the odd one out
+//
+// It FAILS OPEN, which is why this is not cosmetic. An owner thinking in human
+// units who passes a figure at or above the per-tx cap in base units gets a
+// threshold ABOVE the caps, so the gate never fires and silently does nothing —
+// on the one control whose entire purpose is to not fail open.
+//
+// Measured against the live mainnet vault, whose per-tx cap is 510000 base
+// (0.51 USDC): "1000000" meaning "a million" yields a 1.0 USDC threshold, which
+// is above every cap in the tree. Nothing is ever held. The owner sees a
+// successful transaction and believes the gate is on.
+//
+// Breaking change to a tool published the same day with no users — the cheapest
+// time this fix will ever be available.
+describe("planSetApprovalThreshold", () => {
+  it("converts human units to base, like its neighbours", () => {
+    const p = planSetApprovalThreshold(VAULT, 2, "0.25", 6);
+    expect(p.args).toEqual({ node_id: 2, amount: "250000" });
+  });
+
+  it("a whole number is not read as base units", () => {
+    // The fail-open direction. "1" must mean 1 USDC = 1000000 base, never
+    // 1 base unit (0.000001) and never a bare "1" passed through.
+    const p = planSetApprovalThreshold(VAULT, 0, "1", 6);
+    expect(p.args.amount).toBe("1000000");
+  });
+
+  it("honours the token's decimals rather than assuming six", () => {
+    expect(planSetApprovalThreshold(VAULT, 0, "1", 18).args.amount).toBe("1000000000000000000");
+    expect(planSetApprovalThreshold(VAULT, 0, "7", 0).args.amount).toBe("7");
+  });
+
+  it("refuses to truncate more precision than the token has", () => {
+    // Inherited from toBaseUnits, and it matters here: silently truncating
+    // 0.1234567 to 0.123456 would set a threshold the owner did not choose.
+    expect(() => planSetApprovalThreshold(VAULT, 0, "0.1234567", 6)).toThrow(/decimal places/i);
+  });
+
+  it("rejects a base-unit-looking string with no decimal point ONLY by value, not by shape", () => {
+    // "250000" is a legitimate human amount (250 thousand USDC). It must not be
+    // special-cased — the fix is a consistent convention, not a heuristic that
+    // guesses which units the caller meant.
+    expect(planSetApprovalThreshold(VAULT, 0, "250000", 6).args.amount).toBe("250000000000");
+  });
+
+  it("null removes the threshold and says what that means", () => {
+    const p = planSetApprovalThreshold(VAULT, 2, null, 6);
+    expect(p.args).toEqual({ node_id: 2, amount: null });
+    expect(p.warnings.join(" ")).toMatch(/only the caps apply/i);
+  });
+
+  it("the summary quotes HUMAN units, because that is what the owner typed", () => {
+    // The old summary read "Payments above 1000000 (base units)", which is
+    // unreadable in exactly the moment the owner is checking the plan before
+    // signing it.
+    const s = planSetApprovalThreshold(VAULT, 2, "0.25", 6).summary;
+    expect(s).toContain("0.25");
+    expect(s).not.toContain("250000");
+    expect(s).not.toMatch(/base units/i);
+  });
+
+  it("MOVES MONEY is not claimed — setting a threshold spends nothing", () => {
+    const p = planSetApprovalThreshold(VAULT, 2, "0.25", 6);
+    expect(p.depositYocto).toBe(ONE_YOCTO);
+    expect(p.methodName).toBe("set_approval_threshold");
+    expect(p.receiverId).toBe(VAULT);
   });
 });

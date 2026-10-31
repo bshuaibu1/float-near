@@ -148,3 +148,75 @@ test("every reason code dispatch_payment can emit is documented in SKILL.md", ()
     `SKILL.md does not mention ${missing.length} code(s) an agent can receive: ${missing.join(", ")}`,
   );
 });
+
+// ---- the cost SKILL.md quotes must match the cost the wizard charges
+//
+// Found 2026-10-31. SKILL.md said "hold ~3 NEAR in it" while the real ask is
+// 3.341 for a bare vault and 3.891 with one agent. A user who tops up to
+// exactly 3 hits `insufficient balance: need 3.341, have ...` after reading our
+// own instructions — reproduced live against test015.near.
+//
+// This is the SECOND time this number has gone stale in two days: usage() was
+// corrected 3.6 -> 3.9 and SKILL.md was not. So it is derived here rather than
+// written down, to one decimal place — tight enough to catch "~3", loose enough
+// to survive a few kilobytes of contract growth.
+import { statSync as skStat } from "node:fs";
+import { vaultFunding, codeStakeYocto } from "../bin/funding.mjs";
+import { usage as skUsage } from "../bin/args.mjs";
+
+const AGENT_ACCOUNT_NEAR = 0.55; // 0.5 key allowance + 0.05 storage
+
+test("REAL DATA: SKILL.md quotes the derived setup cost, not a stale round number", () => {
+  const skillText = read(SKILL);
+  const bytes = skStat(join(HERE, "..", "res", "vault.wasm")).size;
+  const bare = Number(vaultFunding(bytes)) / 1e24;
+  const withAgent = bare + AGENT_ACCOUNT_NEAR;
+
+  // One decimal: 3.3 and 3.8 as of a 299,016-byte contract.
+  const bare1dp = bare.toFixed(1);
+  const agent1dp = withAgent.toFixed(1);
+
+  assert.ok(
+    skillText.includes(bare1dp) || skillText.includes(agent1dp),
+    `SKILL.md mentions neither ${bare1dp} nor ${agent1dp} NEAR — the real ask is ` +
+      `${bare.toFixed(3)} bare / ${withAgent.toFixed(3)} with one agent`,
+  );
+  assert.ok(
+    !/~\s*3 NEAR|about 3 NEAR|hold ~3/i.test(skillText),
+    "SKILL.md still says ~3 NEAR, which is below the real ask and fails the affordability check",
+  );
+});
+
+test("REAL DATA: usage() and SKILL.md do not disagree about the cost", () => {
+  // Two documents quoting one measured fact is how the first drift happened.
+  const skillText = read(SKILL);
+  const bytes = skStat(join(HERE, "..", "res", "vault.wasm")).size;
+  const bare1dp = (Number(vaultFunding(bytes)) / 1e24).toFixed(1);
+  const help = skUsage();
+  assert.ok(help.includes(bare1dp), `usage() does not quote ${bare1dp} NEAR`);
+  assert.ok(skillText.includes(bare1dp), `SKILL.md does not quote ${bare1dp} NEAR`);
+  // Sanity on the derivation itself, so a broken vaultFunding cannot make both
+  // documents agree on a wrong number.
+  assert.ok(Number(codeStakeYocto(bytes)) / 1e24 > 2.5, "code stake derivation looks wrong");
+});
+
+test("SKILL.md says an agent must be asked for, or the vault cannot pay", () => {
+  // The documented one-liner omitted --agents, and the default creates none, so
+  // following our own docs produced a vault that answers
+  // "Paying requires NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY".
+  const skillText = read(SKILL);
+  // Not just "is --agents mentioned somewhere" — it IS, in a list of useful
+  // flags, and that passed while the bug was live. The COMMAND the agent is
+  // told to run is what matters.
+  const cmds = skillText
+    .split("\n")
+    .filter((l) => l.includes("npx") && l.includes("create-float"))
+    .map((l) => l.trim());
+  assert.ok(cmds.length >= 1, "SKILL.md has no create-float command to check");
+  const without = cmds.filter((c) => !c.includes("--agents") && !c.includes("--help"));
+  assert.deepEqual(
+    without,
+    [],
+    "a documented setup command omits --agents, so following the docs yields a vault that cannot spend",
+  );
+});

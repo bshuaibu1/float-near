@@ -112,7 +112,7 @@ const limitShape = z
 // startup: a wrong relative path would break the server outright instead of
 // merely reporting a stale version. server.smoke.test.ts asserts the two agree,
 // so a bump cannot land with only one of them moved.
-const server = new McpServer({ name: "float", version: "0.2.0" });
+const server = new McpServer({ name: "float", version: "0.3.0" });
 
 // ----------------------------------------------------------------- reads
 
@@ -335,10 +335,18 @@ server.tool(
 
 server.tool(
   "vault_plan_set_approval_threshold",
-  "Build an UNSIGNED payload requiring the owner's approval for payments above an amount at this node. A threshold sits INSIDE the caps and can only make the vault more conservative. Pass amountBase null to remove it. Not signed by this server.",
-  { nodeId: z.number().int().min(0), amountBase: z.string().min(1).nullable() },
-  async ({ nodeId, amountBase }) =>
-    renderPlan(planSetApprovalThreshold(requireVault(), nodeId, amountBase)),
+  'Build an UNSIGNED payload requiring the owner\'s approval for payments above an amount at this node. A threshold sits INSIDE the caps and can only make the vault more conservative. `amount` is HUMAN units, the same convention as vault_pay — "0.25" is a quarter of a USDC. Pass amount null to remove the threshold. Not signed by this server.',
+  {
+    nodeId: z.number().int().min(0),
+    // HUMAN units, matching vault_pay and vault_plan_set_caps. This took BASE
+    // units until 2026-10-31 and was the only tool here that did — on the one
+    // control that configures a safety gate, where the mistake fails OPEN. See
+    // planSetApprovalThreshold in payloads.ts for the measurement.
+    amount: z.string().min(1).nullable().describe('human units, e.g. "0.25" — NOT base units'),
+    decimals: z.number().int().min(0).max(38).default(6),
+  },
+  async ({ nodeId, amount, decimals }) =>
+    renderPlan(planSetApprovalThreshold(requireVault(), nodeId, amount, decimals)),
 );
 
 server.tool(

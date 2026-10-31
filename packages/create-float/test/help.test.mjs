@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { wantsHelp, usage } from "../bin/args.mjs";
@@ -69,6 +69,35 @@ test("usage names every flag parseArgs actually reads", () => {
   ]) {
     assert.ok(text.includes(flag), `usage() does not mention ${flag}`);
   }
+});
+
+test("REAL SOURCE: usage names every flag the wizard actually reads", () => {
+  // The test above has a HAND-MAINTAINED list, and on 2026-10-31 it drifted:
+  // `--fund` was read at create-float.mjs:379, told to the user by
+  // token-setup.mjs and handoff.mjs ("re-run with --fund <amount>"), documented
+  // in SKILL.md's one-liner — and absent from `usage()`. Its own comment says
+  // "a flag that exists but is undocumented is invisible", which is exactly
+  // what happened, because the guard needed a human to remember the thing the
+  // human had already forgotten.
+  //
+  // So this one derives the list from the SOURCE. A new flag is documented or
+  // this test fails; nobody has to remember anything.
+  const text = usage();
+  // BOTH files, and that split is the point: `parseArgs` in args.mjs reads most
+  // of them, while a few (--fund among them) are read straight from argv in the
+  // wizard. Scanning only one file found 6 of 11 — caught here because this
+  // test states the expected count before trusting the match, rather than
+  // reading a short list as "nothing undocumented".
+  const flags = new Set();
+  for (const f of ["create-float.mjs", "args.mjs"]) {
+    const src = readFileSync(join(HERE, "..", "bin", f), "utf8");
+    for (const m of src.matchAll(/"(--[a-z0-9-]+)"/g)) flags.add(m[1]);
+  }
+  // --help is answered before parseArgs and documented as `-h, --help`.
+  flags.delete("--help");
+  assert.ok(flags.size >= 10, `only found ${flags.size} flags — the matcher is probably broken`);
+  const undocumented = [...flags].filter((f) => !text.includes(f)).sort();
+  assert.deepEqual(undocumented, [], `flags the wizard reads but usage() never mentions`);
 });
 
 test("usage says what it will spend, because the next step costs real money", () => {

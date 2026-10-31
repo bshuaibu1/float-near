@@ -366,22 +366,52 @@ export function toCliCommand(p: OwnerPayload, network = "testnet"): string {
  * A threshold is a gate INSIDE the caps: it can only make the vault more
  * conservative, never less, so there is no value of it that moves more money
  * than the budget tree already allowed. `null` removes it.
+ *
+ * ---- `amount` IS HUMAN UNITS, and it used to be base units.
+ *
+ * Breaking change, 2026-10-31, made the same day the tool was published and
+ * before anyone used it. The parameter was `amountBase` and took raw base
+ * units, which made it the ONLY tool in this module on that convention:
+ *
+ *   vault_pay.amount                   human   "12.50"
+ *   planSetNodeCaps dailyCap/perTxCap  human   (the zod schema says so)
+ *   planSetApprovalThreshold           BASE    <- the odd one out
+ *
+ * And it is the one that configures a safety gate, so it FAILED OPEN. An owner
+ * thinking in human units who passed a figure at or above the per-tx cap in
+ * base units got a threshold ABOVE every cap in the tree: the gate never fires,
+ * nothing is ever held, and the transaction succeeds — so the owner believes the
+ * control is on. Measured against the live mainnet vault (per-tx cap 510000
+ * base = 0.51 USDC): "1000000" meaning "a million" yields a 1.0 USDC threshold,
+ * above every cap.
+ *
+ * The other direction fails closed and is merely annoying ("1" meaning 1 USDC
+ * became 0.000001, so everything got held), which is why only one direction is
+ * dangerous and why this is worth a breaking change rather than a doc fix.
+ *
+ * `toBaseUnits` throws rather than truncating excess precision — correct here:
+ * silently rounding 0.1234567 would set a threshold the owner did not choose.
  */
 export function planSetApprovalThreshold(
   vault: string,
   nodeId: number,
-  amountBase: string | null,
+  amount: string | null,
+  decimals: number,
 ): OwnerPayload {
+  const base = amount === null ? null : toBaseUnits(amount, decimals).toString();
   return {
     receiverId: vault,
     methodName: "set_approval_threshold",
-    args: { node_id: nodeId, amount: amountBase },
+    args: { node_id: nodeId, amount: base },
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: ONE_YOCTO,
-    summary: amountBase
-      ? `Payments above ${amountBase} (base units) from node ${nodeId} will need your approval`
+    // Human units in the summary too. The old line read "Payments above
+    // 1000000 (base units)", which is unreadable in precisely the moment the
+    // owner is checking the plan before signing it.
+    summary: amount
+      ? `Payments above ${amount} from node ${nodeId} will need your approval`
       : `Remove the approval threshold on node ${nodeId} — payments up to the caps run unattended`,
-    warnings: amountBase
+    warnings: amount
       ? []
       : ["After this, nothing at this node waits for a human: only the caps apply."],
   };
