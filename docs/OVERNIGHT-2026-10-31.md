@@ -124,7 +124,31 @@ catches and the old one would not have.
 
 ## Blocked on you
 
-### Publish (needs browser auth)
+### Publish — DONE 2026-10-31
+
+All three published and verified by installing from the registry and driving
+them, not by reading version numbers:
+
+```
+create-float 0.3.0   funding.mjs + rotate-key.mjs ship; contract 292 KB answers
+                     APPROVAL_REQUIRED / APPROVAL_REJECTED / NO_SUCH_APPROVAL;
+                     derived funding 3.340 NEAR, headroom 0.350; --help exits 0
+mcp 0.2.0            handshake "float v0.2.0", 17 tools, all four approval
+                     tools present, zero unclassified (so still one signer)
+float-adapter 0.2.0  resolves mcp 0.2.0 via ^0.2.0
+```
+
+The first attempt failed all three with `PUT 404 Not found`, which reads as
+"package missing" and actually meant NOT AUTHENTICATED — npm returns 404
+rather than 401 for a scoped package so it does not leak existence. The tell
+was zero web-auth attempts in the log. `npm whoami` answers this in one
+command and belongs at the front of any publish block; it was missing from
+this one.
+
+No version was burned by the failures: they died at the PUT before anything
+registered, unlike a `PUT 202`, which consumes the number.
+
+### Original instructions (kept for reference)
 
 Versions are bumped and all three pack cleanly. **`mcp` is a minor bump, so the
 adapter's dependency range moved to `^0.2.0`** — otherwise `^0.1.0` silently
