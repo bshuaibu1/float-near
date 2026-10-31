@@ -172,7 +172,7 @@ function recorder({ failOn } = {}) {
     ops: {
       addOwnerKey: op("addOwnerKey"),
       removeSetupKey: op("removeSetupKey"),
-      removeCredential: op("removeCredential"),
+      repointCredential: op("repointCredential"),
     },
   };
 }
@@ -182,22 +182,28 @@ const ROTATE = { action: "rotate", steps: ["add-owner", "remove-setup"] };
 test("EXECUTED ORDER: the owner key is added before the setup key is removed", async () => {
   const r = recorder();
   await applyRotation(ROTATE, r.ops);
-  assert.deepEqual(r.calls, ["addOwnerKey", "removeSetupKey", "removeCredential"]);
+  assert.deepEqual(r.calls, ["addOwnerKey", "removeSetupKey", "repointCredential"]);
 });
 
 test("EXECUTED ORDER: the credential file goes last, after the chain has agreed", async () => {
   const r = recorder();
   await applyRotation(ROTATE, r.ops);
-  assert.equal(r.calls.at(-1), "removeCredential");
+  assert.equal(r.calls.at(-1), "repointCredential");
 });
 
 test("a failed key REMOVAL leaves the credential file alone", async () => {
-  // The recovery property. Delete the file after a failed removal and the vault
-  // keeps a full-access key nobody holds a copy of, which no re-run can remove.
+  // The recovery property, and the reason the file is touched LAST.
+  //
+  // If remove-setup failed, the file still holds the setup key — the only copy
+  // of the only key that can finish the job on a re-run. Repointing it to the
+  // owner here would be worse than deleting it: the next run would compute the
+  // setup public key FROM that file, see it equal to the owner's, conclude the
+  // rotation is already done, and leave a live full-access key on the vault
+  // that nobody holds and no run will ever remove.
   const r = recorder({ failOn: "removeSetupKey" });
   await assert.rejects(() => applyRotation(ROTATE, r.ops), /removeSetupKey failed/);
   assert.deepEqual(r.calls, ["addOwnerKey", "removeSetupKey"]);
-  assert.ok(!r.calls.includes("removeCredential"), "credential deleted after a failed rotation");
+  assert.ok(!r.calls.includes("repointCredential"), "credential rewritten after a failed rotation");
 });
 
 test("a failed ADD stops before any removal is attempted", async () => {
@@ -212,4 +218,183 @@ test("a non-rotate plan touches nothing at all", async () => {
     assert.deepEqual(await applyRotation(plan, r.ops), []);
     assert.deepEqual(r.calls, []);
   }
+});
+
+// ---- the credential file is REPOINTED, not deleted
+//
+// THE PROTOCOL FACT THIS ALL RESTS ON. A DeployContract action applies to the
+// SIGNER's own account, so a deploy transaction's signer_id must equal its
+// receiver_id. There is therefore no way to upgrade the vault signed as the
+// owner account: the only key that can ever deploy to `vault.owner.near` is a
+// full-access key sitting ON `vault.owner.near`.
+//
+// near-cli-rs's legacy keychain finds that key by filename —
+// ~/.near-credentials/<network>/<ACCOUNT>.json — and `near contract deploy
+// <vault> ... sign-with-legacy-keychain` therefore reads the file named after
+// the VAULT. So after rotation that file must contain the OWNER's keypair under
+// the VAULT's account_id. Duplicating the secret is not a shortcut; it is the
+// only representation near-cli can use.
+//
+// MEASURED 2026-10-31, the cost of getting this wrong: the mainnet upgrade of
+// float.test015.near failed three times signing with ed25519:Bb9qZA8..., the
+// DEAD setup key, still sitting in float.test015.near.json after a hand
+// rotation removed it from the account. I had called that file "inert". It is
+// not inert — it is exactly how near-cli chooses the signing key. The fix was
+// to rewrite it with the owner's key, which is what this function now does
+// automatically.
+//
+// Deleting the file instead (what the wizard used to do) fails differently and
+// just as fatally: near-cli reports no key for the vault and the upgrade path
+// is dead until someone reconstructs the file by hand.
+
+import { repointedCredential } from "../bin/rotate-key.mjs";
+
+const VAULT = "v1.alice.near";
+const OWNER_SK = "ed25519:ownerSecretKeyZZZ";
+
+test("the repointed file is named for the VAULT and carries the OWNER's key", () => {
+  const c = repointedCredential({
+    vault: VAULT,
+    ownerPublicKey: OWNER,
+    ownerPrivateKey: OWNER_SK,
+  });
+  // account_id is the vault, NOT the owner. A deploy's signer must equal its
+  // receiver, so a file claiming the owner's account_id would be useless here.
+  assert.equal(c.account_id, VAULT);
+  assert.equal(c.public_key, OWNER);
+  assert.equal(c.private_key, OWNER_SK);
+});
+
+test("the repointed file carries exactly the three fields near-cli reads", () => {
+  // Extra fields are not harmless: near-cli-rs deserialises this file, and the
+  // setup key must not survive anywhere inside it.
+  const c = repointedCredential({ vault: VAULT, ownerPublicKey: OWNER, ownerPrivateKey: OWNER_SK });
+  assert.deepEqual(Object.keys(c).sort(), ["account_id", "private_key", "public_key"]);
+  assert.ok(!JSON.stringify(c).includes(SETUP), "the setup key survived into the repointed file");
+});
+
+test("a missing private key is refused rather than written as undefined", () => {
+  // JSON.stringify drops an undefined value, so this would silently produce
+  // {"account_id":...,"public_key":...} — a file near-cli reads as malformed,
+  // at the end of a run that otherwise reported success.
+  for (const sk of [undefined, null, ""]) {
+    assert.throws(
+      () => repointedCredential({ vault: VAULT, ownerPublicKey: OWNER, ownerPrivateKey: sk }),
+      /private key/i,
+      `accepted a ${JSON.stringify(sk)} private key`,
+    );
+  }
+});
+
+test("a missing vault or public key is refused too", () => {
+  assert.throws(() => repointedCredential({ ownerPublicKey: OWNER, ownerPrivateKey: OWNER_SK }), /vault/i);
+  assert.throws(() => repointedCredential({ vault: VAULT, ownerPrivateKey: OWNER_SK }), /public key/i);
+});
+
+test("WIRING: the wizard repoints the credential and never deletes it", () => {
+  assert.ok(
+    /repointedCredential/.test(code),
+    "the wizard does not call repointedCredential — rotation would leave a dead credential file",
+  );
+  // Deliberately NOT /rmSync\(credPath\(vault\)\)/ — that was the first version
+  // and it is the tdd-extras 7b trap: it matches one spelling of the construct
+  // and silently passes on `rmSync(credPath(vault), { force: true })`,
+  // `unlinkSync(credPath(vault))`, or any whitespace. The forms below are the
+  // ones node's fs API actually offers for deleting a path.
+  for (const re of [
+    /(rmSync|unlinkSync|rm|unlink)\s*\(\s*credPath\s*\(\s*vault\s*\)/,
+    /\brmSync\b/, // the import itself: nothing in this wizard should delete files
+  ]) {
+    assert.ok(
+      !re.test(code),
+      `the wizard still deletes the vault credential file (${re}), which breaks every later upgrade`,
+    );
+  }
+});
+
+// ---- the guard for a vault rotated BEFORE this fix existed
+//
+// float.test015.near was rotated by hand, so its credential file holds a key
+// that is no longer on the account. Repointing on rotation does nothing for it.
+// upgrade-vault.sh therefore checks the signing key against the account's live
+// key list BEFORE spending minutes on a build — the three failed attempts on
+// 2026-10-31 each died at the very last step, after a full cargo-near build.
+
+import { signerVerdict } from "../bin/rotate-key.mjs";
+
+test("a credential whose key IS full-access on the vault can deploy", () => {
+  const v = signerVerdict({
+    vault: VAULT,
+    credential: { account_id: VAULT, public_key: OWNER, private_key: OWNER_SK },
+    keys: [FA(OWNER)],
+  });
+  assert.equal(v.ok, true);
+});
+
+test("THE TRAP: a credential holding a key that is no longer on the account", () => {
+  // Exactly float.test015.near after the hand rotation. The file is present and
+  // well-formed, so every check short of comparing it against the live key list
+  // passes, and near-cli fails at the signing step minutes later.
+  const v = signerVerdict({
+    vault: VAULT,
+    credential: { account_id: VAULT, public_key: SETUP, private_key: "ed25519:deadSetupKey" },
+    keys: [FA(OWNER)],
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /no longer|not on/i);
+  // The message must say which key and what to do, or it is just the near-cli
+  // error again with extra steps.
+  assert.ok(v.reason.includes(SETUP), "the verdict does not name the dead key");
+  assert.match(v.fix, /rotate-key|credential|re-?point/i);
+});
+
+test("a FUNCTION-CALL key cannot deploy, and is reported as such", () => {
+  // Distinct from the dead-key case: the key is live, it just cannot carry a
+  // DeployContract action. Same near-cli failure, different fix.
+  const v = signerVerdict({
+    vault: VAULT,
+    credential: { account_id: VAULT, public_key: OWNER, private_key: OWNER_SK },
+    keys: [FC(OWNER)],
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /full-access/i);
+});
+
+test("a missing credential file is reported as missing, not as a dead key", () => {
+  const v = signerVerdict({ vault: VAULT, credential: null, keys: [FA(OWNER)] });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /no credential|not found|missing/i);
+});
+
+test("a credential for a DIFFERENT account is caught before it is used", () => {
+  // near-cli keys the file by filename, so a file for the owner dropped in as
+  // the vault's would be used to sign and rejected on chain.
+  const v = signerVerdict({
+    vault: VAULT,
+    credential: { account_id: "alice.near", public_key: OWNER, private_key: OWNER_SK },
+    keys: [FA(OWNER)],
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /account_id|different account/i);
+});
+
+test("a credential with no private key is refused", () => {
+  const v = signerVerdict({
+    vault: VAULT,
+    credential: { account_id: VAULT, public_key: OWNER },
+    keys: [FA(OWNER)],
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /private key/i);
+});
+
+test("an empty key list is a dead-key verdict, never an ok one", () => {
+  // viewAccessKeyList on a key-less account returns []. Defaulting that to ok
+  // would send the deploy at the one account guaranteed to reject it.
+  const v = signerVerdict({
+    vault: VAULT,
+    credential: { account_id: VAULT, public_key: OWNER, private_key: OWNER_SK },
+    keys: [],
+  });
+  assert.equal(v.ok, false);
 });

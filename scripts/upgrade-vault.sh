@@ -51,14 +51,67 @@
 # outcome available here: a real mainnet deploy followed by a green verdict
 # obtained by reading a different chain.
 #
+# ---- THE FOUR PREFLIGHTS, in the order they cost you money.
+#
+# Added after a single mainnet upgrade on 2026-10-31 failed four separate
+# times. Each failure was predicted by a note somewhere in this repo and each
+# one still cost a full cycle, because nothing checked before acting:
+#
+#   1. the wrong SHELL   plain `bash` on Windows is WSL, where cargo-near is
+#                        absent and $env:VAULT is not inherited
+#   2. the ABI step      cargo-near's native cdylib pass cannot link on Windows
+#   3. the SIGNER key    the credential file held a key removed from the account
+#   4. the STORAGE cost  a bigger contract raises the locked balance
+#
+# 1 and 2 are decided in scripts/lib/shell-env.sh, which takes `uname -s`, the
+# cwd and the kernel release as arguments precisely so both branches can be
+# tested from one shell (test/shell-env.test.mjs). 3 and 4 are read off chain
+# BEFORE the build, because a build takes minutes and all three of the failed
+# deploys paid for one before dying.
+#
 # Usage:
 #   VAULT=v4.floatv4.testnet bash scripts/upgrade-vault.sh
 #   NO_MIGRATE=1 VAULT=... bash scripts/upgrade-vault.sh      # no field change
-#   NETWORK=mainnet CONFIRM_MAINNET=1 NO_MIGRATE=1 VAULT=float.test015.near #     bash scripts/upgrade-vault.sh
+#   NETWORK=mainnet CONFIRM_MAINNET=1 NO_MIGRATE=1 \
+#     VAULT=float.test015.near bash scripts/upgrade-vault.sh
+#
+# On Windows, call git-bash explicitly and pass the variables INSIDE it:
+#   & 'C:\Program Files\Git\bin\bash.exe' -c "VAULT=... bash scripts/upgrade-vault.sh"
 #
 # Requires: near-cli-rs, cargo-near, and a key for VAULT in the legacy keychain.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+. scripts/lib/shell-env.sh
+
+# ---- 0. Which shell is this, and is it the right one?
+#
+# FIRST, before the VAULT check, and that ordering is the entire point. Run
+# under WSL from PowerShell, the symptom is this script aborting with
+# "set VAULT to the existing vault account" — because WSL does not inherit
+# $env:VAULT — which reads as a usage mistake and sends you looking at the
+# wrong thing. Naming the shell first turns a confusing error into a correct
+# one.
+SHELL_KIND="$(shell_kind "$(uname -s)" "$(cat /proc/sys/kernel/osrelease 2>/dev/null || true)")"
+
+if [ "$(wsl_verdict "$SHELL_KIND" "$(pwd)" "${ALLOW_WSL:-0}")" = "trap" ]; then
+  echo "FATAL: this is WSL's bash, working on a Windows path ($(pwd))." >&2
+  echo "" >&2
+  echo "  In PowerShell, plain 'bash' resolves to C:\\WINDOWS\\system32\\bash.exe," >&2
+  echo "  which is WSL and NOT git-bash. Three things break at once here and only" >&2
+  echo "  one of them says so:" >&2
+  echo "    - \$env:VAULT is not inherited, so this script aborts with 'set VAULT'" >&2
+  echo "    - cargo-near is absent: WSL's PATH carries no ~/.cargo/bin" >&2
+  echo "    - 'near' IS present, resolved to the Windows .exe through /mnt/c, so a" >&2
+  echo "      tool check passes and the Windows binary then gets /mnt/c/... paths" >&2
+  echo "" >&2
+  echo "  Use git-bash, and set the variables INSIDE it:" >&2
+  echo '    & '"'"'C:\Program Files\Git\bin\bash.exe'"'"' -c "VAULT=<vault> NETWORK=<net> bash scripts/upgrade-vault.sh"' >&2
+  echo "" >&2
+  echo "  If you really do mean to build inside WSL, re-run with ALLOW_WSL=1." >&2
+  exit 1
+fi
+echo "==> shell: $SHELL_KIND"
 
 : "${VAULT:?set VAULT to the existing vault account}"
 
@@ -90,34 +143,41 @@ esac
 export NEAR_VAULT_RPC_URL="${NEAR_VAULT_RPC_URL:-$DEFAULT_RPC}"
 echo "==> network: $NETWORK   vault: $VAULT   rpc: $NEAR_VAULT_RPC_URL"
 
-# ---- Tooling, with the Windows trap named.
+# ---- Tooling.
 #
-# On Windows, plain `bash` in PowerShell resolves to C:\WINDOWS\system32ash.exe
-# — WSL — and NOT git-bash. A non-login WSL shell has no ~/.cargo/bin on PATH,
-# so cargo-near reports "not found" while being perfectly well installed on the
-# Windows side. The toolchain this script needs lives in git-bash:
-#   near       -> /c/Users/<you>/AppData/Roaming/npm/near
-#   cargo-near -> /c/Users/<you>/.cargo/bin/cargo-near
-#
-# So the check reports WHICH SHELL it is running in. "not found" in WSL is a
-# wrong-shell problem; "not found" in MINGW64 is a missing-install problem, and
-# the two have completely different fixes.
+# The WSL case is already handled above, so a "not found" here is a genuine
+# missing install. The shell is still reported, because the two have completely
+# different fixes and the message should not have to be guessed at.
 missing() {
-  echo "FATAL: $1 not found.   shell: $(uname -s)" >&2
-  case "$(uname -s)" in
-    Linux*)
-      echo "       This is WSL. On Windows, plain 'bash' is WSL's bash and its PATH" >&2
-      echo "       omits ~/.cargo/bin. Use git-bash explicitly:" >&2
-      echo "         & 'C:\Program Files\Gitinash.exe' -c \"...\"" >&2
-      ;;
-    *) echo "       Install it: $2" >&2 ;;
-  esac
+  echo "FATAL: $1 not found.   shell: $SHELL_KIND ($(uname -s))" >&2
+  echo "       Install it: $2" >&2
   exit 1
 }
 command -v near       >/dev/null || missing near       "npm i -g near-cli-rs"
 command -v cargo-near >/dev/null || missing cargo-near "cargo install cargo-near --locked"
 
-# ---- 1. Record what is there now.
+# ---- 1. Can the key on disk even sign this deploy?
+#
+# FIRST of the on-chain checks and well before the build, because this is the
+# one that cost three cycles. A DeployContract action applies to the signer's
+# own account, so a deploy's signer_id must equal its receiver_id: the only key
+# that can upgrade the vault is a full-access key ON the vault. near-cli-rs's
+# legacy keychain picks that key by FILENAME, so `sign-with-legacy-keychain`
+# reads ~/.near-credentials/<network>/<VAULT>.json and signs with whatever is
+# in it.
+#
+# Measured 2026-10-31: float.test015.near.json still held ed25519:Bb9qZA8...,
+# the setup key a hand rotation had removed from the account and left on disk.
+# Three deploys failed at the signing step, each after a full cargo-near build.
+# The file had been described in this repo as "inert"; it is in fact how
+# near-cli chooses the signer.
+echo "==> checking the signing key for $VAULT"
+if ! node scripts/check-signer-key.mjs "$VAULT" "$NETWORK" "$NEAR_VAULT_RPC_URL"; then
+  echo "FATAL: refusing to build — the key on disk cannot sign this deploy." >&2
+  exit 1
+fi
+
+# ---- 2. Record what is there now.
 #
 # Run BEFORE the deploy, deliberately. "The state survived" is unfalsifiable
 # without a before-picture, and reconstructing one afterwards from memory is
@@ -133,22 +193,34 @@ export NEAR_VAULT_CONTRACT="$VAULT"
 echo "==> snapshotting live state of $NEAR_VAULT_CONTRACT"
 node scripts/verify-upgrade.mjs snapshot
 
-# ---- 2. Build with the PRODUCTION clock.
+# ---- 3. Build with the PRODUCTION clock.
 #
 # cargo-near, never plain `cargo build --target wasm32-unknown-unknown`: the
 # latter silently links near-sdk's pure-Rust fallbacks, after which every
 # contract panic arrives as "unreachable opcode" and the reason codes this
 # vault's whole UX depends on are gone. Tests still pass, so nothing warns you.
 #
-# NO_ABI=1 is required on Windows, for the same reason as in
-# deploy-testnet.sh: cargo-near's ABI step compiles the crate natively as a
-# cdylib and link.exe refuses to emit a DLL with near-sdk's host-function
-# externs undefined. It skips only ABI metadata; the wasm build still runs
-# through cargo-near, so --cfg near is preserved. That matters precisely
-# because of the comment above.
+# The ABI step is skipped on git-bash AUTOMATICALLY. cargo-near compiles the
+# crate a second time, natively, as a cdylib to extract ABI metadata, and
+# link.exe refuses to emit a DLL with near-sdk's host-function externs
+# undefined — about 52 LNK2019 errors. This used to require remembering
+# NO_ABI=1, which is a thing you learn only after the build has failed; it cost
+# a cycle on 2026-10-31 and the repo's own memory file had already recorded it.
+#
+# --no-abi drops only the metadata. The wasm still goes through cargo-near, so
+# `--cfg near` is preserved and the reason codes survive, which is exactly why
+# the paragraph above matters.
+#
+# NO_ABI overrides the automatic choice in both directions: 1 forces skip,
+# 0 forces the ABI step even on Windows.
 ABI_FLAGS=()
-if [ "${NO_ABI:-0}" = "1" ]; then
-  echo "    NO_ABI=1: skipping ABI generation (required on Windows)"
+case "${NO_ABI:-auto}" in
+  1) ABI_DECISION="skip"; ABI_WHY="NO_ABI=1" ;;
+  0) ABI_DECISION="build"; ABI_WHY="NO_ABI=0" ;;
+  *) ABI_DECISION="$(abi_policy "$SHELL_KIND")"; ABI_WHY="auto, shell=$SHELL_KIND" ;;
+esac
+if [ "$ABI_DECISION" = "skip" ]; then
+  echo "    skipping ABI generation ($ABI_WHY) — link.exe cannot build the native cdylib"
   ABI_FLAGS+=(--no-abi)
 fi
 echo "==> building (production clock)"
@@ -163,7 +235,7 @@ done
 [ -n "$WASM" ] || { echo "FATAL: built vault.wasm not found" >&2; exit 1; }
 echo "    wasm: $WASM ($(wc -c < "$WASM") bytes)"
 
-# ---- 2b. Will it still FIT?
+# ---- 4. Will it still FIT?
 #
 # NEAR locks storage_usage * 1e19 yocto. A deploy changes usage by the
 # code-size delta, so a bigger contract raises the locked amount — and if that
@@ -183,7 +255,7 @@ if ! node scripts/check-upgrade-margin.mjs "$VAULT" "$WASM" "$NEAR_VAULT_RPC_URL
   exit 1
 fi
 
-# ---- 3. Deploy over the top, migrating in the SAME transaction.
+# ---- 5. Deploy over the top, migrating in the SAME transaction.
 #
 # Atomicity is the whole point. If `migrate` panics, NEAR reverts the deploy
 # with it and the vault keeps running the old code against its old state —
@@ -204,7 +276,7 @@ else
     network-config "$NETWORK" sign-with-legacy-keychain send
 fi
 
-# ---- 4. Prove it.
+# ---- 6. Prove it.
 #
 # Checks the tree, the ledgers' request history, the config, that the new
 # methods actually resolve, and that the deployed build carries the production

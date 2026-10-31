@@ -16,6 +16,11 @@ The sandbox/integration tier was **not** run: it needs a Linux `neard` and does
 not build on Windows. Unchanged from before, but worth stating rather than
 implying it passed.
 
+Later the same day, the deploy-preflight work in the afterword took
+create-float to **219** and added a **root** suite of **11**
+(`test/shell-env.test.mjs`), now wired into `npm test` — it was not, so a root
+`test/` directory would have run nowhere.
+
 ## What changed, in order
 
 ### 1. Eleven untested refusals (`466d395`)
@@ -186,8 +191,109 @@ asserts the four persisted tags).
 - **`test015.near`'s seed phrase is still in `~/.near-credentials`.** The vault
   key rotation pointed the vault at that wallet, so this is now the single key
   protecting it. Hardware wallet or a fresh owner via `propose_owner`.
-- **`float.test015.near.json`** is inert (its key is off the account) but worth
-  deleting so it is not mistaken for live credentials.
+- ~~**`float.test015.near.json`** is inert (its key is off the account) but
+  worth deleting so it is not mistaken for live credentials.~~
+  **WRONG, and it cost three failed deploys the same day.** That file is not
+  inert: near-cli-rs's legacy keychain picks the signing key BY FILENAME, so
+  `near contract deploy float.test015.near ... sign-with-legacy-keychain` reads
+  exactly this file. It held `ed25519:Bb9qZA8...`, the setup key the hand
+  rotation had removed from the account, so every deploy died at the signing
+  step after a full cargo-near build. It is now rewritten with the owner's key,
+  and the rotation path repoints it automatically — see
+  `repointedCredential` in `packages/create-float/bin/rotate-key.mjs`.
+  `float.test015.near.json.dead-setup-key` is the backup from that repair and
+  *is* safe to delete.
+
+## Afterword: the mainnet upgrade, and the four preflights it bought
+
+`float.test015.near` was upgraded to the approval-gate contract on 2026-10-31
+(tx `DpB414y1YbR1q1ZfwYickiV6LM3ja1KBpjVnc16M8Jer`, 0.000233 NEAR, 2.4 TGas).
+`get_approval_threshold` now answers `null` instead of `MethodNotFound`, which
+is the proof the gate is live — and `null` also means no threshold is set, so
+the gate is inert and the vault behaves exactly as before.
+
+It took **four attempts**, and every single failure had already been written
+down somewhere in this repo:
+
+| # | failure | what had already recorded it |
+| --- | --- | --- |
+| 1 | plain `bash` was WSL: `set VAULT`, no cargo-near | `plain-bash-on-windows-is-wsl-not-git-bash.md` |
+| 2 | ~52 `LNK2019` from cargo-near's native ABI pass | `cargo-near-abi-step-fails-on-windows.md` |
+| 3 | signed with a key removed from the account | a comment of mine calling that file "inert" |
+| 4 | `LackBalanceForState` — 0.058 NEAR short | nothing; this one was caught by the margin check |
+
+Only #4 was prevented by a check. The other three were prevented by *me
+remembering*, which is not a mechanism. So `upgrade-vault.sh` now decides all
+four before it spends anything:
+
+- **shell** — `scripts/lib/shell-env.sh` classifies git-bash / WSL / unix from
+  `uname -s` plus the kernel release, and refuses WSL on a `/mnt/` path with
+  the git-bash command to use instead (`ALLOW_WSL=1` overrides). It runs
+  *before* the `VAULT` check on purpose: under WSL the visible symptom is
+  "set VAULT", which sends you looking at the wrong thing.
+- **ABI** — `--no-abi` is now added automatically on git-bash. `NO_ABI=1`/`0`
+  still override in both directions.
+- **signer** — `scripts/check-signer-key.mjs` compares the credential file
+  against the account's live key list. First of the on-chain checks, because a
+  dead key is invisible until the last step and each failed attempt paid for a
+  build first.
+- **storage** — unchanged, and the one that already worked.
+
+The decisions take `uname -s`, the cwd and the kernel release as *arguments*
+rather than reading them, which is the only reason both branches are testable
+from one shell (`test/shell-env.test.mjs`, 11 tests, now wired into
+`npm test`).
+
+**A bug found while building the signer check.** It ended with
+`process.exit(0)` after the RPC read — the same shape as the margin check — and
+aborted 5 runs out of 5 on node 24.14/Windows with
+`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` and exit code
+`-1073740791`. The verdict printed correctly; only the exit code was wrong, and
+the caller is `if ! node scripts/check-signer-key.mjs`, which reads any
+non-zero as a refusal. So the guard would have blocked every deploy while
+displaying a green verdict. The margin check did *not* abort on a different RPC
+method — luck, not a difference in kind — and both now set `process.exitCode`,
+pinned by a test.
+
+**The rotation fix.** `applyRotation` no longer deletes the vault's credential
+file; it rewrites it with the owner's key. This is forced by the protocol, not
+a convenience: a `DeployContract` action applies to the signer's own account, so
+a deploy's `signer_id` must equal its `receiver_id` — the only key that can ever
+upgrade the vault is a full-access key *on the vault*, which after rotation is
+the owner's. Deleting the file left no signer; doing the rotation by hand left
+the dead key. Both break the next upgrade. The owner's secret already sits in
+the same directory under the owner's own filename, so nothing new is exposed.
+
+### What was driven for real, and what was not
+
+Driven on this machine, output read: both shells classified from their actual
+`uname -s` / kernel release; the WSL guard firing and `ALLOW_WSL=1` getting past
+it; the composed cargo argv captured with a stub `cargo` (`--no-abi` present on
+auto, absent on `NO_ABI=0`); the signer check against the live mainnet vault
+(1 full-access key, matching, **can sign**) and against a planted dead key
+(refused, naming the key); the script halting before the snapshot and the build
+when the signer check fails; every exit code, 5 runs each.
+
+**Not reached, and not recorded as verified:**
+
+- `abi_policy wsl → build` through a real WSL `cargo near build` — cargo-near is
+  not installed in WSL here. Unit-tested only.
+- `shell_kind → unix` on a real Linux or macOS box. Unit-tested only.
+- `NO_ABI=0` on Windows. It would deliberately fail the link; that is the point.
+- create-float's step 9 end to end. It needs a real vault and real NEAR, so the
+  repoint is covered by `applyRotation`'s executed-order tests plus a structural
+  wiring assertion, not by a run.
+
+Eight mutations, all caught. Two are worth naming because they caught *me*:
+
+- My first ordering mutation **duplicated** the `repointCredential` call rather
+  than moving it, so "the credential file goes last" survived — `.at(-1)` was
+  still right. Redone as an actual move, it failed. A passing negative test
+  proves nothing until a mutation shows which clause carries it.
+- The "never deletes the credential" guard was
+  `/rmSync\(credPath\(vault\)\)/` — one spelling. `rmSync(credPath(vault),
+  { force: true })` slipped straight past it. Widened to cover the forms node's
+  fs API actually offers, then proven with that exact line.
 
 ## One honest note on method
 

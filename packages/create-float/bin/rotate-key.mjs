@@ -97,9 +97,12 @@ export function rotationPlan({ keys, ownerPublicKey, setupPublicKey }) {
  * swapping two behaviour-neutral if/else branches failed the test. One was a
  * false negative and the other a false positive, from the same technique.
  *
- * `removeCredential` runs ONLY after every on-chain step has resolved. If the
- * delete fails, the setup key file must survive -- it is the only thing that can
- * finish the job on a re-run.
+ * `repointCredential` runs ONLY after every on-chain step has resolved. If the
+ * removal failed, the setup key file must survive untouched -- it is the only
+ * thing that can finish the job on a re-run, and rewriting it there would be
+ * worse than deleting it: the next run would derive the setup public key FROM
+ * that file, find it equal to the owner's, conclude the rotation was already
+ * done, and leave a live full-access key on the vault that nobody holds.
  */
 export async function applyRotation(plan, ops) {
   const done = [];
@@ -113,9 +116,89 @@ export async function applyRotation(plan, ops) {
       done.push("remove-setup");
     }
   }
-  if (ops.removeCredential) {
-    await ops.removeCredential();
-    done.push("remove-credential");
+  if (ops.repointCredential) {
+    await ops.repointCredential();
+    done.push("repoint-credential");
   }
   return done;
+}
+
+/**
+ * The credential file to leave behind, pointing at the OWNER's key.
+ *
+ * THE PROTOCOL FACT. A DeployContract action applies to the signer's own
+ * account, so a deploy transaction's signer_id must equal its receiver_id.
+ * There is no way to upgrade `vault.owner.near` signed as `owner.near`: the
+ * only key that can ever deploy to the vault is a full-access key sitting ON
+ * the vault. After rotation that is the owner's key.
+ *
+ * near-cli-rs's legacy keychain finds a signing key by FILENAME —
+ * ~/.near-credentials/<network>/<account>.json — so `near contract deploy
+ * <vault> ... sign-with-legacy-keychain` reads the file named after the VAULT.
+ * Hence the file keeps the vault's account_id and gains the owner's keypair.
+ * Duplicating the secret is not a shortcut; it is the only representation
+ * near-cli can use, and the secret already sits in the same directory under the
+ * owner's own filename, so nothing new is exposed.
+ *
+ * WHAT THIS REPLACES, and what it cost. The wizard used to DELETE this file.
+ * Done by hand on mainnet it is worse still: the file survives holding the key
+ * that was just removed from the account. Measured 2026-10-31 — the mainnet
+ * upgrade of float.test015.near failed three times signing with the dead
+ * ed25519:Bb9qZA8..., after a full cargo-near build each time. That file had
+ * been described as "inert"; it is in fact how near-cli picks the signer.
+ */
+export function repointedCredential({ vault, ownerPublicKey, ownerPrivateKey }) {
+  if (!vault) throw new Error("repointedCredential needs the vault account id");
+  if (!ownerPublicKey) throw new Error("repointedCredential needs the owner's public key");
+  // Checked rather than trusted: JSON.stringify DROPS an undefined value, so a
+  // missing secret would write {"account_id":...,"public_key":...} — a file
+  // near-cli reads as malformed, at the end of a run that reported success.
+  if (!ownerPrivateKey) throw new Error("repointedCredential needs the owner's private key");
+  return { account_id: vault, public_key: ownerPublicKey, private_key: ownerPrivateKey };
+}
+
+/**
+ * Can this credential file actually sign a deploy to this vault?
+ *
+ * Exists for the vaults rotated BEFORE repointedCredential did. Repointing on
+ * rotation does nothing for an account someone rotated by hand, whose file
+ * still holds a key that is no longer on it.
+ *
+ * Checked against the account's LIVE key list, which is the only thing that
+ * settles it — the file is present and well-formed in the failure case, so
+ * every cheaper check passes and near-cli fails at the signing step. Run this
+ * BEFORE the build: the three failed attempts on 2026-10-31 each died at the
+ * last step, after minutes of cargo-near.
+ */
+export function signerVerdict({ vault, credential, keys }) {
+  const fix =
+    `rotate-key / create-float now repoints this file automatically. To fix it by hand, write ` +
+    `~/.near-credentials/<network>/${vault}.json as ` +
+    `{"account_id":"${vault}","public_key":"<owner pk>","private_key":"<owner sk>"} ` +
+    `using a key that IS full-access on ${vault}.`;
+  const no = (reason) => ({ ok: false, reason, fix });
+
+  if (!credential) return no(`no credential file for ${vault}`);
+  if (credential.account_id && credential.account_id !== vault) {
+    return no(`the credential file names account_id ${credential.account_id}, not ${vault}`);
+  }
+  const sk = credential.private_key ?? credential.secret_key;
+  if (!sk) return no(`the credential file for ${vault} has no private key`);
+  if (!credential.public_key) return no(`the credential file for ${vault} has no public key`);
+
+  const list = Array.isArray(keys) ? keys : [];
+  const entry = list.find((k) => k.public_key === credential.public_key);
+  if (!entry) {
+    return no(
+      `the credential file's key ${credential.public_key} is no longer on ${vault} — ` +
+        `it was removed from the account but left on disk, so every deploy will fail at signing`,
+    );
+  }
+  if (!isFullAccess(entry)) {
+    return no(
+      `${credential.public_key} is on ${vault} but is not a full-access key, and a deploy ` +
+        `cannot be signed by a function-call key`,
+    );
+  }
+  return { ok: true, publicKey: credential.public_key };
 }

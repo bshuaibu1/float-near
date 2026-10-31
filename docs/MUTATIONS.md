@@ -252,6 +252,15 @@ the exact binary the script is meant to reject.
     `promise_batch_create`, …) because `link.exe`, unlike `ld`, refuses to emit
     a DLL with undefined symbols. The ABI step is now opt-out via `NO_ABI=1`;
     the wasm build still runs THROUGH cargo-near, so `--cfg near` is preserved.
+    - **Superseded 2026-10-31 for `upgrade-vault.sh`:** opt-out is not enough.
+      `NO_ABI=1` is a thing you learn to set *after* the build has failed, and
+      that is exactly how it cost a cycle on the mainnet upgrade with this very
+      note already in the repo. `scripts/lib/shell-env.sh` now decides it:
+      `abi_policy git-bash` → `skip`, and WSL/Linux still → `build`, because
+      the sentence below is the reason the flag must not be unconditional.
+      `NO_ABI=1`/`0` override in both directions. Verified by capturing the
+      composed argv with a stub `cargo`:
+      `cargo near build non-reproducible-wasm --no-default-features --no-abi`.
     Confirmed rather than assumed: the resulting wasm was byte-identical
     (sha256 `23a44704…`) to the repo's checked-in build, `grep -c panic_utf8`
     = 1, and a live call returned a readable

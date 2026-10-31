@@ -25,7 +25,7 @@
  *      as `float-near` instead, and the collision is reported.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +42,7 @@ import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
 import { mcpTargets, writeMcpConfigs } from "./mcp-config.mjs";
 import { handoffLinks, handoffLines } from "./handoff.mjs";
 import { vaultFunding } from "./funding.mjs";
-import { rotationPlan, applyRotation } from "./rotate-key.mjs";
+import { rotationPlan, applyRotation, repointedCredential } from "./rotate-key.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -574,10 +574,14 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     if (exists) {
       skip(`${vault} already exists`);
       if (!existsSync(credPath(vault))) {
-        // Expected once step 9 has run: the setup key is deleted from the vault
-        // and its file removed, leaving the owner's wallet as the only
-        // full-access key. That is the DESIRED end state, not a broken run — so
-        // refuse only if something here still needs a vault-signed action.
+        // Only reachable for a vault rotated by an OLDER create-float, which
+        // deleted this file instead of repointing it. Step 9 now rewrites it
+        // with the owner's key, so a rotated vault keeps a usable signer and
+        // comes in through the `else` branch below.
+        //
+        // Still a legitimate state, not a broken run — the vault works, it just
+        // has no key here. So refuse only if something ahead needs a
+        // vault-signed action.
         const initialised = await viewSafe(provider, vault, "get_config");
         if (!initialised) {
           throw new Error(
@@ -857,11 +861,30 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
           },
           // Runs only after both chain steps resolve. If the removal failed,
           // this file is the only thing that can finish the job on a re-run.
-          removeCredential: async () => {
-            if (existsSync(credPath(vault))) {
-              rmSync(credPath(vault));
-              ok(`deleted ${credPath(vault)} — no longer needed, and the weakest link`);
-            }
+          //
+          // REPOINTED, NOT DELETED. A DeployContract action applies to the
+          // signer's own account, so a deploy's signer_id must equal its
+          // receiver_id: the vault can only ever be upgraded by a full-access
+          // key ON the vault, which after this rotation is the owner's. And
+          // near-cli-rs's legacy keychain finds that key by FILENAME, so
+          // `near contract deploy <vault>` reads the file named after the
+          // VAULT. Deleting it left no signer and killed the upgrade path;
+          // doing the same rotation by hand on mainnet left the file holding
+          // the key just removed, which cost three failed deploys on
+          // 2026-10-31. Either way the next upgrade is broken.
+          //
+          // The owner's secret already sits in this same directory under the
+          // owner's own filename, so this exposes nothing new.
+          repointCredential: async () => {
+            writeFileSync(
+              credPath(vault),
+              JSON.stringify(
+                repointedCredential({ vault, ownerPublicKey: ownerPk, ownerPrivateKey: ownerKey }),
+                null,
+                2,
+              ),
+            );
+            ok(`${credPath(vault)} now points at ${owner}'s key — upgrades keep working`);
           },
         });
       }
