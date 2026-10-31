@@ -112,7 +112,7 @@ const limitShape = z
 // startup: a wrong relative path would break the server outright instead of
 // merely reporting a stale version. server.smoke.test.ts asserts the two agree,
 // so a bump cannot land with only one of them moved.
-const server = new McpServer({ name: "float", version: "0.1.1" });
+const server = new McpServer({ name: "float", version: "0.2.0" });
 
 // ----------------------------------------------------------------- reads
 
