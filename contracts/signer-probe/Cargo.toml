@@ -1,0 +1,36 @@
+[package]
+name = "signer-probe"
+version = "0.1.0"
+edition = "2021"
+
+# Deliberately OUTSIDE the root workspace, so `cargo test -p vault` and the
+# pinned release profile are untouched by a throwaway instrument. An empty
+# [workspace] table makes this crate its own workspace root.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+# NO near-sdk, and NO std. Two reasons, one practical and one methodological.
+#
+# PRACTICAL: with near-sdk this probe was 88.2 KB, which stakes 0.904 NEAR. The
+# testnet accounts here hold 2.692 NEAR of FREE (unlocked) balance scattered
+# across five accounts, the largest single pool being 1.074 on the virtual-agent
+# proving ground — the one account that should not be stripped. A no_std probe is
+# a couple of KB and fits in the small change.
+#
+# METHODOLOGICAL: the questions are about HOST FUNCTIONS. Declaring them as
+# externs and calling them directly puts nothing between the measurement and the
+# thing being measured — no sdk wrapper that might normalise, cache or
+# substitute a value. near-sdk's own fallback substitution is exactly the class
+# of surprise this repo has been bitten by before (see the root Cargo.toml note
+# on panic_utf8).
+[dependencies]
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+strip = true
