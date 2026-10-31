@@ -2,12 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { KeyPair } from "near-api-js";
 import { createServer } from "node:http";
+import { vaultFunding } from "../bin/funding.mjs";
+
+// The artifact the wizard will actually deploy, so the affordability
+// expectation below tracks it instead of going stale.
+const RES_WASM = join(dirname(fileURLToPath(import.meta.url)), "..", "res", "vault.wasm");
 
 /**
  * Step ordering, by running the real CLI.
@@ -386,7 +391,7 @@ test("an unaffordable plan is refused BEFORE the dry-run gate", async () => {
   // does not paper over "you cannot afford this". A dry run that reported
   // success on a balance too small to proceed would be worse than no dry run.
   const creds = scratchCreds("testnet", "me.testnet");
-  const rpc = await rpcStub({ nearBalance: 1 }); // need 3.000
+  const rpc = await rpcStub({ nearBalance: 1 }); // far below the derived need
   try {
     const r = await run(
       ["--network", "testnet", "--yes", "--dry-run", "--owner", "me.testnet",
@@ -395,9 +400,21 @@ test("an unaffordable plan is refused BEFORE the dry-run gate", async () => {
     );
     const txt = plain(r.out);
     assert.notEqual(r.code, 0, "cannot be a success when the plan is unaffordable");
-    // 3.001, not 3.000: the gate now includes the 0.00125 NEAR to register the
-  // vault on the token, which the wizard performs instead of printing.
-  assert.match(txt, /insufficient balance: need 3\.001, have 0\.998/);
+    // DERIVED, not hardcoded. This asserted `need 3.001` and went stale the
+    // moment the contract grew: funding is the code stake plus a state
+    // headroom, so it tracks the artifact. A literal here would have to be
+    // re-chased on every contract change, and the version that broke was
+    // itself a correction of an earlier literal.
+    //
+    // The 0.00125 is the token storage_deposit the wizard performs rather
+    // than printing for the user to run.
+    const needYocto = vaultFunding(statSync(RES_WASM).size) + 125n * 10n ** 19n;
+    const need = (Number(needYocto / 10n ** 18n) / 1e6).toFixed(3);
+    assert.match(
+      txt,
+      new RegExp(`insufficient balance: need ${need.replace('.', '\.')}, have 0\.998`),
+      `expected the gate to quote ${need}`,
+    );
     assert.doesNotMatch(txt, /dry run — nothing was sent/, "the gate sits after this check");
   } finally {
     await rpc.close();

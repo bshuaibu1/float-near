@@ -88,7 +88,7 @@ WHAT IT DOES
 
 WHAT IT COSTS
   You need a funded NEAR account with its key in ~/.near-credentials, which
-  'near login' puts there. Roughly 3.6 NEAR for a vault plus one agent — most
+  'near login' puts there. Roughly 3.9 NEAR for a vault plus one agent — most
   of it a refundable storage stake. On mainnet this spends REAL funds, and the
   wizard asks for a typed acknowledgement before it does.
 

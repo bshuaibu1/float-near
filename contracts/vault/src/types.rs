@@ -278,6 +278,17 @@ pub enum ReasonCode {
     /// and the owner fixes them differently. APPENDED, never inserted -- see
     /// persisted_reason_code_tags_are_pinned.
     NoRecipientsSet,
+    /// The amount is inside every cap but above the node's approval threshold,
+    /// so it is held for the owner rather than refused. NOTHING is charged and
+    /// no reservation is held -- the ticket is a note, not a pending payment.
+    /// APPENDED, never inserted -- see persisted_reason_code_tags_are_pinned.
+    ApprovalRequired,
+    /// The owner declined a held payment. The ticket is gone; the agent must
+    /// request again if it still wants the money.
+    ApprovalRejected,
+    /// `approve_payment`/`reject_payment` named a request with no ticket --
+    /// already approved, already rejected, or never held.
+    NoSuchApproval,
 }
 
 impl ReasonCode {
@@ -329,6 +340,9 @@ impl ReasonCode {
             NonceNotFresh => "NONCE_NOT_FRESH",
             AgentSignatureExpired => "AGENT_SIGNATURE_EXPIRED",
             NoRecipientsSet => "NO_RECIPIENTS_SET",
+            ApprovalRequired => "APPROVAL_REQUIRED",
+            ApprovalRejected => "APPROVAL_REJECTED",
+            NoSuchApproval => "NO_SUCH_APPROVAL",
         }
     }
 }
@@ -458,4 +472,34 @@ pub struct QuoteBinding {
     /// Quotes go stale: prices move and deposit addresses expire. Past this,
     /// the signature is refused.
     pub deadline_ns: u64,
+}
+
+/// A payment the owner has been asked to approve.
+///
+/// Held under its OWN raw storage key, not inside `Vault`, so adding this
+/// feature changes no borsh layout and needs no migration. That is the same
+/// pattern the NEAR spending ceiling uses (MAX_DAILY_NEAR_KEY), and it matters
+/// here because this contract has already been bitten once by positional
+/// encoding -- see persisted_reason_code_tags_are_pinned.
+///
+/// NOTHING IS RESERVED while a ticket exists. Every limit is re-checked when
+/// the owner approves, so:
+///   - a held payment does not block other spending from the same budget
+///   - an approval cannot slip past a cap that was tightened while it waited
+///   - an Intents quote that expired in the meantime is refused at approval
+///     time with QUOTE_EXPIRED, which is the honest answer
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug)]
+pub struct ApprovalTicket {
+    pub request_id: String,
+    pub node_id: NodeId,
+    pub token: AccountId,
+    pub amount: U128,
+    pub recipient: AccountId,
+    pub memo: String,
+    pub route: Route,
+    /// When the agent asked. The owner sees how long it has waited; nothing in
+    /// the contract expires a ticket, because a silent expiry would look like a
+    /// rejection nobody made.
+    pub requested_at_ns: U64,
 }

@@ -3049,3 +3049,316 @@ fn the_near_ceiling_does_not_touch_the_direct_rail() {
     testing_env!(ctx(r1(), ZERO, 0).build());
     assert_dispatched(v.request_payment("nb-2".into(), tok(), usdc(1), payee(), "".into(), None));
 }
+
+// ---------------------------------------------------------------------------
+// Human approval above a threshold.
+//
+// A SECOND gate inside the caps, never a way around them:
+//
+//   amount <= threshold          executes immediately, exactly as before
+//   threshold < amount <= caps   held for the owner (APPROVAL_REQUIRED)
+//   amount > caps                refused, exactly as before
+//
+// So no setting of a threshold can move more money than the tree already
+// allowed. That is the property these tests pin, because it is the one that
+// makes the feature safe to add to a spending-control contract.
+//
+// Nothing is reserved while a ticket waits, and every limit is re-checked at
+// approval time. Three consequences, each with a test: a held payment does not
+// block other spending; an approval cannot slip past a cap tightened while it
+// waited; and a stale Intents quote is refused at approval rather than sent.
+
+#[test]
+fn below_the_threshold_still_executes_unattended() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_dispatched(v.request_payment("a1".into(), tok(), usdc(10), payee(), "".into(), None));
+}
+
+#[test]
+fn above_the_threshold_is_held_and_charges_nothing() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    let before = v.get_node_budget(t.n_r1, tok(), None).unwrap().available;
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("a2".into(), tok(), usdc(11), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+
+    // The budget is untouched: a held payment is a note, not a reservation.
+    assert_eq!(v.get_node_budget(t.n_r1, tok(), None).unwrap().available, before);
+    // And it is not in the request ledger either.
+    assert!(v.get_request("a2".into()).is_none());
+    // But the owner can see it.
+    let held = v.get_pending_approval("a2".into()).expect("ticket should exist");
+    assert_eq!(held.amount, usdc(11));
+    assert_eq!(held.recipient, payee());
+}
+
+#[test]
+fn a_held_payment_does_not_block_other_spending() {
+    // Because nothing is reserved. If the ticket held a reservation, this second
+    // payment would compete with money that may never move.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("h1".into(), tok(), usdc(400), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+    testing_env!(ctx(r1(), ZERO, 2).build());
+    assert_dispatched(v.request_payment("h2".into(), tok(), usdc(5), payee(), "".into(), None));
+}
+
+#[test]
+fn over_the_cap_is_still_refused_by_the_cap_not_the_threshold() {
+    // Ordering of the gate. The threshold must not mask a limit: an amount
+    // beyond the per-tx cap is unapprovable, so reporting APPROVAL_REQUIRED
+    // would invite the owner to approve what the contract will then refuse.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("o1".into(), tok(), usdc(5000), payee(), "".into(), None),
+        ReasonCode::ParentPerTxLimit,
+    );
+    assert!(v.get_pending_approval("o1".into()).is_none(), "an unapprovable amount was held");
+}
+
+#[test]
+fn approving_executes_the_payment_and_consumes_the_ticket() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("ap".into(), tok(), usdc(50), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+
+    testing_env!(ctx(owner(), YOCTO, 2).build());
+    assert_dispatched(v.approve_payment("ap".into()));
+
+    assert!(v.get_pending_approval("ap".into()).is_none(), "ticket survived approval");
+    // NOW it is charged and in the ledger.
+    let r = v.get_request("ap".into()).expect("request should exist after approval");
+    assert_eq!(r.amount, usdc(50));
+}
+
+#[test]
+fn rejecting_discards_the_ticket_and_moves_nothing() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    let before = v.get_node_budget(t.n_r1, tok(), None).unwrap().available;
+    assert_blocked(
+        v.request_payment("rj".into(), tok(), usdc(50), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+
+    testing_env!(ctx(owner(), YOCTO, 2).build());
+    v.reject_payment("rj".into());
+
+    assert!(v.get_pending_approval("rj".into()).is_none());
+    assert!(v.get_request("rj".into()).is_none(), "a rejected payment entered the ledger");
+    assert_eq!(v.get_node_budget(t.n_r1, tok(), None).unwrap().available, before);
+}
+
+#[test]
+#[should_panic(expected = "NO_SUCH_APPROVAL")]
+fn approving_something_that_was_never_held_fails() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.approve_payment("ghost".into());
+}
+
+#[test]
+#[should_panic(expected = "NO_SUCH_APPROVAL")]
+fn a_ticket_cannot_be_approved_twice() {
+    // The ticket is consumed before dispatch, so a replayed approval has
+    // nothing to act on. Without this, a double-click could pay twice.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("tw".into(), tok(), usdc(50), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+    testing_env!(ctx(owner(), YOCTO, 2).build());
+    assert_dispatched(v.approve_payment("tw".into()));
+    testing_env!(ctx(owner(), YOCTO, 3).build());
+    v.approve_payment("tw".into());
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn an_agent_cannot_approve_its_own_payment() {
+    // The whole point. If the requester could approve, the threshold would be
+    // decoration.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("ag".into(), tok(), usdc(50), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+    testing_env!(ctx(r1(), YOCTO, 2).build());
+    v.approve_payment("ag".into());
+}
+
+#[test]
+fn approval_cannot_slip_past_a_cap_tightened_while_it_waited() {
+    // Every limit is re-checked at approval time, which is why nothing is
+    // reserved up front. An owner who lowers a cap after a request was held
+    // must not find the old amount still payable.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("tt".into(), tok(), usdc(400), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+
+    // Tighten r1 per-tx below the held amount.
+    testing_env!(ctx(owner(), YOCTO, 2).build());
+    v.set_node_caps(t.n_r1, limit(500, 100));
+
+    testing_env!(ctx(owner(), YOCTO, 3).build());
+    assert_blocked(v.approve_payment("tt".into()), ReasonCode::PerTxLimit);
+}
+
+#[test]
+fn a_parent_threshold_binds_a_child_that_sets_none() {
+    // Most-restrictive-wins, and it must reach a child the parent does not
+    // otherwise configure.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.research, Some(usdc(5)));
+
+    assert_eq!(v.get_approval_threshold(t.n_r1), None, "r1 sets none of its own");
+    assert_eq!(v.get_effective_threshold(t.n_r1), Some(usdc(5)), "but research binds it");
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("pt".into(), tok(), usdc(6), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+}
+
+#[test]
+fn the_lowest_threshold_in_the_chain_wins() {
+    // A child cannot loosen what a parent tightened. The opposite of how
+    // recipients work, deliberately: an allowlist says who a team may pay, a
+    // threshold says how much may move unattended.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.research, Some(usdc(5)));
+    v.set_approval_threshold(t.n_r1, Some(usdc(100)));
+
+    assert_eq!(v.get_effective_threshold(t.n_r1), Some(usdc(5)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("lo".into(), tok(), usdc(6), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+}
+
+#[test]
+fn removing_the_threshold_restores_unattended_spending() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+    v.set_approval_threshold(t.n_r1, None);
+
+    assert_eq!(v.get_approval_threshold(t.n_r1), None);
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_dispatched(v.request_payment("rm".into(), tok(), usdc(400), payee(), "".into(), None));
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn setting_a_threshold_is_owner_only() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(stranger(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(1)));
+}
+
+#[test]
+#[should_panic(expected = "UNKNOWN_NODE")]
+fn a_threshold_cannot_be_set_on_a_node_that_does_not_exist() {
+    // Otherwise it writes a value nothing will ever read.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(9999, Some(usdc(1)));
+}
+
+#[test]
+fn no_threshold_anywhere_means_the_gate_is_inert() {
+    // The default, asserted. Every existing vault must behave exactly as it did
+    // before this feature existed.
+    let t = tree();
+    let mut v = t.v;
+    assert_eq!(v.get_effective_threshold(t.n_r1), None);
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_dispatched(v.request_payment("in".into(), tok(), usdc(400), payee(), "".into(), None));
+}
+
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn rejecting_a_held_payment_is_owner_only() {
+    // Written while the mutation that removed this guard was still applied
+    // (tdd-extras 7a). Removing assert_owner from reject_payment SURVIVED the
+    // whole suite: approve_payment had an owner test and reject_payment did
+    // not, so anyone could cancel the owner held payments and the feature would
+    // be unusable by griefing alone. No funds move, which is exactly why it is
+    // easy to leave untested.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_approval_threshold(t.n_r1, Some(usdc(10)));
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("gr".into(), tok(), usdc(50), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+
+    testing_env!(ctx(stranger(), YOCTO, 2).build());
+    v.reject_payment("gr".into());
+}

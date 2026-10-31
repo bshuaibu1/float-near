@@ -41,6 +41,7 @@ import { parseArgs, makeReaders, agentCount, wantsHelp, usage } from "./args.mjs
 import { planTokenSetup, fundingNotice } from "./token-setup.mjs";
 import { mcpTargets, writeMcpConfigs } from "./mcp-config.mjs";
 import { handoffLinks, handoffLines } from "./handoff.mjs";
+import { vaultFunding } from "./funding.mjs";
 import { rotationPlan, applyRotation } from "./rotate-key.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -120,7 +121,12 @@ const MAINNET_USDC = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e3
 const AGENT_KEY_ALLOWANCE = NEAR(0.5);
 const AGENT_STORAGE = NEAR(0.05);
 const AGENT_COST = AGENT_KEY_ALLOWANCE + AGENT_STORAGE;
-const VAULT_FUNDING = NEAR(3); // contract storage + headroom for agent creation
+// VAULT_FUNDING is no longer a constant. The code stake is 1e19 yocto per
+// BYTE, so a growing contract silently eats the headroom: at 278 KB a flat
+// 3 NEAR left 0.152 for state, and at 292 KB it left 0.010 -- about one
+// kilobyte, far too little for a four-node tree. The wizard would have
+// funded, deployed, then failed mid-tree with a storage error after the user
+// had paid. Derived from the artifact instead: see bin/funding.mjs.
 
 // The tree and its rendering live in ./tree.mjs so both can be tested;
 // this file calls main() at the bottom, so a test importing it would
@@ -245,6 +251,9 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       );
     }
     ok(`contract ${(readFileSync(wasm).length / 1024).toFixed(0)} KB — ${wasm}`);
+    // Derived from THIS artifact, not a constant, so a contract that grows
+    // cannot silently eat the state headroom. See bin/funding.mjs.
+    const VAULT_FUND = vaultFunding(readFileSync(wasm).length);
 
     const credDir = join(
       process.env.NEAR_CREDENTIALS_DIR ?? join(homedir(), ".near-credentials"),
@@ -416,7 +425,7 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     // the token. Leaving it out would let a run clear this gate and then fail
     // with the vault already created — the exact shape of the resume bug.
     const total =
-      (vaultExists ? 0n : VAULT_FUNDING) +
+      (vaultExists ? 0n : VAULT_FUND) +
       AGENT_COST * BigInt(agents.length) +
       tokenPlan.nearCost;
 
@@ -450,7 +459,7 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     const agentTotal = AGENT_COST * BigInt(agents.length);
     const agentStake = AGENT_STORAGE * BigInt(agents.length);
     const agentFloat = AGENT_KEY_ALLOWANCE * BigInt(agents.length);
-    const vaultIdle = VAULT_FUNDING - codeStake;
+    const vaultIdle = VAULT_FUND - codeStake;
 
     console.log(`\n    ${C.dim("cost — almost all of this is a deposit, not a fee")}`);
     if (vaultExists) {
@@ -588,14 +597,14 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       await ownerAcct.createSubAccount({
         accountOrPrefix: vault,
         publicKey: vaultKey.getPublicKey(),
-        nearToTransfer: VAULT_FUNDING,
+        nearToTransfer: VAULT_FUND,
       });
       mkdirSync(dirname(credPath(vault)), { recursive: true });
       writeFileSync(
         credPath(vault),
         JSON.stringify({ account_id: vault, public_key: vaultKey.getPublicKey().toString(), private_key: vaultSecret }, null, 2),
       );
-      ok(`${vault} created, funded with ${fmtNear(VAULT_FUNDING)} NEAR`);
+      ok(`${vault} created, funded with ${fmtNear(VAULT_FUND)} NEAR`);
       ok(`setup key at ${credPath(vault)} ${C.dim("(temporary — removed in step 9)")}`);
     }
 

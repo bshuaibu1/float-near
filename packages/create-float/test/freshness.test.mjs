@@ -78,12 +78,12 @@ test("REAL DATA: the shipped res/vault.wasm answers EVERY reason code the real s
   );
 });
 
-test("REAL DATA: the source really does define 45 codes, so the parser is not silently matching nothing", () => {
+test("REAL DATA: the source really does define 48 codes, so the parser is not silently matching nothing", () => {
   // Positive control. A parser returning [] would make every freshness check
   // pass, and "no missing codes" is indistinguishable from "found no codes".
   const src = readFileSync(TYPES_RS, "utf8");
   const all = missingCodes(src, Buffer.alloc(0));
-  assert.equal(all.length, 45, `parsed ${all.length} codes from types.rs, expected 45`);
+  assert.equal(all.length, 48, `parsed ${all.length} codes from types.rs, expected 48`);
 });
 
 // ---- staleSources: mtime, the backstop

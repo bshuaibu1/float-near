@@ -122,6 +122,9 @@ These are the exact strings the contract emits. Match on them literally.
 | `INSUFFICIENT_GAS` | the call arrived with less than 50 TGas | attach more gas and retry; this is a caller setting, not a policy refusal |
 | `INVALID_REQUEST_ID` | the `requestId` is empty, too long, or has illegal characters | your own mistake; fix it or omit it and let one be generated |
 | `LEDGER_INVARIANT` | the vault's internal accounting disagrees with itself | **stop. Do not retry.** Tell the human immediately and quote the request id |
+| `APPROVAL_REQUIRED` | **not a refusal, and not final** — inside every cap but above the node approval threshold, so a human has been asked | tell the human the amount, payee and request id, then STOP. Do not retry, do not split the amount into smaller payments to get under the threshold: that defeats the control the owner asked for. The owner calls `approve_payment` or `reject_payment`. Nothing is charged while it waits |
+| `APPROVAL_REJECTED` | the owner declined a held payment | **do not retry.** Ask the human what to do instead |
+| `NO_SUCH_APPROVAL` | `approve_payment`/`reject_payment` named a request with no ticket | already approved, already rejected, or never held. Check `vault_request` for the real state |
 | `TRANSFER_PENDING` | **not a refusal** — the payment is in flight | poll `vault_request` for the final state. Do **not** resubmit: a second attempt with the same id returns `DUPLICATE_REQUEST`, and with a new id it pays twice |
 
 **You cannot raise your own limit, and you must not imply otherwise.** Report

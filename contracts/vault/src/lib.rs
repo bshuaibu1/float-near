@@ -366,6 +366,47 @@ impl Vault {
     /// `(day, spent)` for the CURRENT day. A stored day that is not today reads
     /// as zero spent, so the counter resets without anyone sweeping it.
     const NEAR_SPENT_KEY: &'static [u8] = b"NEAR_SPENT";
+    /// Per-node approval threshold, and the held tickets. Both OUTSIDE `Vault`
+    /// for the reason above: a struct field would be a borsh layout change
+    /// requiring `migrate()` in the same transaction as every deploy.
+    ///
+    /// A threshold is a SECOND gate inside the caps, never a way around them.
+    /// amount <= threshold            -> executes immediately, as before
+    /// threshold < amount <= caps     -> held for the owner (APPROVAL_REQUIRED)
+    /// amount > caps                  -> refused, exactly as before
+    /// So approving can never move more than the tree already allows.
+    const APPROVAL_THRESHOLD_PREFIX: &'static [u8] = b"APPROVAL_THRESHOLD:";
+    const APPROVAL_TICKET_PREFIX: &'static [u8] = b"APPROVAL_TICKET:";
+
+    fn threshold_key(node_id: NodeId) -> Vec<u8> {
+        let mut k = Self::APPROVAL_THRESHOLD_PREFIX.to_vec();
+        k.extend_from_slice(&node_id.to_le_bytes());
+        k
+    }
+
+    fn ticket_key(request_id: &str) -> Vec<u8> {
+        let mut k = Self::APPROVAL_TICKET_PREFIX.to_vec();
+        k.extend_from_slice(request_id.as_bytes());
+        k
+    }
+
+    fn node_threshold(node_id: NodeId) -> Option<u128> {
+        env::storage_read(&Self::threshold_key(node_id))
+            .and_then(|b| <[u8; 16]>::try_from(b).ok())
+            .map(u128::from_le_bytes)
+    }
+
+    /// The binding threshold over a chain: the LOWEST any level sets.
+    ///
+    /// Most-restrictive-wins, unlike `effective_recipients`, where a child list
+    /// REPLACES an inherited one. The difference is deliberate: an allowlist is
+    /// a statement about who a specific team may pay, so overriding it is the
+    /// point. A threshold is a statement about how much may move unattended, so
+    /// a parent must be able to tighten a child it does not otherwise control.
+    fn effective_threshold(chain: &[NodeId]) -> Option<u128> {
+        chain.iter().filter_map(|id| Self::node_threshold(*id)).min()
+    }
+
 
     fn max_daily_near() -> u128 {
         env::storage_read(Self::MAX_DAILY_NEAR_KEY)
@@ -390,6 +431,103 @@ impl Vault {
         buf[0..8].copy_from_slice(&day.to_le_bytes());
         buf[8..24].copy_from_slice(&next.to_le_bytes());
         env::storage_write(Self::NEAR_SPENT_KEY, &buf);
+    }
+
+    /// Require the owner's approval for payments above `amount` at this node.
+    ///
+    /// `None` removes the threshold, restoring unattended spending up to the
+    /// caps. The threshold is a gate INSIDE the caps: it can only ever make the
+    /// vault more conservative, never less, so there is no configuration of it
+    /// that moves more money than the tree already allows.
+    #[payable]
+    pub fn set_approval_threshold(&mut self, node_id: NodeId, amount: Option<U128>) {
+        self.assert_owner();
+        // Reject an unknown node rather than writing a threshold nothing reads.
+        let _ = self.get_node(node_id);
+        match amount {
+            Some(a) => {
+                env::storage_write(&Self::threshold_key(node_id), &a.0.to_le_bytes());
+            }
+            None => {
+                env::storage_remove(&Self::threshold_key(node_id));
+            }
+        }
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"approval_threshold_set","data":[{{"node_id":{},"amount":{}}}]}}"#,
+            node_id,
+            match amount {
+                Some(a) => format!("\"{}\"", a.0),
+                None => "null".to_string(),
+            }
+        ));
+    }
+
+    pub fn get_approval_threshold(&self, node_id: NodeId) -> Option<U128> {
+        Self::node_threshold(node_id).map(U128)
+    }
+
+    /// The threshold that would actually bind a payment from this node --
+    /// the lowest set anywhere in its chain, which is not necessarily its own.
+    pub fn get_effective_threshold(&self, node_id: NodeId) -> Option<U128> {
+        let n = self.get_node(node_id);
+        let mut chain = n.path.clone();
+        chain.push(node_id);
+        Self::effective_threshold(&chain).map(U128)
+    }
+
+    pub fn get_pending_approval(&self, request_id: String) -> Option<ApprovalTicket> {
+        env::storage_read(&Self::ticket_key(&request_id))
+            .and_then(|b| near_sdk::borsh::from_slice::<ApprovalTicket>(&b).ok())
+    }
+
+    /// Execute a held payment.
+    ///
+    /// Every limit is re-checked NOW, not at request time: caps, cooldown, the
+    /// payee allowlist, the NEAR ceiling, and for a cross-chain payment the
+    /// quote's own deadline. So approving cannot slip past a cap tightened
+    /// while the request waited, and a quote that expired meanwhile is refused
+    /// with QUOTE_EXPIRED rather than sent on a stale price.
+    ///
+    /// The ticket is consumed FIRST. A dispatch that blocks therefore leaves no
+    /// ticket to approve twice -- the agent must ask again, which is the honest
+    /// outcome when the reason it blocked is a limit it has now hit.
+    #[payable]
+    pub fn approve_payment(&mut self, request_id: String) -> PromiseOrValue<PaymentOutcome> {
+        self.assert_owner();
+        let Some(t) = self.get_pending_approval(request_id.clone()) else {
+            fail(ReasonCode::NoSuchApproval, "no payment is awaiting approval under that id")
+        };
+        env::storage_remove(&Self::ticket_key(&request_id));
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"approval_granted","data":[{{"request_id":"{}","node_id":{},"amount":"{}"}}]}}"#,
+            t.request_id, t.node_id, t.amount.0
+        ));
+        self.dispatch_payment(
+            t.node_id,
+            t.request_id,
+            t.token,
+            t.amount,
+            t.recipient,
+            t.memo,
+            t.route,
+            true,
+        )
+    }
+
+    /// Decline a held payment. The ticket is discarded and nothing moves.
+    #[payable]
+    pub fn reject_payment(&mut self, request_id: String) {
+        self.assert_owner();
+        let Some(t) = self.get_pending_approval(request_id.clone()) else {
+            fail(ReasonCode::NoSuchApproval, "no payment is awaiting approval under that id")
+        };
+        env::storage_remove(&Self::ticket_key(&request_id));
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"request_blocked","data":[{{"request_id":"{}","node_id":{},"reason_code":"{}"}}]}}"#,
+            t.request_id,
+            t.node_id,
+            ReasonCode::ApprovalRejected.as_str()
+        ));
     }
 
     /// Raise or lower the daily ceiling on the vault's own NEAR spend.
@@ -1029,6 +1167,7 @@ impl Vault {
             recipient,
             memo,
             route.unwrap_or_default(),
+            false,
         )
     }
 
@@ -1182,7 +1321,7 @@ impl Vault {
         // them. A panic means nothing happened, so a retry is correct.
         self.pubkey_to_nonce.insert(public_key, nonce);
 
-        self.dispatch_payment(node_id, request_id, token, amount, recipient, memo, route)
+        self.dispatch_payment(node_id, request_id, token, amount, recipient, memo, route, false)
     }
 
     /// The one budget-and-dispatch implementation.
@@ -1204,6 +1343,9 @@ impl Vault {
         recipient: AccountId,
         memo: String,
         route: Route,
+        // Set ONLY by approve_payment, which is owner-only. An agent cannot
+        // reach the gate below with this true.
+        approved: bool,
     ) -> PromiseOrValue<PaymentOutcome> {
         let gas_floor = match route {
             Route::NearDirect => MIN_GAS_FOR_DISPATCH,
@@ -1391,6 +1533,41 @@ impl Vault {
                     ReasonCode::ParentDailyBudget
                 };
                 return blocked(&request_id, node_id, code);
+            }
+        }
+
+        // ---- THE APPROVAL GATE.
+        //
+        // Placed here deliberately: after every limit has passed, before
+        // anything is charged. So an over-cap request still reports the cap that
+        // bound it rather than APPROVAL_REQUIRED, and a held payment costs the
+        // budget nothing while it waits.
+        //
+        // `approved` is set only by `approve_payment`, which is owner-only. An
+        // agent cannot reach this with it true.
+        if !approved {
+            if let Some(limit) = Self::effective_threshold(&chain) {
+                if amount.0 > limit {
+                    let ticket = ApprovalTicket {
+                        request_id: request_id.clone(),
+                        node_id,
+                        token: token.clone(),
+                        amount,
+                        recipient: recipient.clone(),
+                        memo: memo.clone(),
+                        route: route.clone(),
+                        requested_at_ns: U64(now),
+                    };
+                    env::storage_write(
+                        &Self::ticket_key(&request_id),
+                        &near_sdk::borsh::to_vec(&ticket).expect("ticket"),
+                    );
+                    env::log_str(&format!(
+                        r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"approval_required","data":[{{"request_id":"{}","node_id":{},"amount":"{}","threshold":"{}","recipient":"{}"}}]}}"#,
+                        request_id, node_id, amount.0, limit, recipient
+                    ));
+                    return blocked(&request_id, node_id, ReasonCode::ApprovalRequired);
+                }
             }
         }
 
