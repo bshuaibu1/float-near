@@ -190,3 +190,158 @@ test("REACHABILITY: and ACCEPTS the current contract, so the guard is not simply
   const { code, output } = runBundleWasm(RES_WASM);
   assert.equal(code, 0, `bundle-wasm rejected the current contract:\n${output}`);
 });
+
+// ---- test-only modules cannot make the artifact stale
+//
+// The mtime backstop watched every *.rs in contracts/vault/src, including
+// tests.rs. Measured 2026-10-31: appending unit tests made tests.rs newer than
+// the wasm, so the guard reported "the contract is STALE" and both ACCEPTS
+// reachability tests went red — on a change that cannot reach the artifact at
+// all. tests.rs is declared `#[cfg(test)] mod tests;` and is never compiled
+// into the contract.
+//
+// Worse than a false alarm: the remedy it prints is "rebuild", and rebuilding
+// changes nothing, so the only way out is to ignore the guard. A check that
+// cries wolf is a check people learn to override.
+//
+// The rule is read from lib.rs rather than hardcoded as a filename, so a future
+// `#[cfg(test)] mod helpers;` is handled without touching this.
+
+import { compiledSources } from "../scripts/freshness.mjs";
+
+const LIB_REAL = readFileSync(join(REPO, "contracts", "vault", "src", "lib.rs"), "utf8");
+
+test("a module declared under #[cfg(test)] is excluded", () => {
+  const kept = compiledSources({
+    files: ["lib.rs", "types.rs", "tests.rs"],
+    libSrc: "pub mod types;\n\n#[cfg(test)]\nmod tests;\n",
+  });
+  assert.deepEqual(kept, ["lib.rs", "types.rs"]);
+});
+
+test("the attribute on the SAME line as the mod is also honoured", () => {
+  const kept = compiledSources({
+    files: ["lib.rs", "tests.rs"],
+    libSrc: "#[cfg(test)] mod tests;\n",
+  });
+  assert.deepEqual(kept, ["lib.rs"]);
+});
+
+test("a module with NO cfg(test) is kept — the negative control", () => {
+  // Without this, a function that excluded everything named tests.rs, or
+  // everything at all, would pass the two tests above.
+  const kept = compiledSources({
+    files: ["lib.rs", "types.rs", "tests.rs"],
+    libSrc: "pub mod types;\nmod tests;\n",
+  });
+  assert.deepEqual(kept, ["lib.rs", "types.rs", "tests.rs"]);
+});
+
+test("cfg(test) on a DIFFERENT module does not exclude the wrong file", () => {
+  const kept = compiledSources({
+    files: ["lib.rs", "types.rs", "helpers.rs"],
+    libSrc: "pub mod types;\n#[cfg(test)]\nmod helpers;\n",
+  });
+  assert.deepEqual(kept, ["lib.rs", "types.rs"]);
+});
+
+test("REAL DATA: the real lib.rs excludes tests.rs and keeps types.rs", () => {
+  const kept = compiledSources({
+    files: ["lib.rs", "types.rs", "tests.rs"],
+    libSrc: LIB_REAL,
+  });
+  assert.ok(kept.includes("types.rs"), "types.rs IS compiled into the contract");
+  assert.ok(kept.includes("lib.rs"), "lib.rs is the contract");
+  assert.ok(!kept.includes("tests.rs"), "tests.rs is #[cfg(test)] and cannot affect the wasm");
+});
+
+// ---- a source DIGEST, because mtime gets stuck
+//
+// Measured 2026-10-31. A mutation pass wrote lib.rs and reverted it, leaving
+// identical content with a newer mtime. The guard then reported the contract
+// STALE and told me to rebuild — and `cargo near build` is content-addressed,
+// so it reused the cached artifact and did NOT refresh the wasm's mtime. The
+// check was permanently red with no action available to clear it:
+//
+//   lib.rs  2026-10-31 02:36:51   (touched, content unchanged)
+//   wasm    2026-10-30 16:01:51   (rebuild was a no-op, mtime unmoved)
+//
+// mtime answers "was this file written later", which is a proxy for the real
+// question: "was this artifact built from these bytes". A digest answers that
+// directly, and is immune to a touched timestamp AND to a fresh git clone,
+// which sets every mtime to the checkout time and would fire this spuriously
+// in CI.
+//
+// mtime is kept as the fallback for an artifact with no recorded digest, so an
+// older res/ still gets a weaker check rather than no check.
+
+import { sourcesDigest } from "../scripts/freshness.mjs";
+
+const SRC_A = [
+  { path: "lib.rs", content: "fn main() {}" },
+  { path: "types.rs", content: "enum X {}" },
+];
+
+test("the digest is stable across calls and independent of file ORDER", () => {
+  const reordered = [...SRC_A].reverse();
+  assert.equal(sourcesDigest(SRC_A), sourcesDigest(reordered));
+});
+
+test("changing a byte of content changes the digest", () => {
+  const changed = [{ path: "lib.rs", content: "fn main() { }" }, SRC_A[1]];
+  assert.notEqual(sourcesDigest(SRC_A), sourcesDigest(changed));
+});
+
+test("RENAMING a file changes the digest even if the bytes are identical", () => {
+  // The path is hashed too. Moving code between modules changes what compiles
+  // without changing any byte of content.
+  const renamed = [{ path: "other.rs", content: SRC_A[0].content }, SRC_A[1]];
+  assert.notEqual(sourcesDigest(SRC_A), sourcesDigest(renamed));
+});
+
+test("adding a file changes the digest", () => {
+  assert.notEqual(sourcesDigest(SRC_A), sourcesDigest([...SRC_A, { path: "new.rs", content: "" }]));
+});
+
+test("a matching digest clears the mtime complaint entirely", () => {
+  // The actual bug: identical content, newer mtime. With a digest that agrees,
+  // there is nothing stale about this artifact.
+  const digest = sourcesDigest(SRC_A);
+  const problems = freshnessProblems({
+    typesSrc: 'NearBudget => "NEAR_BUDGET",',
+    wasmBytes: Buffer.from("NEAR_BUDGET"),
+    wasmMtimeMs: 100, // older than the source
+    sources: [{ path: "lib.rs", mtimeMs: 900 }],
+    recordedDigest: digest,
+    currentDigest: digest,
+    });
+  assert.deepEqual(problems, []);
+});
+
+test("a MISMATCHED digest reports stale even when every mtime looks fine", () => {
+  // The inverse, and the reason a digest is stronger: a fresh clone makes every
+  // mtime equal, so mtime alone would wave a genuinely stale artifact through.
+  const problems = freshnessProblems({
+    typesSrc: 'NearBudget => "NEAR_BUDGET",',
+    wasmBytes: Buffer.from("NEAR_BUDGET"),
+    wasmMtimeMs: 9999, // newer than everything
+    sources: [{ path: "lib.rs", mtimeMs: 100 }],
+    recordedDigest: "aaa",
+    currentDigest: "bbb",
+  });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /built from different source/i);
+});
+
+test("with NO recorded digest, the mtime fallback still applies", () => {
+  // Backwards compatibility: an artifact bundled before digests existed must
+  // get the weaker check rather than no check at all.
+  const problems = freshnessProblems({
+    typesSrc: 'NearBudget => "NEAR_BUDGET",',
+    wasmBytes: Buffer.from("NEAR_BUDGET"),
+    wasmMtimeMs: 100,
+    sources: [{ path: "lib.rs", mtimeMs: 900 }],
+  });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /newer than the contract/);
+});

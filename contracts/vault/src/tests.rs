@@ -2774,3 +2774,278 @@ fn a_configured_allowlist_that_omits_the_payee_still_says_recipient_not_allowed(
     let out = v.request_payment("e2".into(), tok(), usdc(1), payee(), "".into(), None);
     assert_blocked(out, ReasonCode::RecipientNotAllowed);
 }
+
+// ---------------------------------------------------------------------------
+// Refusals the unit tier never exercised.
+//
+// Found mechanically rather than by eye: cross-referencing every
+// `ReasonCode::X` the contract can EMIT in lib.rs against both forms the tests
+// use to assert one (`ReasonCode::X` and the `"SCREAMING_SNAKE"` string in a
+// should_panic). 11 of 38 had no test at all.
+//
+// Two of them are the fixes this PR introduced. NEAR_BUDGET (F2) and
+// PARENT_COOLDOWN (F3) DO have integration tests — intents_registration.rs and
+// cooldown_chain.rs — but those are the sandbox tier, which needs a Linux
+// `neard` and therefore does not run on Windows at all. So on the machine this
+// is developed on, the two newest guards in the contract were verified by
+// nothing. Unit tests make them checkable everywhere, in 1.3s instead of a
+// sandbox boot.
+//
+// LEDGER_INVARIANT is deliberately absent: it guards pending-counter overflow
+// and underflow, which no sequence of public calls can reach. Contriving it
+// would mean reaching into state and would assert the contrivance, not the
+// contract.
+
+#[test]
+fn a_paused_vault_refuses_payments_even_from_a_bound_agent() {
+    // withdraw_works_while_paused covers the owner's exit path. Nothing covered
+    // the agent's side, which is the whole point of the switch.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_paused(true);
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("pz".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::VaultPaused,
+    );
+}
+
+#[test]
+fn pausing_is_reversible_and_payments_resume() {
+    // The negative control. A `set_paused` that ignored `false` would satisfy
+    // the test above while bricking the vault.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_paused(true);
+    v.set_paused(false);
+
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_dispatched(v.request_payment("pu".into(), tok(), usdc(1), payee(), "".into(), None));
+}
+
+#[test]
+fn the_same_request_id_cannot_be_used_twice() {
+    // The replay guard on the direct rail. A duplicate must be refused BEFORE
+    // any budget is charged.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_dispatched(v.request_payment("dup".into(), tok(), usdc(1), payee(), "".into(), None));
+
+    testing_env!(ctx(r1(), ZERO, 2).build());
+    assert_blocked(
+        v.request_payment("dup".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::DuplicateRequest,
+    );
+}
+
+#[test]
+fn a_zero_amount_is_refused() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("z".into(), tok(), usdc(0), payee(), "".into(), None),
+        ReasonCode::InvalidAmount,
+    );
+}
+
+#[test]
+fn an_oversized_memo_is_refused() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    let long = "m".repeat(MAX_MEMO_LEN + 1);
+    assert_blocked(
+        v.request_payment("m1".into(), tok(), usdc(1), payee(), long, None),
+        ReasonCode::InvalidMemo,
+    );
+}
+
+#[test]
+fn a_memo_at_exactly_the_limit_is_accepted() {
+    // Boundary, so the check above cannot be satisfied by an off-by-one that
+    // rejects every memo.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    let exact = "m".repeat(MAX_MEMO_LEN);
+    assert_dispatched(v.request_payment("m2".into(), tok(), usdc(1), payee(), exact, None));
+}
+
+#[test]
+fn a_memo_containing_a_control_character_is_refused() {
+    // Separate clause from length. A memo is echoed into an EVENT_JSON log line,
+    // so a newline or NUL could forge a second event.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("m3".into(), tok(), usdc(1), payee(), "a\nb".into(), None),
+        ReasonCode::InvalidMemo,
+    );
+}
+
+#[test]
+fn a_malformed_request_id_is_refused() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::InvalidRequestId,
+    );
+}
+
+#[test]
+fn a_token_with_no_limit_anywhere_is_refused_rather_than_unlimited() {
+    // The fail-DIRECTION that matters. Limits are keyed per token, so an
+    // unconfigured token must mean "no" and not "no limits apply".
+    let t = tree();
+    let mut v = t.v;
+    let other: AccountId = "dai.test.near".parse().unwrap();
+    testing_env!(ctx(r1(), ZERO, 1).build());
+    assert_blocked(
+        v.request_payment("t1".into(), other, usdc(1), payee(), "".into(), None),
+        ReasonCode::TokenNotAllowed,
+    );
+}
+
+#[test]
+#[should_panic(expected = "UNKNOWN_NODE")]
+fn adding_a_node_under_a_missing_parent_panics() {
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.add_node(Some(9999), "ghost".into(), limit(1, 1), 0, None);
+}
+
+#[test]
+#[should_panic(expected = "INIT_NOT_SELF")]
+fn new_cannot_be_called_by_anyone_but_the_vault() {
+    // `new` sets the owner. If a stranger could call it on a freshly deployed
+    // vault, they would own it.
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    Vault::new(owner(), "sandbox".to_string(), false);
+}
+
+#[test]
+fn a_parents_cooldown_blocks_the_child_with_its_own_reason_code() {
+    // F3. The code that distinguishes "you are rate limited" from "your parent
+    // is" — the whole reason the fix iterates the chain. Covered only by the
+    // sandbox tier, which does not run on Windows.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_cooldown(t.research, 3600);
+
+    // Timestamps must EXCEED the cooldown: last_paid_ns defaults to 0, so a node
+    // that never paid reads as "paid at the epoch". See
+    // a_cooldown_on_a_node_that_never_paid_needs_now_past_the_interval.
+    // r1 itself has no cooldown, so any refusal here must come from research.
+    testing_env!(ctx(r1(), ZERO, 10_000 * NS_PER_SEC).build());
+    assert_dispatched(v.request_payment("c1".into(), tok(), usdc(1), payee(), "".into(), None));
+
+    testing_env!(ctx(r1(), ZERO, 10_001 * NS_PER_SEC).build());
+    assert_blocked(
+        v.request_payment("c2".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::ParentCooldown,
+    );
+}
+
+#[test]
+fn a_sibling_is_also_held_by_the_shared_parents_cooldown() {
+    // The point of charging the chain: r2 never paid, but research did.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_cooldown(t.research, 3600);
+
+    testing_env!(ctx(r1(), ZERO, 10_000 * NS_PER_SEC).build());
+    assert_dispatched(v.request_payment("s1".into(), tok(), usdc(1), payee(), "".into(), None));
+
+    testing_env!(ctx(r2(), ZERO, 10_001 * NS_PER_SEC).build());
+    assert_blocked(
+        v.request_payment("s2".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::ParentCooldown,
+    );
+}
+
+#[test]
+fn a_cooldown_on_a_node_that_never_paid_needs_now_past_the_interval() {
+    // Found by writing the two tests above with ts_ns = 1 and watching the FIRST
+    // payment blocked by PARENT_COOLDOWN before anything had ever been paid.
+    //
+    // `last_paid_ns` has no entry until a first payment, and the guard reads a
+    // missing entry as 0 -- so "never paid" and "paid at the unix epoch" are the
+    // same value. While `now < cooldown`, a node carrying a cooldown refuses
+    // everything.
+    //
+    // HARMLESS ON A REAL CHAIN: mainnet block_timestamp is ~1.76e18 ns and the
+    // maximum cooldown is 7 days (6.05e14 ns), so `now` exceeds it by three
+    // orders of magnitude. Pinned anyway, because it bites on a fresh localnet
+    // or any harness whose clock starts near zero, and it looks exactly like a
+    // broken cooldown when you meet it.
+    let t = tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_cooldown(t.n_r1, 3600);
+
+    // now = 1s, well inside a 3600s window measured from the epoch.
+    testing_env!(ctx(r1(), ZERO, NS_PER_SEC).build());
+    assert_blocked(
+        v.request_payment("e1".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::Cooldown,
+    );
+
+    // Past the interval, that same first payment goes through.
+    testing_env!(ctx(r1(), ZERO, 3_601 * NS_PER_SEC).build());
+    assert_dispatched(v.request_payment("e2".into(), tok(), usdc(1), payee(), "".into(), None));
+}
+
+#[test]
+fn a_zero_near_ceiling_closes_the_cross_chain_rail() {
+    // F2. The cross-chain rail costs NEAR per transaction -- the one-time
+    // deposit address needs its storage paid -- while the budget tree bounds
+    // TOKEN value. An agent could therefore drain the vault's NEAR with many
+    // tiny, individually-legal payments. The ceiling is the fix.
+    //
+    // Covered only by intents_registration.rs until now, which is the sandbox
+    // tier and does not run on Windows.
+    let t = intents_tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_max_daily_near(Some(U128(0)));
+
+    let amt = usdc(5);
+    let sig = sign_quote("nb-1", &tok(), amt.0, EVM_PAYEE, &deposit(), DEADLINE);
+    testing_env!(ctx(r1(), ZERO, 0).prepaid_gas(Gas::from_tgas(100)).build());
+    assert_blocked(
+        v.request_payment(
+            "nb-1".into(),
+            tok(),
+            amt,
+            EVM_PAYEE.parse().unwrap(),
+            String::new(),
+            Some(intents_route(&deposit(), DEADLINE, sig)),
+        ),
+        ReasonCode::NearBudget,
+    );
+}
+
+#[test]
+fn the_near_ceiling_does_not_touch_the_direct_rail() {
+    // The scope of the fix, asserted rather than assumed. A direct NEP-141
+    // transfer pays no deposit-address storage, so a zero NEAR ceiling must not
+    // block it -- otherwise F2 would have quietly disabled the whole product.
+    let t = intents_tree();
+    let mut v = t.v;
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_max_daily_near(Some(U128(0)));
+
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(v.request_payment("nb-2".into(), tok(), usdc(1), payee(), "".into(), None));
+}

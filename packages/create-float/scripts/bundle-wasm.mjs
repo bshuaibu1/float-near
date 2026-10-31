@@ -9,11 +9,11 @@
  *
  * Run by `prepack`, so `npm publish` cannot ship a package without a contract.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freshnessProblems } from "./freshness.mjs";
+import { freshnessProblems, compiledSources, sourcesDigest } from "./freshness.mjs";
 import { importsHostFn } from "./wasm-imports.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -105,15 +105,53 @@ try {
 // cooldown that ignores ancestors, and says `Done.` A stale artifact is worse
 // than a missing one: a missing one stops you.
 const SRC_DIR = resolve(PKG, "..", "..", "contracts", "vault", "src");
-const sourceFiles = readdirSync(SRC_DIR)
-  .filter((f) => f.endsWith(".rs"))
-  .map((f) => ({ path: `contracts/vault/src/${f}`, mtimeMs: statSync(join(SRC_DIR, f)).mtimeMs }));
+// Only files that can actually reach the artifact. tests.rs is
+// `#[cfg(test)] mod tests;` and never compiles into the contract, so editing a
+// unit test used to report "the contract is STALE" and recommend a rebuild that
+// changes nothing — a guard that cries wolf is one people learn to override.
+const compiled = compiledSources({
+  files: readdirSync(SRC_DIR).filter((f) => f.endsWith(".rs")),
+  libSrc: readFileSync(join(SRC_DIR, "lib.rs"), "utf8"),
+});
+const sourceFiles = compiled.map((f) => ({
+  path: `contracts/vault/src/${f}`,
+  mtimeMs: statSync(join(SRC_DIR, f)).mtimeMs,
+}));
+
+// The provenance record, keyed by the ARTIFACT's own hash.
+//
+// `res/vault.sources.json` says "this exact binary was built from these exact
+// source bytes". Keyed by artifact sha256 so a check against any wasm can tell
+// whether THAT one is current, rather than assuming the record describes
+// whatever is being inspected.
+//
+// This is what lets the mtime check be superseded. mtime gets stuck: a mutation
+// pass that writes a file and reverts it leaves identical content with a newer
+// timestamp, and `cargo near build` is content-addressed so the rebuild it
+// demands is a no-op that cannot move the artifact's mtime.
+const PROVENANCE = join(DEST_DIR, "vault.sources.json");
+const currentDigest = sourcesDigest(
+  compiled.map((f) => ({ path: f, content: readFileSync(join(SRC_DIR, f), "utf8") })),
+);
+const srcSha = createHash("sha256").update(srcBytes).digest("hex");
+let recordedDigest;
+if (existsSync(PROVENANCE)) {
+  try {
+    const rec = JSON.parse(readFileSync(PROVENANCE, "utf8"));
+    // Only trust it if it describes THIS artifact.
+    if (rec.artifactSha256 === srcSha) recordedDigest = rec.sourcesDigest;
+  } catch {
+    // A corrupt record is no record. Falls back to mtime rather than throwing.
+  }
+}
 
 for (const p of freshnessProblems({
   typesSrc: readFileSync(join(SRC_DIR, "types.rs"), "utf8"),
   wasmBytes: srcBytes,
   wasmMtimeMs: statSync(SRC).mtimeMs,
   sources: sourceFiles,
+  recordedDigest,
+  currentDigest,
 })) {
   fails.push(
     `${p}\n    The contract is STALE. Rebuild it before publishing:\n` +
@@ -143,6 +181,22 @@ copyFileSync(SRC, DEST);
 
 const bytes = readFileSync(DEST);
 const sha = createHash("sha256").update(bytes).digest("hex");
+
+// Record provenance for what we just shipped, so the next --check can answer
+// "built from these bytes?" directly instead of inferring it from timestamps.
+writeFileSync(
+  PROVENANCE,
+  JSON.stringify(
+    {
+      artifactSha256: sha,
+      sourcesDigest: currentDigest,
+      sources: compiled,
+      note: "Written by bundle-wasm.mjs. Lets the freshness guard answer 'was this artifact built from these sources' without relying on mtime, which gets stuck when content is reverted and is meaningless after a fresh clone.",
+    },
+    null,
+    2,
+  ) + "\n",
+);
 
 // The same storage figure the wizard quotes, derived here rather than hardcoded
 // so it cannot drift from the artifact actually being shipped.
