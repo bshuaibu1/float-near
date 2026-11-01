@@ -1094,5 +1094,19 @@ async function viewSafe(provider, contractId, method, args = {}) {
 
 main().catch((e) => {
   console.error(`\n${C.r("failed")}  ${e.message}\n`);
-  process.exit(1);
+  // `process.exitCode`, NOT `process.exit`. By the time main() rejects it has
+  // made RPC calls, and exiting outright tears the event loop down while a
+  // handle is still closing. Measured against the published 0.3.1 on 2026-11-01:
+  //
+  //   failed  insufficient balance: need 3.347, have 0.177
+  //   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c:76
+  //
+  // The message printed correctly, so a human still learns what went wrong —
+  // but the exit code became -1073740791 instead of 1, so anything SCRIPTING
+  // the wizard saw a native crash rather than a clean failure. Setting the code
+  // lets the loop drain.
+  //
+  // The three other process.exit calls in this file are at MODULE SCOPE, before
+  // any network I/O, where exiting immediately is both safe and intended.
+  process.exitCode = 1;
 });

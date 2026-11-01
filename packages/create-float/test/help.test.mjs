@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { wantsHelp, usage } from "../bin/args.mjs";
+import { vaultFunding } from "../bin/funding.mjs";
 
 /**
  * `--help` must print usage and touch nothing.
@@ -31,6 +32,7 @@ import { wantsHelp, usage } from "../bin/args.mjs";
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const RES_WASM = resolve(HERE, "..", "res", "vault.wasm");
 const BIN = resolve(HERE, "..", "bin", "create-float.mjs");
 
 test("wantsHelp recognises the forms people actually type", () => {
@@ -100,6 +102,52 @@ test("REAL SOURCE: usage names every flag the wizard actually reads", () => {
   assert.deepEqual(undocumented, [], `flags the wizard reads but usage() never mentions`);
 });
 
+test("REAL DATA: usage() never UNDERSTATES what the wizard will demand", () => {
+  // THE BUG THIS CATCHES, found by driving the published 0.3.1 from outside the
+  // repo. `usage()` hardcoded "3.341 NEAR for a bare vault" while the wizard
+  // demanded **3.347** — because the contract grew 299,016 -> 299,620 bytes
+  // after that string was written, and `VAULT_FUNDING` is derived from the
+  // artifact while the help text was not.
+  //
+  // 0.006 NEAR, so a user topping up to exactly the figure in `--help` is
+  // refused by the affordability gate. That is the SAME failure mode 0.3.1 set
+  // out to fix when SKILL.md said "~3" against a real 3.341 — reintroduced one
+  // commit later, an order of magnitude smaller, by me.
+  //
+  // The sibling test below compares to ONE decimal, deliberately loose so a few
+  // kilobytes of contract growth do not churn the docs. That tolerance is why
+  // it stayed green through a 0.006 drift. This one is exact and one-sided:
+  // usage() may round UP, never down.
+  const bytes = statSync(RES_WASM).size;
+  const bare = Number(vaultFunding(bytes)) / 1e24;
+  const withAgent = bare + 0.55; // AGENT_KEY_ALLOWANCE 0.5 + AGENT_STORAGE 0.05
+  const ceil3 = (n) => (Math.ceil(n * 1000) / 1000).toFixed(3);
+
+  const text = usage();
+  // Every three-decimal figure, NOT `(\d+\.\d{3})\s*NEAR` — the first version
+  // required the word NEAR to follow and found only ONE of the two, because the
+  // sentence reads "3.341 NEAR for a bare vault, 3.891 with one agent" and the
+  // second figure has no unit after it. The count assertion below is what
+  // caught that; without it a one-figure match would have silently half-checked.
+  const quoted = [...text.matchAll(/\b(\d+\.\d{3})\b/g)].map((m) => Number(m[1]));
+  assert.ok(
+    quoted.length >= 2,
+    `usage() quotes ${quoted.length} three-decimal figures; expected the bare and agent totals`,
+  );
+
+  const lowest = Math.min(...quoted);
+  assert.ok(
+    lowest + 1e-9 >= bare,
+    `usage() quotes ${lowest} NEAR but the wizard demands at least ${bare.toFixed(5)} ` +
+      `for a ${bytes}-byte contract — the help UNDERSTATES it`,
+  );
+  assert.ok(text.includes(ceil3(bare)), `usage() does not quote the derived bare-vault figure ${ceil3(bare)}`);
+  assert.ok(
+    text.includes(ceil3(withAgent)),
+    `usage() does not quote the derived one-agent figure ${ceil3(withAgent)}`,
+  );
+});
+
 test("usage says what it will spend, because the next step costs real money", () => {
   const text = usage();
   assert.match(text, /NEAR/);
@@ -132,4 +180,33 @@ test("REACHABILITY: -h behaves identically", () => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   assert.match(out, /--network/);
+});
+
+test("the wizard's top-level catch does not process.exit with RPC in flight", () => {
+  // MEASURED against the published 0.3.1, from outside the repo. A mainnet
+  // dry-run that failed its affordability check printed the error correctly and
+  // then aborted:
+  //
+  //   failed  insufficient balance: need 3.347, have 0.177
+  //   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c:76
+  //
+  // `main()` has made RPC calls by then, and `process.exit` tears the event loop
+  // down while a handle is still closing. The user still sees the message, so it
+  // is cosmetic for a human — but the exit code becomes -1073740791 instead of
+  // 1, so anything SCRIPTING the wizard sees a native crash rather than a clean
+  // failure. Same bug this repo already fixed in check-signer-key.mjs and
+  // check-upgrade-margin.mjs, which is why the root suite has the equivalent
+  // guard for `scripts/`; the wizard was simply outside its scope.
+  //
+  // Only the top-level catch matters. The three other process.exit calls in the
+  // wizard are at MODULE SCOPE, before any network I/O, where exiting
+  // immediately is both safe and what you want.
+  const src = readFileSync(BIN, "utf8");
+  const tail = src.slice(src.indexOf("main().catch("));
+  assert.ok(tail.length > 0, "could not find the top-level catch — this scan is measuring nothing");
+  assert.ok(
+    !/process\.exit\(/.test(tail),
+    "the top-level catch calls process.exit(); set process.exitCode so the loop can drain",
+  );
+  assert.match(tail, /process\.exitCode/, "the top-level catch does not set an exit code at all");
 });

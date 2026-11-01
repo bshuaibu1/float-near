@@ -1,3 +1,9 @@
+import { statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { vaultFunding } from "./funding.mjs";
+
 /**
  * Argument parsing, extracted so it can be tested.
  *
@@ -74,6 +80,51 @@ export function wantsHelp(argv) {
  * is a lie, and a flag there but missing here is invisible. The test asserts
  * both directions against this text.
  */
+/**
+ * 0.5 key allowance + 0.05 account storage, mirroring `AGENT_COST` in
+ * create-float.mjs. Not imported from there: that module calls `main()` on
+ * import, so pulling it in to render help text would launch the wizard.
+ */
+const AGENT_COST_NEAR = 0.55;
+
+/**
+ * The cost sentence, DERIVED from the contract this package actually ships.
+ *
+ * It used to be the literal "3.341 NEAR for a bare vault, 3.891 with one
+ * agent". The contract then grew 299,016 -> 299,620 bytes and the wizard —
+ * which derives its figure from the artifact via `vaultFunding` — began
+ * demanding 3.347 while this text still promised 3.341. A user topping up to
+ * exactly what `--help` said was refused by the affordability gate for want of
+ * 0.006 NEAR.
+ *
+ * That is the same failure 0.3.1 shipped to fix, when SKILL.md said "~3"
+ * against a real 3.341. Writing a derived number down by hand is the bug; the
+ * only durable fix is not to write it down.
+ *
+ * ROUNDS UP, always. An understatement sends the user to a refusal; an
+ * overstatement costs them nothing, because the stake is refundable and the
+ * wizard quotes the exact total before it spends anything.
+ *
+ * NEVER THROWS. `--help` is the one command that must answer on a machine with
+ * nothing set up, which is the whole reason it returns before preflight.
+ */
+function costLine() {
+  try {
+    const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "res", "vault.wasm");
+    const bytes = statSync(wasm).size;
+    const bare = Number(vaultFunding(bytes)) / 1e24;
+    const up = (n) => (Math.ceil(n * 1000) / 1000).toFixed(3);
+    return (
+      `Measured from the ${Math.round(bytes / 1024)} KB contract in this package: ` +
+      `${up(bare)} NEAR for a bare vault, ${up(bare + AGENT_COST_NEAR)} with one agent`
+    );
+  } catch {
+    // The artifact is missing, so the wizard cannot deploy anyway. Say
+    // something honest and obviously approximate rather than a precise lie.
+    return "Several NEAR for a vault (run --dry-run for the exact figure)";
+  }
+}
+
 export function usage() {
   return `create-float — a Float budget vault on NEAR, in one command
 
@@ -88,9 +139,9 @@ WHAT IT DOES
 
 WHAT IT COSTS
   You need a funded NEAR account with its key in ~/.near-credentials, which
-  'near login' puts there. Measured: 3.341 NEAR for a bare vault, 3.891 with
-  one agent — most of it a refundable storage stake, not a fee. On mainnet this
-  spends REAL funds, and the wizard asks for a typed acknowledgement first.
+  'near login' puts there. ${costLine()} — most of it a refundable storage
+  stake, not a fee. On mainnet this spends REAL funds, and the wizard asks for
+  a typed acknowledgement first.
 
   An agent costs 0.55 NEAR and NO AGENT IS CREATED BY DEFAULT, so without
   --agents you get a vault that cannot pay. Run --dry-run to see the bill.
