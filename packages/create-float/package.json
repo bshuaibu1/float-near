@@ -6,7 +6,8 @@
   "license": "MIT",
   "bin": {
     "create-float": "bin/create-float.mjs",
-    "float-exit": "bin/float-exit.mjs"
+    "float-exit": "bin/float-exit.mjs",
+    "float-agent": "bin/float-agent.mjs"
   },
   "files": [
     "bin/",
