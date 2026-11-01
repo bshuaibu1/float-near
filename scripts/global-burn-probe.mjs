@@ -208,11 +208,28 @@ if (!account || !cmd) {
       if (near10) console.log(`  VERDICT: 10x CONFIRMED on ${NETWORK}.`);
       else if (near1) console.log(`  VERDICT: 1x on ${NETWORK} — the 10x does NOT apply here.`);
       else console.log(`  VERDICT: matches NEITHER prediction. Do not publish anything until this is understood.`);
+      // DO NOT EXTRAPOLATE A SINGLE-POINT RATE. The first version printed
+      // `drop / bytes` as "implied rate" and multiplied it by 299,620, giving
+      // 30.03 NEAR against a true 29.96 — because a single measurement folds
+      // the FIXED action cost into the per-byte figure. At 258 bytes the fixed
+      // part is 0.000061 of 0.025861, and dividing it across 258 bytes inflates
+      // the rate by 0.23%; multiplying that back up over 299,620 bytes turns it
+      // into a 0.07 NEAR error. Harmless in direction (it overstates) and still
+      // wrong, and it is exactly the mistake the differential method exists to
+      // avoid.
+      //
+      // So: subtract the fixed cost using the rate the DIFFERENTIAL established,
+      // and report that separately from the extrapolation.
       const VAULT = 299620n;
-      const impliedRate = drop / bytes;
+      const RATE = BASE * 10n; // the hypothesis this run just confirmed
+      const fixed = drop - bytes * RATE;
       console.log("");
-      console.log(`  implied rate         ${impliedRate} yocto/byte`);
-      console.log(`  => publishing the 299,620-byte vault on ${NETWORK} would burn ${near(impliedRate * VAULT)} NEAR`);
+      console.log(`  rate component       ${near(bytes * RATE)}  (${bytes} x ${RATE})`);
+      console.log(`  fixed + gas          ${near(fixed)}  (the part that must NOT be extrapolated)`);
+      console.log(`  single-point ratio   ${drop / bytes} yocto/byte — INFLATED by the fixed cost, do not scale it`);
+      console.log("");
+      console.log(`  => publishing the 299,620-byte vault on ${NETWORK} would burn`);
+      console.log(`     ${near(VAULT * RATE + fixed)} NEAR, per version`);
     }
   } else {
     console.error(`unknown command ${cmd}`);

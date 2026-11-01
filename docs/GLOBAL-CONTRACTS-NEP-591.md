@@ -113,10 +113,36 @@ And `storage_usage` grew **0 bytes** across both publishes. That is what
 separates a burn from a stake — a stake raises it. So the tokens really are
 destroyed, not locked; also previously NEP-sourced, now measured.
 
-Caveat kept deliberately: measured on testnet at **protocol 88**, while mainnet
-runs **86**. The rate is a protocol parameter and is unlikely to differ, but it
-is not proven there. A 258-byte global on mainnet costs ~0.0259 NEAR and would
-settle it.
+**CONFIRMED ON MAINNET, same day**, by `scripts/confirm-global-rate-mainnet.sh`
+— the testnet figure was taken at protocol 88 while mainnet runs 86, and ~30
+NEAR per release is too much to rest on an assumption that a protocol parameter
+matches across versions. One 258-byte publish from `test015.near`:
+
+```
+  observed drop   0.025861 NEAR      predicted 0.025800 if 10x, 0.002580 if 1x
+  storage_usage   182 -> 182         unchanged => burn, not stake
+  VERDICT         10x CONFIRMED on mainnet
+```
+
+The prediction was printed **before** the deploy, deliberately: a burn is
+irreversible, so there is no second run, and a figure interpreted afterwards can
+be talked into agreeing with whatever appeared.
+
+The two chains agree to six decimals — testnet's 258-byte publish also cost
+**0.025861** — which is about as direct a demonstration as one gets that this is
+one protocol parameter and not two.
+
+So: **publishing the 299,620-byte vault burns 29.962 NEAR, per version**, on the
+chain it would actually be published to.
+
+> A trap in reading that single mainnet point, worth recording because the first
+> version of the script fell into it. The script printed an "implied rate" of
+> `drop / bytes` = 1.0023e20 and scaled it to **30.03 NEAR**. A single
+> measurement folds the FIXED action cost into the per-byte rate: at 258 bytes
+> the fixed part is 0.000061 of 0.025861, which inflates the rate by 0.23%, and
+> multiplying that back over 299,620 bytes becomes a 0.07 NEAR error. Harmless
+> in direction — it overstates — and still wrong, and precisely what the
+> differential method exists to avoid. **Never scale a single-point rate.**
 
 Applied to our measured 280,249-byte build:
 

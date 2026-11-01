@@ -70,17 +70,21 @@ echo "    $WASM  $BYTES bytes  hash $HASH"
 echo "==> refusing to measure a hash that is already published"
 # Republishing an existing hash would cost ~nothing and read as "1x", i.e. as a
 # refutation of the 10x. The check is worth more than it looks.
-if node -e "
-const q=(rpc,p)=>fetch(rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'query',params:p})}).then(r=>r.json());
-(async()=>{
-  const r=await q('https://free.rpc.fastnear.com',{request_type:'view_global_contract_code',finality:'final',code_hash:'$HASH'});
-  process.exit(r.result ? 0 : 1);
-})();
-"; then
-  echo "FATAL: $HASH is ALREADY a mainnet global contract. Publishing it again measures nothing." >&2
-  exit 1
-fi
-echo "    not published on mainnet — the measurement is valid"
+PUB_STATUS=0
+node scripts/global-is-published.mjs "$HASH" mainnet || PUB_STATUS=$?
+case "$PUB_STATUS" in
+  0)
+    echo "FATAL: $HASH is ALREADY a mainnet global contract. Publishing it again measures nothing." >&2
+    exit 1 ;;
+  1)
+    echo "    not published on mainnet — the measurement is valid" ;;
+  *)
+    # An RPC failure is NOT evidence of absence. Treating it as such would
+    # publish on top of an unknown state and then report whatever came out.
+    echo "FATAL: could not determine whether $HASH is published (exit $PUB_STATUS)." >&2
+    echo "  Refusing to burn real NEAR on an unverified precondition." >&2
+    exit 1 ;;
+esac
 
 echo "==> the prediction, BEFORE spending anything"
 NETWORK=mainnet node scripts/global-burn-probe.mjs "$PARENT" predict "$BYTES"
