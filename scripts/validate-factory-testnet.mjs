@@ -190,17 +190,42 @@ try {
       });
       info(`published ${h} (${what})`);
     }
-    const live = await provider
-      .query({ request_type: "view_global_contract_code", finality: "final", code_hash: h })
-      .then((r) => Buffer.from(r.code_base64, "base64").length, () => null);
+    // POLL, do not read once. A `final`-finality read immediately after the
+    // publish returned null for the stub while the already-published tiny.wasm
+    // read back fine at 49 bytes — the publish had landed, the view had not
+    // caught up. Tenth instance of this class in this project; see the memory
+    // note on lagging reads.
+    let live = null;
+    for (let i = 0; i < 30 && live === null; i++) {
+      live = await provider
+        .query({ request_type: "view_global_contract_code", finality: "final", code_hash: h })
+        .then((r) => Buffer.from(r.code_base64, "base64").length, () => null);
+      if (live === null) await wait(800);
+    }
     check(`A: ${what} is live as a global contract`, live === statSync(p).size, `${live} bytes`);
   }
 
   // ---- B. the factory itself
   step("B", "Create and initialize the factory");
   const fkp = KeyPair.fromRandom("ed25519");
-  await parent.createAccount(FACTORY, fkp.getPublicKey(), BigInt(factoryStake + 5n * 10n ** 22n));
-  created.push(FACTORY);
+  // AN OBJECT, not positional arguments — near-api-js v7 takes
+  // `{ newAccountId, publicKey, nearToTransfer }`. Passing them positionally
+  // left newAccountId undefined and failed with "Cannot read properties of
+  // undefined (reading 'endsWith')" from inside the library.
+  //
+  // And `nearToTransfer` is YOCTO despite its name: the implementation does
+  // `transfer3(BigInt(nearToTransfer))` with no conversion (index.js:4442).
+  // Passing 1.4 meaning NEAR would send 1.4 yoctoNEAR and the deploy would die
+  // with LackBalanceForState.
+  await parent.createAccount({
+    newAccountId: FACTORY,
+    publicKey: fkp.getPublicKey(),
+    nearToTransfer: factoryStake + 5n * 10n ** 22n,
+  });
+  // Keep the KEYPAIR, not just the id. DeleteAccount must be signed by the
+  // account itself, and the factory's key is this random one — the parent's
+  // key cannot delete it.
+  created.push({ id: FACTORY, kp: fkp });
   const factory = new Account(FACTORY, provider, new KeyPairSigner(fkp));
   await factory.deployContract(readFileSync(FACTORY_WASM));
   await factory.callFunction({
@@ -327,14 +352,11 @@ try {
   // The FACTORY has a key, so it can be deleted and its stake returned. The
   // created VAULTS cannot: a factory-created vault has no access key at all,
   // which is the product's intent and makes these test accounts permanent.
-  for (const id of created) {
-    await new Account(id, provider, signerFor(PARENT))
+  for (const { id, kp } of created) {
+    await new Account(id, provider, new KeyPairSigner(kp))
       .deleteAccount(PARENT)
-      .then(() => info(`deleted ${id}`))
-      .catch(async () => {
-        // The factory's key is the random one, not the parent's.
-        info(`could not delete ${id} with the parent key — leaving it`);
-      });
+      .then(() => info(`deleted ${id}, stake returned to ${PARENT}`))
+      .catch((e) => info(`could not delete ${id}: ${String(e.message).slice(0, 70)}`));
   }
   info(`vault test accounts are KEYLESS and cannot be deleted; their stake is spent`);
   const end = await settled(PARENT);
