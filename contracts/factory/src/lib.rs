@@ -11,8 +11,13 @@
 //!
 //! See `docs/DESIGN-browser-signing-flow.md`.
 
-use near_sdk::store::LookupMap;
-use near_sdk::{env, near, AccountId};
+use near_sdk::json_types::Base58CryptoHash;
+use near_sdk::{env, near, AccountId, CryptoHash, Gas, NearToken, Promise};
+
+/// Enough for the vault's `new`, which writes the root node and config.
+const GAS_FOR_VAULT_NEW: Gas = Gas::from_tgas(30);
+/// Enough for the refund callback, which at most makes one transfer.
+const GAS_FOR_REFUND: Gas = Gas::from_tgas(10);
 
 /// The vault account id this factory would create for `owner`.
 ///
@@ -46,15 +51,176 @@ pub fn vault_id(owner: &str, factory: &str) -> Option<AccountId> {
     format!("{}.{}", derive_prefix(owner), factory).parse().ok()
 }
 
+/// NO REGISTRY, DELIBERATELY. An `owner -> vault` map was scaffolded here and
+/// removed: the id is derivable, so a map would be redundant state whose
+/// storage the FACTORY pays for and which grows with every vault created. The
+/// derivation is the single source of truth, shared by the contract and the
+/// dashboard.
 #[near(contract_state)]
 pub struct Factory {
     owner: AccountId,
-    vaults: LookupMap<AccountId, AccountId>,
+    /// The global contract every new vault references. 32 raw bytes, which is
+    /// what `Promise::use_global_contract` takes.
+    code_hash: CryptoHash,
+    /// Passed through to the vault's `new` — "mainnet" / "testnet".
+    network: String,
+    /// What a caller must attach to cover the new vault's storage.
+    required_deposit: NearToken,
+    paused: bool,
 }
 
 impl Default for Factory {
     fn default() -> Self {
         env::panic_str("NOT_INITIALIZED")
+    }
+}
+
+#[near]
+impl Factory {
+    #[init]
+    pub fn new(
+        owner: AccountId,
+        code_hash: Base58CryptoHash,
+        network: String,
+        required_deposit: NearToken,
+    ) -> Self {
+        Self { owner, code_hash: code_hash.into(), network, required_deposit, paused: false }
+    }
+
+    /// Owner methods take 1 yoctoNEAR, matching the vault: a NEAR
+    /// function-call access key cannot attach a deposit, so these are reachable
+    /// only with a full-access key — a wallet confirmation — and never with a
+    /// restricted key an agent might hold.
+    fn assert_owner(&self) {
+        near_sdk::assert_one_yocto();
+        if env::predecessor_account_id() != self.owner {
+            env::panic_str("OWNER_ONLY: only the factory owner may do that");
+        }
+    }
+
+    /// Create a vault for the CALLER, in one batch.
+    ///
+    /// The owner is `predecessor_account_id()` and is never a parameter. Taking
+    /// it as an argument would let anyone create a vault owned by someone else
+    /// — harmless on its own, but it would let an attacker squat the derived id
+    /// of an account they do not control, permanently denying that user the
+    /// vault the dashboard will look for.
+    #[payable]
+    pub fn create_vault(&mut self, label: Option<String>) -> Promise {
+        if self.paused {
+            env::panic_str("PAUSED: vault creation is disabled");
+        }
+        let deposit = env::attached_deposit();
+        if deposit < self.required_deposit {
+            env::panic_str("DEPOSIT_TOO_SMALL: attach at least the required deposit");
+        }
+        let owner = env::predecessor_account_id();
+        let factory = env::current_account_id();
+
+        // `label` exists as an escape hatch, not as the normal path. The
+        // derived id can in principle be squatted by whoever owns a top-level
+        // account matching the hyphenated form, and without an override that
+        // user would have no way to ever get a vault.
+        let vault = match &label {
+            Some(l) => format!("{}.{}", l, factory).parse::<AccountId>().ok(),
+            None => vault_id(owner.as_str(), factory.as_str()),
+        };
+        let vault = match vault {
+            Some(v) => v,
+            None => env::panic_str("BAD_VAULT_ID: that owner has no legal derived vault id"),
+        };
+
+        // ONE BATCH, so a partial create is impossible: if `new` panics, NEAR
+        // reverts the account creation with it rather than leaving an
+        // uninitialised account holding the deposit.
+        //
+        // NOTE: `new` is reachable here only because the vault accepts
+        // initialization by its PARENT. A factory holds no key, so it cannot
+        // sign as the vault the way create-float does with a setup key.
+        Promise::new(vault.clone())
+            .create_account()
+            .transfer(deposit)
+            .use_global_contract(self.code_hash)
+            .function_call(
+                "new".to_string(),
+                near_sdk::serde_json::json!({
+                    "owner": owner,
+                    "network": self.network,
+                    "strict_allocation": false,
+                })
+                .to_string()
+                .into_bytes(),
+                NearToken::from_yoctonear(0),
+                GAS_FOR_VAULT_NEW,
+            )
+            // WITHOUT THIS THE USER LOSES THEIR DEPOSIT ON FAILURE. The
+            // deposit arrives in the FACTORY's balance, and a failed batch
+            // returns the transferred amount to the factory — not to the
+            // caller. Nothing refunds them automatically.
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(GAS_FOR_REFUND)
+                    .on_vault_created(owner, vault, deposit),
+            )
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.assert_owner();
+        self.paused = paused;
+    }
+
+    /// Repoint NEW vaults at a different global contract. Existing vaults are
+    /// untouched — that is the `CodeHash` property we chose deliberately, so
+    /// nobody is upgraded without opting in.
+    pub fn set_code_hash(&mut self, code_hash: Base58CryptoHash) {
+        self.assert_owner();
+        self.code_hash = code_hash.into();
+    }
+
+    pub fn set_required_deposit(&mut self, required_deposit: NearToken) {
+        self.assert_owner();
+        self.required_deposit = required_deposit;
+    }
+
+    /// The id this factory would create for `owner`. The dashboard calls this
+    /// so the derivation has ONE implementation, rather than a client-side copy
+    /// that can drift from the contract's.
+    pub fn vault_id_for(&self, owner: AccountId) -> Option<AccountId> {
+        vault_id(owner.as_str(), env::current_account_id().as_str())
+    }
+
+    /// Refund the caller if the batch failed. Returns whether it succeeded.
+    ///
+    /// `#[private]`, so only the factory itself can call it — otherwise anyone
+    /// could invoke it with an arbitrary `deposit` and drain the factory.
+    #[private]
+    pub fn on_vault_created(
+        &mut self,
+        owner: AccountId,
+        vault: AccountId,
+        deposit: NearToken,
+    ) -> bool {
+        // `promise_result_checked`, not the deprecated `promise_result`, which
+        // reads the whole result into memory and can run out of gas on a large
+        // one. The vault's `new` returns nothing, so 0 bytes is the real bound
+        // and anything longer means something unexpected happened — which is a
+        // failure for refund purposes either way.
+        let ok = env::promise_result_checked(0, 0).is_ok();
+        if ok {
+            env::log_str(&format!("VAULT_CREATED:{}:{}", vault, owner));
+            return true;
+        }
+        // The batch reverted, so the transfer came back to the FACTORY, not to
+        // the caller. Send it on, or the user has paid for nothing.
+        env::log_str(&format!("VAULT_FAILED:{}:{} refunding", vault, owner));
+        // THE DROP IS THE MECHANISM, not a discarded value. near-sdk's
+        // `impl Drop for Promise` calls `construct_recursively` (promise.rs:954),
+        // so letting this binding fall out of scope is what schedules the
+        // transfer. Checked, because if dropping did nothing the refund would
+        // silently never happen and the compiler's `must_use` would have been
+        // the only warning.
+        let _refund = Promise::new(owner).transfer(deposit);
+        false
     }
 }
 

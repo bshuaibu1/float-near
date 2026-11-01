@@ -1,4 +1,41 @@
 use super::*;
+use near_sdk::json_types::Base58CryptoHash;
+use near_sdk::test_utils::VMContextBuilder;
+use near_sdk::{testing_env, NearToken};
+
+/// The REAL global-contract code hash measured on mainnet, not a placeholder.
+/// Using the live value means the test exercises the same 32-byte decode the
+/// deployed factory will do, and a format change shows up here.
+const HASH: &str = "2CwvTaM6p2kXJLzZioFZwRVGj61B8KefS2EYCFmQznqD";
+
+fn factory_id() -> AccountId {
+    "float.near".parse().unwrap()
+}
+fn fowner() -> AccountId {
+    "ops.near".parse().unwrap()
+}
+fn alice() -> AccountId {
+    "alice.near".parse().unwrap()
+}
+
+fn hash() -> Base58CryptoHash {
+    HASH.parse().unwrap()
+}
+
+fn fctx(predecessor: AccountId, deposit: NearToken) -> VMContextBuilder {
+    let mut b = VMContextBuilder::new();
+    b.current_account_id(factory_id())
+        .predecessor_account_id(predecessor)
+        .attached_deposit(deposit);
+    b
+}
+
+/// 0.1 NEAR: the measured ask for a vault referencing a global contract —
+/// 0.00214 for the reference plus 0.02341 of flat base state, with headroom for
+/// request records at 0.00287 each.
+fn required() -> NearToken {
+    NearToken::from_millinear(100)
+}
 
 /// The whole no-backend design rests on this being deterministic and injective.
 ///
@@ -40,4 +77,87 @@ fn vault_id_composes_the_prefix_under_the_factory() {
         vault_id("alice.near", "float.near").map(|a| a.to_string()),
         Some("alice-near.float.near".to_string()),
     );
+}
+
+/// `new` records the configuration a vault creation will need.
+#[test]
+fn new_records_the_owner_and_the_code_hash_it_will_reference() {
+    testing_env!(fctx(fowner(), NearToken::from_near(0)).build());
+    let f = Factory::new(fowner(), hash(), "mainnet".to_string(), required());
+    assert_eq!(f.owner, fowner());
+    assert_eq!(f.network, "mainnet");
+    assert_eq!(f.required_deposit, required());
+    // ROUND TRIP, not a length check. The hash is stored as `CryptoHash`
+    // ([u8; 32]), so `len() == 32` is guaranteed by the type and asserting it
+    // would prove nothing — the same vacuity that made the earlier explicit
+    // length guard dead code. What matters is that the base58 the operator
+    // typed is the 32 bytes the promise action will receive.
+    assert_eq!(Base58CryptoHash::from(f.code_hash).to_string(), HASH);
+}
+
+fn ready() -> Factory {
+    testing_env!(fctx(fowner(), NearToken::from_near(0)).build());
+    Factory::new(fowner(), hash(), "mainnet".to_string(), required())
+}
+
+/// AN UNDERFUNDED CREATE MUST REFUSE, not half-create.
+///
+/// The deposit covers the new vault's storage. If the batch runs with too
+/// little, `CreateAccount` succeeds and the vault lands below its own storage
+/// requirement — `LackBalanceForState` on the next write, which is a bricked
+/// vault rather than a failed call.
+#[test]
+#[should_panic(expected = "DEPOSIT_TOO_SMALL")]
+fn create_vault_refuses_a_deposit_below_the_requirement() {
+    let mut f = ready();
+    testing_env!(fctx(alice(), NearToken::from_millinear(99)).build());
+    let _ = f.create_vault(None);
+}
+
+/// Exactly the requirement is enough. A `<` / `<=` slip here either bricks the
+/// boundary case or refuses a correct one, so the boundary gets its own test.
+#[test]
+fn create_vault_accepts_exactly_the_required_deposit() {
+    let mut f = ready();
+    testing_env!(fctx(alice(), required()).build());
+    // Passing is the assertion: no panic means the boundary is inclusive.
+    // Nothing is asserted about the vault existing — the promise has not run,
+    // and near-sdk's mock VM does not execute promises at all.
+    let _ = f.create_vault(None);
+}
+
+/// The kill switch has to work, or a discovered bug cannot be contained.
+#[test]
+#[should_panic(expected = "PAUSED")]
+fn create_vault_refuses_while_paused() {
+    let mut f = ready();
+    testing_env!(fctx(fowner(), NearToken::from_yoctonear(1)).build());
+    f.set_paused(true);
+    testing_env!(fctx(alice(), required()).build());
+    let _ = f.create_vault(None);
+}
+
+/// An owner whose derived id is not a legal account must be told so BEFORE the
+/// deposit moves, rather than getting a reverted batch and a refund.
+#[test]
+#[should_panic(expected = "BAD_VAULT_ID")]
+fn create_vault_refuses_an_owner_whose_derived_id_is_illegal() {
+    let mut f = ready();
+    let implicit: AccountId = "a".repeat(64).parse().unwrap();
+    // DELIBERATELY ABOVE the requirement, not exactly on it. This test sat on
+    // the boundary first, and mutating the deposit comparison from `<` to `<=`
+    // made it fail with DEPOSIT_TOO_SMALL instead of BAD_VAULT_ID — it was
+    // only reaching the id check because the deposit check happened to pass.
+    // A test named for one guard must not be gated on another.
+    testing_env!(fctx(implicit, NearToken::from_near(1)).build());
+    let _ = f.create_vault(None);
+}
+
+/// Only the owner may repoint new vaults at a different global contract.
+#[test]
+#[should_panic(expected = "OWNER_ONLY")]
+fn set_code_hash_is_owner_only() {
+    let mut f = ready();
+    testing_env!(fctx(alice(), NearToken::from_yoctonear(1)).build());
+    f.set_code_hash(hash());
 }
