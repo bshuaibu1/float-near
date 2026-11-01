@@ -27,9 +27,13 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Account, KeyPair, KeyPairSigner, JsonRpcProvider } from "near-api-js";
 
+const ROOT = resolve(import.meta.dirname, "..");
+/** The 33-byte module from make-stub-wasm.mjs, used here to SHRINK an account
+ *  whose contract is too large for NEAR to delete in one transaction. */
+const STUB = join(ROOT, ".demo", "stub-new.wasm");
 const RPC = "https://test.rpc.fastnear.com";
 const BENEFICIARY = "floatv4.testnet";
 
@@ -86,12 +90,58 @@ for (const id of DELETE) {
   const bal = BigInt(acct.amount);
   const k = JSON.parse(readFileSync(credPath(id), "utf8"));
   const signer = new KeyPairSigner(KeyPair.fromString(k.private_key ?? k.secret_key));
+  const acc = new Account(id, provider, signer);
   try {
-    await new Account(id, provider, signer).deleteAccount(BENEFICIARY);
+    await acc.deleteAccount(BENEFICIARY);
     recovered += bal;
     console.log(`  deleted ${id.padEnd(30)} +${near(bal)}`);
+    continue;
   } catch (e) {
-    console.log(`  FAILED  ${id.padEnd(30)} ${String(e.message).slice(0, 80)}`);
+    const msg = String(e.message);
+    if (!/large state/i.test(msg)) {
+      console.log(`  FAILED  ${id.padEnd(30)} ${msg.slice(0, 80)}`);
+      continue;
+    }
+    // DELETION IS BOUNDED WORK, so NEAR refuses it for an account carrying a
+    // large contract. Measured on v4.floatv4.testnet: 292,121 bytes, of which
+    // 280,249 is code.
+    //
+    // Deletion is not the only way to free the stake, though. `storage_usage`
+    // tracks the CURRENT code, so deploying a 33-byte contract over a 280 KB
+    // one releases the difference immediately — the balance does not move, it
+    // just stops being locked. Then sweep the freed balance out.
+    //
+    // This BRICKS the account, which is only acceptable because everything in
+    // DELETE is already superseded; the deny list is what makes that safe.
+    console.log(`  large state, shrinking instead: ${id}`);
+    try {
+      await acc.deployContract(new Uint8Array(readFileSync(STUB)));
+      await new Promise((r) => setTimeout(r, 3000));
+      const shrunk = await provider.viewAccount({ accountId: id, blockQuery: { finality: "final" } });
+      const freeNow = BigInt(shrunk.amount) - BigInt(shrunk.storage_usage) * 10n ** 19n;
+      console.log(
+        `          storage ${acct.storage_usage} -> ${shrunk.storage_usage} B, free ${near(freeNow)}`,
+      );
+      // Retry the delete now that the state is small; if it still refuses,
+      // sweep what was freed rather than leaving it locked.
+      try {
+        await acc.deleteAccount(BENEFICIARY);
+        recovered += BigInt(shrunk.amount);
+        console.log(`  deleted ${id.padEnd(30)} +${near(BigInt(shrunk.amount))} (after shrink)`);
+      } catch {
+        const keep = 2n * 10n ** 22n; // leave 0.02 so the account stays valid
+        const send = freeNow > keep ? freeNow - keep : 0n;
+        if (send > 0n) {
+          await acc.transfer({ receiverId: BENEFICIARY, amount: send });
+          recovered += send;
+          console.log(`  swept   ${id.padEnd(30)} +${near(send)} (account kept, bricked)`);
+        } else {
+          console.log(`  nothing to sweep from ${id}`);
+        }
+      }
+    } catch (e2) {
+      console.log(`  FAILED  ${id.padEnd(30)} shrink: ${String(e2.message).slice(0, 70)}`);
+    }
   }
 }
 
