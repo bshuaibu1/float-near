@@ -220,3 +220,72 @@ test("upgrade-vault.sh carries no stray control bytes", () => {
   });
   assert.equal(bad.length, 0, `${bad.length} control bytes in upgrade-vault.sh`);
 });
+
+/**
+ * USE_WASM — deploying a PINNED artifact instead of rebuilding.
+ *
+ * upgrade-vault.sh could only ever deploy what it had just rebuilt, which is
+ * the wrong thing in exactly one case: redeploying the artifact already
+ * validated on testnet and already published to npm. `cargo near build
+ * non-reproducible-wasm` does not promise those bytes back, so a rebuild is
+ * only PROBABLY identical — and the mainnet run's first assertion is "the vault
+ * runs the EXACT artifact create-float ships".
+ *
+ * The guard is tested here rather than in the script because the only way to
+ * exercise an inline deploy guard is to run a deploy.
+ */
+test("artifact_verdict refuses a mismatch, passes a match", opts, () => {
+  assert.equal(callFn("artifact_verdict", "AAA", "AAA"), "match");
+  assert.equal(callFn("artifact_verdict", "AAA", "BBB"), "mismatch");
+});
+
+test("artifact_verdict distinguishes UNVERIFIED from verified-good", opts, () => {
+  // Not a synonym for `match`. An empty expectation means nobody said what the
+  // bytes should be, and calling that a pass is how an "artifact pin" ends up
+  // pinning nothing at all. The caller must warn, not congratulate itself.
+  assert.equal(callFn("artifact_verdict", "AAA", ""), "unverified");
+});
+
+test("artifact_verdict treats an EMPTY computed hash as a mismatch", opts, () => {
+  // The failure this repo keeps paying for: zero matches and "the command could
+  // not match" produce the same output. If wasm-hash.mjs printed nothing, the
+  // hash is UNKNOWN — and an unknown hash must never satisfy a stated
+  // expectation, however the strings happen to compare.
+  assert.equal(callFn("artifact_verdict", "", "AAA"), "mismatch");
+  assert.equal(callFn("artifact_verdict", "", ""), "mismatch");
+});
+
+test("REACHABILITY: upgrade-vault.sh actually routes USE_WASM through the guard", () => {
+  // Correctness of the function is a separate claim from the script using it.
+  // A verdict nothing consults is decoration, and the script previously carried
+  // its own inline string comparison that this replaced.
+  assert.match(UPGRADE, /USE_WASM/, "upgrade-vault.sh does not mention USE_WASM");
+  assert.match(
+    UPGRADE,
+    /artifact_verdict "\$GOT" "\$\{EXPECT_CODE_HASH:-\}"/,
+    "upgrade-vault.sh does not call artifact_verdict with the computed and expected hashes",
+  );
+  // All three verdicts handled. A `case` missing `mismatch` would fall through
+  // and deploy the wrong bytes silently.
+  for (const v of ["match", "unverified", "mismatch"]) {
+    assert.match(UPGRADE, new RegExp(`^\\s*${v}\\)`, "m"), `the case statement does not handle ${v}`);
+  }
+  // And the mismatch arm must actually STOP.
+  const arm = UPGRADE.slice(UPGRADE.indexOf("    mismatch)"));
+  assert.match(arm.slice(0, 400), /exit 1/, "the mismatch arm does not exit");
+});
+
+test("the pinned-artifact branch does not skip the storage-margin check", () => {
+  // The margin check is what stops a LackBalanceForState deploy, and it was
+  // added after a real mainnet failure. USE_WASM short-circuits the build, so
+  // the risk is that it short-circuits past this too — the `fi` has to close
+  // before step 4, not after it.
+  const useWasmAt = UPGRADE.indexOf('if [ -n "${USE_WASM:-}" ]');
+  const marginAt = UPGRADE.indexOf("check-upgrade-margin.mjs");
+  const fiAt = UPGRADE.indexOf("\nfi\n", useWasmAt);
+  assert.ok(useWasmAt > 0 && marginAt > 0 && fiAt > 0, "could not locate the three landmarks");
+  assert.ok(
+    fiAt < marginAt,
+    "the USE_WASM branch is still open at the margin check — one path would skip it",
+  );
+});

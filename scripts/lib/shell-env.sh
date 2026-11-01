@@ -70,3 +70,27 @@ wsl_verdict() {
   fi
   echo ok
 }
+
+# artifact_verdict <got-hash> <expected-hash>  ->  match | mismatch | unverified
+#
+# Governs USE_WASM in upgrade-vault.sh, which deploys a PINNED artifact instead
+# of rebuilding. It lives here, as a function of its two inputs, for the same
+# reason as everything above: inline in the deploy script this branch can only
+# be exercised by running a deploy, and the one thing you cannot do to test a
+# deploy guard is deploy.
+#
+# `unverified` is a distinct verdict from `match`, not a synonym for it. An
+# empty EXPECT_CODE_HASH means nobody stated what the bytes should be, and
+# treating that as a pass is how an "artifact pin" ends up pinning nothing. The
+# caller warns and continues, because building from source is still the normal
+# path — but it must SAY it is unverified.
+#
+# An empty GOT is always a mismatch, never unverified. If wasm-hash.mjs printed
+# nothing the hash is unknown, and an unknown hash satisfying a stated
+# expectation would be the exact "zero matches and cannot-match look the same"
+# failure this repo keeps paying for.
+artifact_verdict() {
+  if [ -z "${1:-}" ]; then echo mismatch; return; fi
+  if [ -z "${2:-}" ]; then echo unverified; return; fi
+  if [ "$1" = "$2" ]; then echo match; else echo mismatch; fi
+}

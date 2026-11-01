@@ -193,8 +193,46 @@ export NEAR_VAULT_CONTRACT="$VAULT"
 echo "==> snapshotting live state of $NEAR_VAULT_CONTRACT"
 node scripts/verify-upgrade.mjs snapshot
 
-# ---- 3. Build with the PRODUCTION clock.
+# ---- 3. Build with the PRODUCTION clock — OR deploy a PINNED artifact.
 #
+# USE_WASM=<path> skips the build and deploys that file. Added because this
+# script could only ever deploy what it had just rebuilt, which is the wrong
+# thing in the one case where the exact bytes are load-bearing: redeploying the
+# artifact that was ALREADY validated on testnet and ALREADY published to npm.
+# `cargo near build non-reproducible-wasm` is, by its own name, not guaranteed
+# to reproduce those bytes, so a rebuild is only PROBABLY identical — and
+# "probably" is not good enough for a mainnet deploy whose entire purpose is to
+# prove a claim about the published artifact.
+#
+# EXPECT_CODE_HASH pins it. Without that, USE_WASM only moves the question from
+# "did the rebuild match?" to "did I point at the right file?", so the hash is
+# checked here and the deploy refuses on a mismatch.
+#
+# It is base58(sha256(wasm)) — NEAR's OWN code_hash encoding, not hex. That is
+# deliberate: the same string can be read straight back off the chain from
+# viewAccount().code_hash, so the pre-deploy pin and the post-deploy proof are
+# the same value in the same format. A hex digest would need converting to
+# compare, and the conversion is where a "verification" stops verifying.
+if [ -n "${USE_WASM:-}" ]; then
+  [ -f "$USE_WASM" ] || { echo "FATAL: USE_WASM=$USE_WASM does not exist" >&2; exit 1; }
+  WASM="$USE_WASM"
+  echo "==> SKIPPING the build: deploying the pinned artifact"
+  echo "    wasm: $WASM ($(wc -c < "$WASM") bytes)"
+  GOT="$(node scripts/wasm-hash.mjs "$WASM" | tr -cd '[:alnum:]')"
+  echo "    code hash $GOT"
+  case "$(artifact_verdict "$GOT" "${EXPECT_CODE_HASH:-}")" in
+    match)
+      echo "    matches EXPECT_CODE_HASH" ;;
+    unverified)
+      echo "    WARNING: no EXPECT_CODE_HASH given — this artifact is unverified" >&2 ;;
+    mismatch)
+      echo "FATAL: artifact hash mismatch — refusing to deploy." >&2
+      echo "  expected ${EXPECT_CODE_HASH:-<empty>}" >&2
+      echo "  got      ${GOT:-<empty>}" >&2
+      exit 1 ;;
+  esac
+else
+
 # cargo-near, never plain `cargo build --target wasm32-unknown-unknown`: the
 # latter silently links near-sdk's pure-Rust fallbacks, after which every
 # contract panic arrives as "unreachable opcode" and the reason codes this
@@ -234,6 +272,9 @@ for base in "${CARGO_TARGET_DIR:-}" "target"; do
 done
 [ -n "$WASM" ] || { echo "FATAL: built vault.wasm not found" >&2; exit 1; }
 echo "    wasm: $WASM ($(wc -c < "$WASM") bytes)"
+echo "    sha256 $(node scripts/wasm-hash.mjs "$WASM" | tr -cd '[:alnum:]')"
+
+fi
 
 # ---- 4. Will it still FIT?
 #
