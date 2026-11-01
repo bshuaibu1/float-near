@@ -1,6 +1,50 @@
 # STAGED: validate the virtual-agent gas-key path on MAINNET
 
-## ROUND 2 — 2026-11-01, re-validating the NEW artifact
+## ROUND 2 — DONE, 2026-11-01. 7/7 against `9y21mGCss…`
+
+```
+deployed 299996 bytes, local 299996        <- the two steps verify each other
+B  refused with NOT_VIRTUAL_AGENT
+C  SETTLED, node 3, payee +0.01 USDC
+C  gas key 0.070000 -> 0.069066   BURN 0.000934   (its OWN balance)
+C  vault drop 0.003222 = storage 0.003370 + unexplained -0.000148
+Z  1 key, free 0.205698
+```
+
+State survived the upgrade: owner, 4 nodes, 7 requests, production clock, and
+the panic-message health check (a plain-cargo build would have destroyed the
+reason codes silently).
+
+So the product's core claim now holds for the artifact we would actually
+publish: **a gas key self-submits a real payment and pays its own gas; the
+vault pays storage and nothing else.**
+
+### An open question, deliberately not resolved in our favour
+
+`unexplained` came out **-0.000148**, and the previous mainnet run gave
+**-0.000145**. Two runs, days apart, agreeing to 3e-6 — and this time the
+settle poll ran its full 32 seconds without the number moving. A stable,
+reproducible figure is not settling noise.
+
+Something credits the vault ~0.00015 per payment on mainnet. The obvious
+candidate is NEAR's contract gas rebate — a share of gas burnt executing the
+contract's own code — which would make it a real credit rather than an
+artifact.
+
+**That hypothesis was REFUTED on testnet** by a probe that removed the storage
+confound (a duplicate request id, which the contract refuses and never stores):
+storage delta 0 bytes, balance delta **exactly 0.000000**. So either the rebate
+does not exist, or the probe's blocked call burned too little *vault* execution
+to show one — a blocked request returns early and never runs the `ft_transfer`
+promise chain, which is where most of the vault's own execution happens.
+
+Unresolved, and it does not block anything: the residual is NEGATIVE, meaning
+the vault came out AHEAD of its storage growth, which cannot be the vault
+paying gas. The assertion is one-sided for exactly that reason. But it should
+not be written up as "the vault pays storage exactly" when two mainnet runs say
+it pays slightly less.
+
+## ROUND 2 — the staging that produced the above
 
 The round-1 result below is **stale**. It was measured against code hash
 `2CwvTaM6p2…` (299,620 B), and the vault has since gained the parent-init
