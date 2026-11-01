@@ -1,5 +1,34 @@
 # Browser signing flow for NEAR Float
 
+## STATUS: the contract half is VERIFIED on testnet (2026-11-01)
+
+`scripts/validate-factory-testnet.mjs` — **12/12**:
+
+```
+C  the vault ACCOUNT was created by the batch
+C  it RUNS the global contract (view_code)   33 bytes, magic 0061736d
+C  a keyless global-referencing account costs 132 B = 0.001320
+D  a failing batch leaves NO account, and the caller is refunded
+     caller spent 0.001331 of a 0.010000 deposit — gas only
+E  the DEPLOYED bytes enforce DEPOSIT_TOO_SMALL and PAUSED
+```
+
+So the design's load-bearing claim holds: **a contract can issue
+`CreateAccount + Transfer + UseGlobalContract + new()` in one batch**, which is
+what lets the browser sign a single ordinary `FunctionCall` and avoid the
+unanswerable question of whether a given wallet serialises a NEP-591 action.
+
+The run also found a bug no unit test could: see
+`[[payable-and-assert-one-yocto-must-pair]]`. Ten tests passed identically
+before and after the fix, because the `#[payable]` check lives in the generated
+`extern "C"` wrapper that unit tests bypass. Every owner method — including the
+kill switch — was unreachable.
+
+Still unverified: the REAL vault behind the factory (the parent-init exemption
+and a configured vault coming out), which needs the 299,620-byte artifact
+published globally at ~30 NEAR. `REAL_VAULT=1` is the gate.
+
+
 Reuses the link-session pattern already shipped in the Solana Float
 (`~/Documents/New project`), with one structural difference that is not a detail.
 
