@@ -1,6 +1,46 @@
 # STAGED: validate the virtual-agent gas-key path on MAINNET
 
-## ROUND 3 — STAGED. `5UcToT1F…`, the root-node build
+## ROUND 3 — DONE, 7/7 against `5UcToT1F…`. And the residual is EXPLAINED.
+
+```
+deployed 301033 bytes, local 301033
+B  refused with NOT_VIRTUAL_AGENT
+C  SETTLED, node 3, payee +0.01 USDC
+C  gas key 0.070000 -> 0.069065   BURN 0.000935
+C  vault drop 0.003222 = storage 0.003370 + unexplained -0.000148
+Z  1 key, free 0.188583
+```
+
+### The `unexplained` residual: solved
+
+Three mainnet runs gave **-0.000145, -0.000148, -0.000148** — deterministic.
+Every testnet run gave **exactly 0.000000**. From
+`EXPERIMENTAL_protocol_config`:
+
+```
+mainnet  protocol 86   burnt_gas_reward = [3,10]   = 30%
+testnet  protocol 88   burnt_gas_reward = [0,1]    = ZERO
+```
+
+NEAR pays a contract **30% of the gas burnt executing its own code**, and that
+reward is **removed** in a protocol version between 86 and 88. The vault is not
+paying less than its storage — it is being PAID. 0.000148 / 0.30 = 0.000493 of
+vault-execution gas, ~53% of the 0.000935 total; the rest is transaction
+overhead and the FT contract's execution, which rewards the FT contract.
+
+**The earlier testnet refutation was invalid for a reason I did not consider.**
+A duplicate-request probe gave balance delta exactly 0.000000 and I blamed the
+blocked call for burning too little vault execution. The real reason is that
+testnet has the reward set to zero outright — the probe was measuring a chain
+where the mechanism does not exist. A cross-chain comparison cannot refute a
+protocol-parameter effect when the parameter differs between the chains.
+
+Product consequence: **do not build on the rebate.** It disappears when mainnet
+reaches 88+, and nothing breaks when it does — the residual simply goes to
+zero, which is what testnet already shows. "The vault pays storage and no gas"
+is true today and becomes exactly true afterwards.
+
+## ROUND 3 — the staging that produced the above
 
 Round 2's result is stale for the same reason round 1's was: the artifact moved
 again. `new()` now creates the root node, so a factory-created vault is usable
