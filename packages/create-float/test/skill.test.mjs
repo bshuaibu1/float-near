@@ -206,21 +206,50 @@ import { usage as skUsage } from "../bin/args.mjs";
 
 const AGENT_ACCOUNT_NEAR = 0.55; // 0.5 key allowance + 0.05 storage
 
-test("REAL DATA: SKILL.md quotes the derived setup cost, not a stale round number", () => {
+/**
+ * ROUND UP, NEVER TO NEAREST — and this test previously REQUIRED the bug.
+ *
+ * It asserted `bare.toFixed(1)`, which rounds to nearest: a real ask of 3.347
+ * became "3.3", so SKILL.md said 3.3 and this test insisted on it. A user
+ * topping up to exactly the documented figure is refused for want of 0.047.
+ *
+ * Found 2026-11-01 by driving the PUBLISHED 0.3.2 — the same bug class 0.3.2
+ * itself shipped to fix in `usage()`, surviving one document over because the
+ * guard for the other document rounded the wrong way. Fixing a figure in one
+ * place and leaving its twin is the recurring shape here; this is the third
+ * time this number has gone stale.
+ *
+ * So the tolerance is now ONE-SIDED: a document may overstate the cost (it
+ * costs the reader nothing, the stake is refundable, and the wizard quotes the
+ * exact total before spending) but must never understate it, because that sends
+ * them to a refusal.
+ */
+const ceil1 = (n) => (Math.ceil(n * 10) / 10).toFixed(1);
+
+test("REAL DATA: SKILL.md never UNDERSTATES the setup cost", () => {
   const skillText = read(SKILL);
   const bytes = skStat(join(HERE, "..", "res", "vault.wasm")).size;
   const bare = Number(vaultFunding(bytes)) / 1e24;
   const withAgent = bare + AGENT_ACCOUNT_NEAR;
 
-  // One decimal: 3.3 and 3.8 as of a 299,016-byte contract.
-  const bare1dp = bare.toFixed(1);
-  const agent1dp = withAgent.toFixed(1);
-
   assert.ok(
-    skillText.includes(bare1dp) || skillText.includes(agent1dp),
-    `SKILL.md mentions neither ${bare1dp} nor ${agent1dp} NEAR — the real ask is ` +
-      `${bare.toFixed(3)} bare / ${withAgent.toFixed(3)} with one agent`,
+    skillText.includes(ceil1(bare)),
+    `SKILL.md does not quote ${ceil1(bare)} NEAR for a bare vault (real ask ${bare.toFixed(3)})`,
   );
+  assert.ok(
+    skillText.includes(ceil1(withAgent)),
+    `SKILL.md does not quote ${ceil1(withAgent)} NEAR with one agent (real ask ${withAgent.toFixed(3)})`,
+  );
+
+  // And the figure it must NOT carry: the nearest-rounded value, whenever that
+  // rounds DOWN. This is the assertion the old test had inverted.
+  const nearest = bare.toFixed(1);
+  if (Number(nearest) < bare) {
+    assert.ok(
+      !new RegExp(`\\*\\*${nearest.replace(".", "\\.")}\\*\\*`).test(skillText),
+      `SKILL.md quotes **${nearest}** for a bare vault, which is BELOW the real ${bare.toFixed(3)}`,
+    );
+  }
   assert.ok(
     !/~\s*3 NEAR|about 3 NEAR|hold ~3/i.test(skillText),
     "SKILL.md still says ~3 NEAR, which is below the real ask and fails the affordability check",
@@ -228,13 +257,50 @@ test("REAL DATA: SKILL.md quotes the derived setup cost, not a stale round numbe
 });
 
 test("REAL DATA: usage() and SKILL.md do not disagree about the cost", () => {
-  // Two documents quoting one measured fact is how the first drift happened.
+  // Two documents quoting one measured fact is how every drift here started.
+  //
+  // NOT a substring check. The previous version asserted `help.includes("3.3")`
+  // and passed because "3.347" CONTAINS "3.3" — so a three-decimal figure
+  // silently satisfied a one-decimal assertion and the two documents were never
+  // actually compared. Parse the figures and compare them as NUMBERS.
   const skillText = read(SKILL);
   const bytes = skStat(join(HERE, "..", "res", "vault.wasm")).size;
-  const bare1dp = (Number(vaultFunding(bytes)) / 1e24).toFixed(1);
+  const bare = Number(vaultFunding(bytes)) / 1e24;
   const help = skUsage();
-  assert.ok(help.includes(bare1dp), `usage() does not quote ${bare1dp} NEAR`);
-  assert.ok(skillText.includes(bare1dp), `SKILL.md does not quote ${bare1dp} NEAR`);
+
+  // SCOPE TO THE COST SENTENCE. Sweeping every decimal in the document was the
+  // first version of this and it failed on "measured 1.5% at 0.50 USDC" — a fee
+  // percentage read as a NEAR funding figure. The sentence is located first and
+  // its absence is a FAILURE, so a changed wording cannot make this vacuous.
+  const costSentence = (t, re, label) => {
+    const m = t.match(re);
+    assert.ok(m, `could not find the cost statement in ${label} — this test is measuring nothing`);
+    return m[0];
+  };
+  // [\s\S]*? not [^.]*? — the figures THEMSELVES contain periods ("3.347"), so a
+  // "anything but a full stop" match cannot reach the end of the sentence, and
+  // both texts wrap across lines so `.` alone will not either.
+  const helpCost = costSentence(help, /Measured from the[\s\S]*?with one agent/, "usage()");
+  const skillCost = costSentence(skillText, /hold \*\*[\d.]+ NEAR\*\*[\s\S]*?per agent/, "SKILL.md");
+
+  const figures = (t) => [...t.matchAll(/\b(\d+\.\d{1,3})\b/g)].map((m) => Number(m[1]));
+  // 0.55 per agent is a legitimate figure in both sentences and is NOT a vault
+  // total, so only figures above 1 are totals here.
+  const helpFigs = figures(helpCost).filter((n) => n > 1);
+  const skillFigs = figures(skillCost).filter((n) => n > 1);
+  assert.ok(helpFigs.length >= 2, `usage()'s cost sentence quotes ${helpFigs.length} totals; expected >= 2`);
+  assert.ok(skillFigs.length >= 2, `SKILL.md's cost sentence quotes ${skillFigs.length} totals; expected >= 2`);
+
+  // Neither document may promise less than the wizard will demand.
+  assert.ok(
+    Math.min(...helpFigs) + 1e-9 >= bare,
+    `usage() quotes ${Math.min(...helpFigs)} but the wizard demands ${bare.toFixed(3)}`,
+  );
+  assert.ok(
+    Math.min(...skillFigs) + 1e-9 >= bare,
+    `SKILL.md quotes ${Math.min(...skillFigs)} but the wizard demands ${bare.toFixed(3)} ` +
+      `(sentence: "${skillCost.replace(/\s+/g, " ").slice(0, 110)}")`,
+  );
   // Sanity on the derivation itself, so a broken vaultFunding cannot make both
   // documents agree on a wrong number.
   assert.ok(Number(codeStakeYocto(bytes)) / 1e24 > 2.5, "code stake derivation looks wrong");
