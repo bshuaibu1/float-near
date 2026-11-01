@@ -161,3 +161,58 @@ fn set_code_hash_is_owner_only() {
     testing_env!(fctx(alice(), NearToken::from_yoctonear(1)).build());
     f.set_code_hash(hash());
 }
+
+/// EVERY OWNER METHOD MUST BE `#[payable]`, and no runtime test here can check it.
+///
+/// `assert_owner` calls `assert_one_yocto`, so these methods must RECEIVE one
+/// yocto. But near-sdk rejects a deposit to a method not marked `#[payable]`
+/// in the generated `extern "C"` wrapper, BEFORE the body runs. The two
+/// together make the method permanently unreachable:
+/// "Method set_code_hash doesn't accept deposit".
+///
+/// Every test above passed with the attribute missing, because unit tests call
+/// the Rust method directly and never cross the wrapper that enforces it. Only
+/// a real deploy found it. So this is a SOURCE scan — the only kind of check
+/// that can see a missing attribute.
+#[test]
+fn every_method_calling_assert_owner_is_payable() {
+    let src = include_str!("lib.rs");
+    let mut offenders = Vec::new();
+    let mut owner_methods = 0;
+    let lines: Vec<&str> = src.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("pub fn ") {
+            continue;
+        }
+        // Does this method's body call assert_owner before the next `pub fn`?
+        let body_end = lines[i + 1..]
+            .iter()
+            .position(|l| l.trim_start().starts_with("pub fn "))
+            .map(|p| i + 1 + p)
+            .unwrap_or(lines.len());
+        if !lines[i..body_end].iter().any(|l| l.contains("self.assert_owner()")) {
+            continue;
+        }
+        owner_methods += 1;
+        // Look back over the attributes/doc comment directly above it.
+        let payable = lines[..i]
+            .iter()
+            .rev()
+            .take_while(|l| {
+                let t = l.trim_start();
+                t.starts_with('#') || t.starts_with("///") || t.starts_with("//") || t.is_empty()
+            })
+            .any(|l| l.trim_start() == "#[payable]");
+        if !payable {
+            offenders.push(line.trim().to_string());
+        }
+    }
+    // STATE THE EXPECTED COUNT FIRST. A scan that matched nothing would report
+    // "no offenders" and look identical to a clean result.
+    assert_eq!(
+        owner_methods, 3,
+        "expected 3 owner methods (set_paused, set_code_hash, set_required_deposit); \
+         found {owner_methods} — the scan is probably broken"
+    );
+    assert_eq!(offenders, Vec::<String>::new(), "these call assert_owner but are not #[payable]");
+}

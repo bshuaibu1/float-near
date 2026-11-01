@@ -164,6 +164,19 @@ impl Factory {
             )
     }
 
+    /// `#[payable]` IS REQUIRED, and unit tests cannot show it.
+    ///
+    /// `assert_owner` calls `assert_one_yocto`, so these methods must RECEIVE
+    /// one yocto — but near-sdk rejects any deposit to a method not marked
+    /// `#[payable]`, in the generated `extern "C"` wrapper, before the body
+    /// runs. The two together made every owner method unreachable:
+    /// "Method set_code_hash doesn't accept deposit".
+    ///
+    /// Every unit test passed, because they call the Rust method directly and
+    /// never go through the wrapper that enforces this. Only a real deploy
+    /// could find it — which is exactly what scripts/validate-factory-testnet
+    /// is for, and it found it on the first run that got this far.
+    #[payable]
     pub fn set_paused(&mut self, paused: bool) {
         self.assert_owner();
         self.paused = paused;
@@ -172,11 +185,13 @@ impl Factory {
     /// Repoint NEW vaults at a different global contract. Existing vaults are
     /// untouched — that is the `CodeHash` property we chose deliberately, so
     /// nobody is upgraded without opting in.
+    #[payable]
     pub fn set_code_hash(&mut self, code_hash: Base58CryptoHash) {
         self.assert_owner();
         self.code_hash = code_hash.into();
     }
 
+    #[payable]
     pub fn set_required_deposit(&mut self, required_deposit: NearToken) {
         self.assert_owner();
         self.required_deposit = required_deposit;

@@ -272,11 +272,29 @@ try {
   check("C: the vault ACCOUNT was created by the batch", vaultExists, expectedVault);
   if (vaultExists) {
     const vs = await settled(expectedVault);
-    // THE DECISIVE ASSERTION. A matching code_hash proves
-    // UseGlobalContract was issued from inside a contract and applied — the
-    // one thing no unit test in this repo can show.
-    check("C: it references the GLOBAL contract", vs.hash === STUB_HASH, `${vs.hash}`);
+    // THE DECISIVE ASSERTION, and it must read `view_code`, NOT
+    // `view_account.code_hash`.
+    //
+    // A global reference leaves `code_hash` at the null hash
+    // (11111111111111111111111111111111) because that field reports LOCAL
+    // code, and asserting on it failed here while the account was in fact
+    // running the global contract perfectly. docs/GLOBAL-CONTRACTS-NEP-591.md
+    // already said so — "an account with NO contract would also report small
+    // storage, so small storage alone would have been a false positive" — and
+    // used view_code for exactly this reason.
+    //
+    // This is the one thing no unit test in this repo can show: that
+    // UseGlobalContract, issued from INSIDE a contract, applied.
+    const code = await provider
+      .query({ request_type: "view_code", finality: "final", account_id: expectedVault })
+      .then((r) => Buffer.from(r.code_base64, "base64"), () => null);
+    check(
+      "C: it RUNS the global contract (view_code, not code_hash)",
+      code !== null && code.length === statSync(STUB).size,
+      code ? `${code.length} bytes, magic ${code.subarray(0, 4).toString("hex")}` : "no code",
+    );
     check("C: it holds the deposit as storage stake", vs.amount > 0n, near6(vs.amount));
+    info(`a keyless global-referencing account costs ${vs.bytes} B = ${near6(vs.bytes * STAKE)}`);
   }
 
   // ---- D. THE FAILURE PATH — the one that costs a user money if broken
