@@ -1,6 +1,31 @@
 # STAGED: validate the virtual-agent gas-key path on MAINNET
 
-Status: **staged, not run.** Mainnet `as-transaction` work is reserved for Bashir
+## Status, 2026-11-01
+
+**Step 1 — DONE.** `float.test015.near` runs the pinned artifact. Verified off
+chain, not from the deploy's own report:
+
+```
+code_hash   2CwvTaM6p2kXJLzZioFZwRVGj61B8KefS2EYCFmQznqD   (== the pin)
+code        299620 bytes, byte-identical to packages/create-float/res/vault.wasm
+storage     304688 -> 305292 bytes   (exactly the +604 predicted)
+state       owner, 4 nodes, caps 2040000/510000, root allowlist, production clock
+free        0.228624 NEAR
+```
+
+**Step 2 — NOT YET RUN.** It was reported as run, and the chain shows no
+transaction on either network. `storage_usage` is the proof: a settled payment
+writes a ~290-byte ledger record, and storage grew by exactly the code delta and
+nothing else. Zero `ss-*` requests, node 3 `executed 0`, USDC unchanged on both
+sides, one FullAccess key, no bindings, no funded gas key. **Nothing to clean
+up** — re-running step 2 is safe.
+
+That ambiguity is the reason the script now prints a header naming the network
+and vault, and accepts `REQUIRE_VAULT`. See step 2 below.
+
+---
+
+Mainnet `as-transaction` work is reserved for Bashir
 (`docs/` and project memory both say so; the permission classifier enforces it).
 Everything below has had its read-only half executed and recorded.
 
@@ -131,14 +156,36 @@ node -e "new (require('near-api-js').JsonRpcProvider)({url:'https://free.rpc.fas
 ## Step 2 — run the validation
 
 ```powershell
-$env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; node scripts/validate-self-submit-testnet.mjs
+$env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; $env:REQUIRE_VAULT="float.test015.near"; node scripts/validate-self-submit-testnet.mjs
 ```
+
+It now opens with a header naming the network, vault, owner, payee and legs, and
+the final line repeats the target — so a pasted tail is attributable to a chain.
+
+`REQUIRE_VAULT` is not decoration. **Without `ALLOW_MAINNET`, the vault DEFAULTS
+to the testnet account**, so a mainnet run whose environment variables failed to
+take does not error: it silently validates testnet and prints a green 7/7 that
+says nothing about mainnet. `REQUIRE_VAULT` makes that disagreement fatal
+(exit 2, before anything is spent).
 
 Expected: **7/7**, the payee up 0.01 USDC, and cleanup leaving
 `float.test015.near` with exactly **1 key** and the gas-key balance withdrawn.
 
-The script refuses to run mainnet without `ALLOW_MAINNET=1`, and refuses
-`ALLOW_MAINNET=1` against a non-`.near` vault. Both guards were exercised.
+The script also refuses `ALLOW_MAINNET=1` against a non-`.near` vault. All three
+guards have been exercised.
+
+### Verifying it afterwards, from the chain
+
+`node .demo/mainnet-verify.mjs` — read-only. It checks the code hash against the
+pin, the state against the pre-upgrade facts, the request ledger for the
+`ss-c-*` leg, that **no** `ss-a-*` leg exists (which would mean `ONLY_GAS_KEY`
+was not honoured and extra real USDC moved), and that no key, binding or
+funded gas key was left behind.
+
+The decisive field is **`storage_usage`**. A settled payment writes a ~290-byte
+ledger record, so 305,292 bytes means the deploy landed and nothing else did;
+305,582 means a payment settled too. It is a more reliable witness than a
+balance, because it does not drift with gas.
 
 ---
 

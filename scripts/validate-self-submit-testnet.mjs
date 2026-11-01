@@ -219,6 +219,38 @@ async function payAsVault(kp, requestId, amount, tgas) {
   });
 }
 
+/**
+ * SAY WHAT YOU ARE ABOUT TO OPERATE ON, before operating on it.
+ *
+ * The output used to name neither the network nor the vault — it printed
+ * "deployed 299620 bytes" and "vault free 0.15 NEAR" and nothing else — so a
+ * run could not be attributed to a chain from its own transcript. That is bad
+ * in a script that spends real money, and worse than bad in this one: without
+ * ALLOW_MAINNET the vault DEFAULTS to the testnet account, so a mainnet run
+ * whose environment variables failed to take does not error. It silently
+ * validates testnet and prints a green 7/7 that says nothing about mainnet.
+ *
+ * Measured 2026-11-01: a mainnet step 2 was reported as run, and chain state
+ * showed no transaction on either network. Ruling that out took two separate
+ * read-only investigations which the script could have answered itself.
+ *
+ * REQUIRE_VAULT is the hard version for scripted use: state the account you
+ * believe you are hitting and the run refuses if it disagrees.
+ */
+const banner = MAINNET ? C.r(`MAINNET — REAL FUNDS`) : C.g(`testnet`);
+console.log(`\n${C.b("network")}  ${banner}`);
+console.log(`${C.b("vault")}    ${VAULT}`);
+console.log(`${C.b("owner")}    ${OWNER}`);
+console.log(`${C.b("payee")}    ${PAYEE}   ${C.d(`node ${NODE}, ${ft(AMT_C)} per payment`)}`);
+console.log(`${C.b("legs")}     ${ONLY_GAS_KEY ? "B, C (ONLY_GAS_KEY=1)" : "A, B, C"}`);
+if (process.env.REQUIRE_VAULT && process.env.REQUIRE_VAULT !== VAULT) {
+  console.error(
+    `\nFATAL: REQUIRE_VAULT=${process.env.REQUIRE_VAULT} but this run targets ${VAULT}.`,
+  );
+  console.error("  ALLOW_MAINNET is probably unset — the vault defaults to testnet.");
+  process.exit(2);
+}
+
 try {
   step(0, "Preflight");
   const code = Buffer.from((await provider.viewContractCode({ contractId: VAULT })).code_base64, "base64");
@@ -451,7 +483,12 @@ try {
   info(`${VAULT} now has ${keys.length} key(s), free ${near6(await vaultFree().catch(() => 0n))}`);
 
   const pass = results.filter((r) => r.pass).length;
-  console.log(`\n${C.b(`${pass}/${results.length}`)} checks passed`);
+  // Name the target HERE too, not only in the header. A tail of this output is
+  // what gets pasted into a chat, and a bare "7/7 checks passed" is
+  // unattributable to a chain.
+  console.log(
+    `\n${C.b(`${pass}/${results.length}`)} checks passed  ${C.d(`— ${VAULT} on ${NET}`)}`,
+  );
   for (const r of results.filter((r) => !r.pass)) console.log(`  ${C.r("FAIL")} ${r.name}`);
   process.exitCode = pass === results.length ? 0 : 1;
 }
