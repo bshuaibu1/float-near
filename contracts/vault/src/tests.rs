@@ -2932,6 +2932,62 @@ fn new_cannot_be_called_by_anyone_but_the_vault() {
     Vault::new(owner(), "sandbox".to_string(), false);
 }
 
+/// THE PARENT ACCOUNT MAY INITIALIZE, so a factory can create vaults.
+///
+/// Why this has to be allowed. `new` previously demanded
+/// `predecessor == current`, which a transaction satisfies only by signing AS
+/// the vault — which is why `create-float` generates a temporary SETUP KEY,
+/// signs `new` with it, then deletes it (hence the `.dead-setup-key` file left
+/// in the credentials dir). A factory contract cannot do that: it holds no
+/// secret to sign with, and its promise-batch `function_call` arrives with the
+/// FACTORY as predecessor, so `new` panicked `INIT_NOT_SELF` and the entire
+/// factory design was blocked at the first call.
+///
+/// Why it is SAFE. On NEAR a sub-account can only ever be created by its
+/// immediate parent, so if `vault.test.near` exists then `test.near` created
+/// it — and at that moment it chose the code and could have installed any key.
+/// Letting it call `new` grants no authority it did not already hold. `new` is
+/// `#[init]` and panics against existing state, so this is a one-shot window
+/// that closes before the real owner exists.
+#[test]
+fn new_accepts_the_parent_account_so_a_factory_can_initialize() {
+    let parent: AccountId = "test.near".parse().unwrap();
+    testing_env!(ctx(parent, ZERO, 0).build());
+    let v = Vault::new(owner(), "sandbox".to_string(), false);
+    assert_eq!(v.owner, owner());
+}
+
+/// A SUFFIX LOOKALIKE IS NOT THE PARENT, and this is the test that decides how
+/// the parent check must be written.
+///
+/// `vault.test.near` ends with `est.near`, so a guard written as
+/// `current.ends_with(caller)` accepts `est.near` — a completely unrelated
+/// account that anyone could register and then use to initialize somebody
+/// else's freshly created vault with themselves as owner. The parent is the
+/// label sequence after the FIRST dot and nothing else, so the implementation
+/// uses `split_once('.')`.
+#[test]
+#[should_panic(expected = "INIT_NOT_SELF")]
+fn new_rejects_an_account_that_merely_looks_like_a_suffix_of_the_vault() {
+    let lookalike: AccountId = "est.near".parse().unwrap();
+    testing_env!(ctx(lookalike, ZERO, 0).build());
+    Vault::new(owner(), "sandbox".to_string(), false);
+}
+
+/// ONLY THE IMMEDIATE PARENT, not any ancestor.
+///
+/// `near` cannot create `vault.test.near` — only `test.near` can — so `near`
+/// never held the authority the parent exemption is justified by. A guard that
+/// walked every ancestor, or matched on the last label, would hand the
+/// registrar of a TLD an init window on every vault beneath it.
+#[test]
+#[should_panic(expected = "INIT_NOT_SELF")]
+fn new_rejects_the_grandparent_because_it_could_not_have_created_the_vault() {
+    let grandparent: AccountId = "near".parse().unwrap();
+    testing_env!(ctx(grandparent, ZERO, 0).build());
+    Vault::new(owner(), "sandbox".to_string(), false);
+}
+
 #[test]
 fn a_parents_cooldown_blocks_the_child_with_its_own_reason_code() {
     // F3. The code that distinguishes "you are rate limited" from "your parent

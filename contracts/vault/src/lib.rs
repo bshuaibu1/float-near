@@ -198,14 +198,36 @@ pub struct Vault {
 
 #[near]
 impl Vault {
-    /// Must be called by the vault account itself, ideally in the same
-    /// transaction as the deploy, so nobody else can initialize a freshly
-    /// deployed vault with their own owner.
+    /// Must be called by the vault account itself or by its PARENT account,
+    /// ideally in the same transaction as the deploy, so nobody else can
+    /// initialize a freshly deployed vault with their own owner.
+    ///
+    /// The parent is allowed so a FACTORY can create vaults. A factory holds no
+    /// secret, so it cannot sign as the vault the way `create-float` does with
+    /// its temporary setup key, and its promise-batch `function_call` arrives
+    /// with the factory as predecessor.
+    ///
+    /// That grants no new authority. On NEAR a sub-account can only ever be
+    /// created by its immediate parent, so if this account exists its parent
+    /// created it — choosing the code and able to install any key at that
+    /// moment. And `#[init]` panics against existing state, so the window
+    /// closes before the real owner exists.
+    ///
+    /// `split_once`, NOT `ends_with`: for `vault.test.near` the parent is
+    /// exactly `test.near`, and a suffix test would also accept `est.near`,
+    /// which is an unrelated account someone else may own.
     #[init]
     pub fn new(owner: AccountId, network: String, strict_allocation: bool) -> Self {
         let vault_id = env::current_account_id();
-        if env::predecessor_account_id() != vault_id {
-            fail(ReasonCode::InitNotSelf, "initialize from the vault account");
+        let caller = env::predecessor_account_id();
+        if caller != vault_id {
+            let parent = vault_id.as_str().split_once('.').map(|(_, rest)| rest);
+            if parent != Some(caller.as_str()) {
+                fail(
+                    ReasonCode::InitNotSelf,
+                    "initialize from the vault account or its parent",
+                );
+            }
         }
         if owner == vault_id {
             fail(ReasonCode::InvalidConfig, "owner must not be the vault");
