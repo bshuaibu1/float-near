@@ -230,7 +230,21 @@
         });
         modal = setupModal(selector, { contractId: TOKEN });
         step_ = "";
-        selector.store.observe(render);
+
+        // `store.observable.subscribe`, NOT `store.observe`.
+        //
+        // Read out of the shipped bundle rather than guessed: the store is
+        // built as `{ observable: subject.asObservable(), getState: () =>
+        // subject.getValue() }`, so it is an rxjs observable and `observe` has
+        // never existed. The first version called `observe` and the page died
+        // AFTER every module had loaded and the selector had initialised —
+        // which is why it looked like a CDN problem and was not.
+        if (typeof selector.store?.observable?.subscribe !== "function") {
+          throw new Error(
+            `the wallet store has an unexpected shape — keys: ${Object.keys(selector.store ?? {}).join(", ")}`,
+          );
+        }
+        selector.store.observable.subscribe(render);
         render();
       } catch (e) {
         trap(e);
