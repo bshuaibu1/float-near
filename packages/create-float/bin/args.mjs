@@ -81,11 +81,15 @@ export function wantsHelp(argv) {
  * both directions against this text.
  */
 /**
- * 0.5 key allowance + 0.05 account storage, mirroring `AGENT_COST` in
- * create-float.mjs. Not imported from there: that module calls `main()` on
- * import, so pulling it in to render help text would launch the wizard.
+ * A VIRTUAL agent: a gas key bound to a node, funded by `gasKeyFunding()` at
+ * its default 60 TGas / 50 payments. Not imported from gas-key.mjs only to
+ * keep this module free of BigInt plumbing for a help string.
+ *
+ * It was 0.55 — a sub-account plus a 0.5 key allowance — until agents stopped
+ * being accounts. Quoting the old figure would overstate the ask by 4.5x and
+ * describe a thing the wizard no longer creates.
  */
-const AGENT_COST_NEAR = 0.55;
+const AGENT_COST_NEAR = 0.12;
 
 /**
  * The cost sentence, DERIVED from the contract this package actually ships.
@@ -143,8 +147,9 @@ WHAT IT COSTS
   stake, not a fee. On mainnet this spends REAL funds, and the wizard asks for
   a typed acknowledgement first.
 
-  An agent costs 0.55 NEAR and NO AGENT IS CREATED BY DEFAULT, so without
-  --agents you get a vault that cannot pay. Run --dry-run to see the bill.
+  NO AGENT IS CREATED BY DEFAULT, so a fresh vault cannot pay anything. Add
+  one with float-agent — a gas key bound to a node, about 0.12 NEAR and
+  withdrawable. Run --dry-run to see the bill.
 
 OPTIONS
   --network <mainnet|testnet>  default mainnet — spends REAL funds

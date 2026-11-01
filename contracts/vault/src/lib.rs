@@ -217,7 +217,13 @@ impl Vault {
     /// exactly `test.near`, and a suffix test would also accept `est.near`,
     /// which is an unrelated account someone else may own.
     #[init]
-    pub fn new(owner: AccountId, network: String, strict_allocation: bool) -> Self {
+    pub fn new(
+        owner: AccountId,
+        network: String,
+        strict_allocation: bool,
+        root_limits: Vec<TokenLimit>,
+        root_recipients: Option<Vec<AccountId>>,
+    ) -> Self {
         let vault_id = env::current_account_id();
         let caller = env::predecessor_account_id();
         if caller != vault_id {
@@ -241,7 +247,22 @@ impl Vault {
             fail(ReasonCode::InvalidConfig, "network must be 1-32 chars of [a-z0-9-]");
         }
 
-        Self {
+        // THE ROOT NODE IS PART OF INITIALIZATION, not a follow-up call.
+        //
+        // `new` used to leave `node_order` empty, and create-float covered for
+        // it by calling `add_node` immediately afterwards. A FACTORY cannot:
+        // its whole purpose is one browser signature, so there is no
+        // afterwards, and `add_node` is owner-only so it could not call it in
+        // the batch either. The result was a vault with nothing to spend
+        // against — unusable, and silent about it.
+        //
+        // Validated the limits the same way `add_node` does. A root created
+        // here must be indistinguishable from one created there, or the two
+        // paths produce different vaults.
+        validate_limits(&root_limits);
+        validate_recipients(&root_recipients);
+
+        let mut v = Self {
             owner,
             network,
             paused: false,
@@ -257,7 +278,29 @@ impl Vault {
             requests: IterableMap::new(StorageKey::Requests),
             #[cfg(feature = "test-clock")]
             day_len_ns_override: PRODUCTION_DAY_NS,
-        }
+        };
+
+        let child_cap_sum: Vec<(AccountId, U128)> =
+            root_limits.iter().map(|l| (l.token.clone(), U128(0))).collect();
+        v.nodes.insert(
+            ROOT_NODE,
+            Node {
+                id: ROOT_NODE,
+                parent: None,
+                path: Vec::new(),
+                label: "root".to_string(),
+                account: None,
+                limits: root_limits,
+                child_cap_sum,
+                child_count: 0,
+                cooldown_sec: 0,
+                frozen: false,
+                recipients: root_recipients,
+            },
+        );
+        v.node_order.push(ROOT_NODE);
+        v.next_node_id = ROOT_NODE + 1;
+        v
     }
 
     // ------------------------------------------------------- owner methods

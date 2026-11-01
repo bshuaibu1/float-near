@@ -95,6 +95,19 @@ fn new_records_the_owner_and_the_code_hash_it_will_reference() {
     assert_eq!(Base58CryptoHash::from(f.code_hash).to_string(), HASH);
 }
 
+/// What a real caller passes for the vault's root node. The factory forwards
+/// these verbatim into the vault's `new`, so the shape matters more than the
+/// values: a root with no limits can hold no budget, and a root with no
+/// recipients refuses every payment NO_RECIPIENTS_SET.
+fn root_limits() -> near_sdk::serde_json::Value {
+    near_sdk::serde_json::json!([
+        { "token": "usdc.near", "daily_cap": "2040000", "per_tx_cap": "510000" }
+    ])
+}
+fn root_recipients() -> near_sdk::serde_json::Value {
+    near_sdk::serde_json::json!(["alice.near"])
+}
+
 fn ready() -> Factory {
     testing_env!(fctx(fowner(), NearToken::from_near(0)).build());
     Factory::new(fowner(), hash(), "mainnet".to_string(), required())
@@ -111,7 +124,7 @@ fn ready() -> Factory {
 fn create_vault_refuses_a_deposit_below_the_requirement() {
     let mut f = ready();
     testing_env!(fctx(alice(), NearToken::from_millinear(99)).build());
-    let _ = f.create_vault(None);
+    let _ = f.create_vault(None, root_limits(), root_recipients());
 }
 
 /// Exactly the requirement is enough. A `<` / `<=` slip here either bricks the
@@ -123,7 +136,7 @@ fn create_vault_accepts_exactly_the_required_deposit() {
     // Passing is the assertion: no panic means the boundary is inclusive.
     // Nothing is asserted about the vault existing — the promise has not run,
     // and near-sdk's mock VM does not execute promises at all.
-    let _ = f.create_vault(None);
+    let _ = f.create_vault(None, root_limits(), root_recipients());
 }
 
 /// The kill switch has to work, or a discovered bug cannot be contained.
@@ -134,7 +147,7 @@ fn create_vault_refuses_while_paused() {
     testing_env!(fctx(fowner(), NearToken::from_yoctonear(1)).build());
     f.set_paused(true);
     testing_env!(fctx(alice(), required()).build());
-    let _ = f.create_vault(None);
+    let _ = f.create_vault(None, root_limits(), root_recipients());
 }
 
 /// An owner whose derived id is not a legal account must be told so BEFORE the
@@ -150,7 +163,7 @@ fn create_vault_refuses_an_owner_whose_derived_id_is_illegal() {
     // only reaching the id check because the deposit check happened to pass.
     // A test named for one guard must not be gated on another.
     testing_env!(fctx(implicit, NearToken::from_near(1)).build());
-    let _ = f.create_vault(None);
+    let _ = f.create_vault(None, root_limits(), root_recipients());
 }
 
 /// Only the owner may repoint new vaults at a different global contract.

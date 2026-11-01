@@ -106,7 +106,12 @@ impl Factory {
     /// of an account they do not control, permanently denying that user the
     /// vault the dashboard will look for.
     #[payable]
-    pub fn create_vault(&mut self, label: Option<String>) -> Promise {
+    pub fn create_vault(
+        &mut self,
+        label: Option<String>,
+        root_limits: near_sdk::serde_json::Value,
+        root_recipients: near_sdk::serde_json::Value,
+    ) -> Promise {
         if self.paused {
             env::panic_str("PAUSED: vault creation is disabled");
         }
@@ -143,10 +148,26 @@ impl Factory {
             .use_global_contract(self.code_hash)
             .function_call(
                 "new".to_string(),
+                // ROOT LIMITS AND RECIPIENTS ARE PASSED HERE, not added later.
+                //
+                // `new` used to leave the vault with zero nodes, and this
+                // factory only calls `new` — one browser signature, no
+                // follow-up, and it cannot call `add_node` because that is
+                // owner-only and the factory is not the owner. So every
+                // factory-created vault had nothing to spend against. Found by
+                // deploying the REAL vault on testnet; the 33-byte stub used in
+                // the factory's own run could not reveal it, because that
+                // stub's `new` does nothing.
+                //
+                // The recipients matter as much as the caps: a root with
+                // `None` means "inherit from the nearest ancestor", the root
+                // has none, and every payment comes back NO_RECIPIENTS_SET.
                 near_sdk::serde_json::json!({
                     "owner": owner,
                     "network": self.network,
                     "strict_allocation": false,
+                    "root_limits": root_limits,
+                    "root_recipients": root_recipients,
                 })
                 .to_string()
                 .into_bytes(),

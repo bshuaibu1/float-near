@@ -196,8 +196,8 @@ NEAR and several are irreversible.
 ### What the human must do first — you cannot do these
 
 1. have a NEAR account whose key is in `~/.near-credentials`
-2. hold **3.9 NEAR** in it for a vault plus one agent (**3.4** for a bare
-   vault, plus 0.55 per agent). Mostly a **refundable** storage stake for the
+2. hold **3.5 NEAR** in it for a vault plus one agent (**3.4** for a bare
+   vault, plus ~0.12 per agent). Mostly a **refundable** storage stake for the
    contract, not a fee — but the wizard checks the balance before it starts and
    refuses if it is short, so a round "3" is not enough.
 3. hold some of the token the agents will spend

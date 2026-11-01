@@ -65,9 +65,17 @@ fn ctx(predecessor: AccountId, deposit: NearToken, ts_ns: u64) -> VMContextBuild
     b
 }
 
+/// A vault whose ROOT is created by `new`, carrying the caps every tree test
+/// below expects. The root used to be added separately by `tree()`; `new` now
+/// creates it, so adding it again fails "root already exists".
 fn new_vault(strict: bool) -> Vault {
+    vault_with(strict, limit(1000, 1000))
+}
+
+/// Same, for the handful of tests whose root needs different caps.
+fn vault_with(strict: bool, limits: Vec<TokenLimit>) -> Vault {
     testing_env!(ctx(vault_id(), ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), strict)
+    Vault::new(owner(), "sandbox".to_string(), strict, limits, Some(vec![payee()]))
 }
 
 /// root(1000) ─ research(500) ─ r1(500), r2(300)
@@ -92,7 +100,7 @@ struct Tree {
 fn tree() -> Tree {
     let mut v = new_vault(false);
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let root = 0; // created by `new`: limit(1000, 1000), payee allowlisted
     let research = v.add_node(Some(root), "research".into(), limit(500, 500), 0, None);
     let ops = v.add_node(Some(root), "ops".into(), limit(300, 300), 0, None);
     let n_r1 = v.add_node(Some(research), "r1".into(), limit(500, 500), 0, None);
@@ -140,7 +148,7 @@ fn assert_dispatched(out: PromiseOrValue<PaymentOutcome>) {
 fn i1_sigma_children_equal_to_parent_is_allowed() {
     let mut v = new_vault(true);
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let root = 0; // created by `new`: limit(1000, 1000), payee allowlisted
     v.add_node(Some(root), "a".into(), limit(600, 600), 0, None);
     v.add_node(Some(root), "b".into(), limit(400, 400), 0, None); // 600 + 400 == 1000
 
@@ -153,7 +161,7 @@ fn i1_sigma_children_equal_to_parent_is_allowed() {
 fn i1_sigma_children_one_unit_over_parent_is_rejected() {
     let mut v = new_vault(true);
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let root = 0; // created by `new`: limit(1000, 1000), payee allowlisted
     v.add_node(Some(root), "a".into(), limit(600, 600), 0, None);
     // 600 + 401 == 1001 > 1000. One unit over.
     v.add_node(Some(root), "b".into(), limit(401, 401), 0, None);
@@ -166,7 +174,7 @@ fn i1_sigma_children_one_unit_over_parent_is_rejected() {
 fn i1_lowering_parent_below_existing_children_is_rejected() {
     let mut v = new_vault(true);
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let root = 0; // created by `new`: limit(1000, 1000), payee allowlisted
     v.add_node(Some(root), "a".into(), limit(600, 600), 0, None);
     v.add_node(Some(root), "b".into(), limit(400, 400), 0, None); // sum == 1000
     v.set_node_caps(root, limit(999, 999)); // would strand 1 unit
@@ -184,7 +192,7 @@ fn i1_lowering_parent_below_existing_children_is_rejected() {
 fn i1_raising_a_child_above_the_parents_headroom_is_rejected() {
     let mut v = new_vault(true);
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let root = 0; // created by `new`: limit(1000, 1000), payee allowlisted
     let a = v.add_node(Some(root), "a".into(), limit(600, 600), 0, None);
     v.add_node(Some(root), "b".into(), limit(400, 400), 0, None); // sum == 1000, no headroom
 
@@ -198,7 +206,7 @@ fn i1_raising_a_child_above_the_parents_headroom_is_rejected() {
 fn i1_raising_a_child_exactly_into_the_parents_headroom_is_allowed() {
     let mut v = new_vault(true);
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(1000, 1000), 0, Some(vec![payee()]));
+    let root = 0; // created by `new`: limit(1000, 1000), payee allowlisted
     let a = v.add_node(Some(root), "a".into(), limit(600, 600), 0, None);
     v.add_node(Some(root), "b".into(), limit(300, 300), 0, None); // sum == 900, 100 spare
 
@@ -208,9 +216,9 @@ fn i1_raising_a_child_exactly_into_the_parents_headroom_is_allowed() {
 
 #[test]
 fn i1_overcommit_mode_permits_sigma_children_above_parent() {
-    let mut v = new_vault(false);
+    let mut v = vault_with(false, limit(100, 100));
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(100, 100), 0, Some(vec![payee()]));
+    let root = 0;
     v.add_node(Some(root), "a".into(), limit(100, 100), 0, None);
     v.add_node(Some(root), "b".into(), limit(100, 100), 0, None); // 200 > 100: allowed
 
@@ -333,8 +341,7 @@ fn production_build_reports_production_clock_and_a_real_day() {
 fn i5_per_tx_boundary_exact_then_one_over() {
     let mut v = new_vault(false);
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root =
-        v.add_node(None, "root".into(), limit(1_000_000, 1_000_000), 0, Some(vec![payee()]));
+    let root = 0;
     let a = v.add_node(Some(root), "a".into(), limit(1_000_000, 100), 0, None);
     v.bind_agent(a, r1());
 
@@ -351,9 +358,9 @@ fn i5_per_tx_boundary_exact_then_one_over() {
 /// code is the point: `PerTxLimit` here would mean the chain was never walked.
 #[test]
 fn i5_ancestor_per_tx_binds_with_its_own_reason_code() {
-    let mut v = new_vault(false);
+    let mut v = vault_with(false, limit(1_000_000, 50));
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(1_000_000, 50), 0, Some(vec![payee()]));
+    let root = 0;
     let a = v.add_node(Some(root), "a".into(), limit(1_000_000, 500), 0, None);
     v.bind_agent(a, r1());
 
@@ -372,10 +379,9 @@ fn i5_ancestor_per_tx_binds_with_its_own_reason_code() {
 /// CLAUSE ISOLATION: caps are 1_000_000, so only cooldown can fire.
 #[test]
 fn i4_cooldown_blocks_one_second_early_and_passes_at_the_boundary() {
-    let mut v = new_vault(false);
+    let mut v = vault_with(false, limit(1_000_000, 1_000_000));
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root =
-        v.add_node(None, "root".into(), limit(1_000_000, 1_000_000), 0, Some(vec![payee()]));
+    let root = 0;
     let a = v.add_node(Some(root), "a".into(), limit(1_000_000, 1_000_000), 60, None);
     v.bind_agent(a, r1());
 
@@ -504,9 +510,9 @@ fn an_agent_can_have_a_sub_agent_beneath_it() {
 
 #[test]
 fn depth_exactly_at_max_is_allowed() {
-    let mut v = new_vault(false);
+    let mut v = vault_with(false, limit(100, 100));
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(100, 100), 0, Some(vec![payee()]));
+    let root = 0;
     let team = v.add_node(Some(root), "team".into(), limit(100, 100), 0, None);
     let leaf = v.add_node(Some(team), "leaf".into(), limit(100, 100), 0, None);
     assert_eq!(v.get_node(leaf).path, vec![root, team], "leaf path is root-first");
@@ -1043,9 +1049,9 @@ fn run_contention_case(seed: u64) {
     const POOL: u128 = 100;
     const DRAW: u128 = 10; // 10 draws fit; every one after that must be refused
 
-    let mut v = new_vault(false);
+    let mut v = vault_with(false, limit(POOL, POOL));
     testing_env!(ctx(owner(), YOCTO, 0).build());
-    let root = v.add_node(None, "root".into(), limit(POOL, POOL), 0, Some(vec![payee()]));
+    let root = 0;
 
     let mut nodes = Vec::new();
     for i in 0..AGENTS {
@@ -2929,7 +2935,7 @@ fn new_cannot_be_called_by_anyone_but_the_vault() {
     // `new` sets the owner. If a stranger could call it on a freshly deployed
     // vault, they would own it.
     testing_env!(ctx(stranger(), ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), false);
+    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
 }
 
 /// THE PARENT ACCOUNT MAY INITIALIZE, so a factory can create vaults.
@@ -2953,7 +2959,7 @@ fn new_cannot_be_called_by_anyone_but_the_vault() {
 fn new_accepts_the_parent_account_so_a_factory_can_initialize() {
     let parent: AccountId = "test.near".parse().unwrap();
     testing_env!(ctx(parent, ZERO, 0).build());
-    let v = Vault::new(owner(), "sandbox".to_string(), false);
+    let v = Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
     assert_eq!(v.owner, owner());
 }
 
@@ -2971,7 +2977,7 @@ fn new_accepts_the_parent_account_so_a_factory_can_initialize() {
 fn new_rejects_an_account_that_merely_looks_like_a_suffix_of_the_vault() {
     let lookalike: AccountId = "est.near".parse().unwrap();
     testing_env!(ctx(lookalike, ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), false);
+    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
 }
 
 /// ONLY THE IMMEDIATE PARENT, not any ancestor.
@@ -2985,7 +2991,7 @@ fn new_rejects_an_account_that_merely_looks_like_a_suffix_of_the_vault() {
 fn new_rejects_the_grandparent_because_it_could_not_have_created_the_vault() {
     let grandparent: AccountId = "near".parse().unwrap();
     testing_env!(ctx(grandparent, ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), false);
+    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
 }
 
 #[test]
@@ -3771,5 +3777,49 @@ fn self_submit_shares_one_cooldown_with_the_node() {
     assert_blocked(
         t.v.request_payment("k2".into(), tok(), usdc(1), payee(), "".into(), None),
         ReasonCode::Cooldown,
+    );
+}
+
+/// `new` CREATES THE ROOT NODE, so one transaction produces a usable vault.
+///
+/// Found on testnet 2026-11-01, by deploying the real vault and initializing
+/// it: `new` set `node_order: Vec::new()` and the vault came up with ZERO
+/// nodes. A vault with no root node has nothing to spend against, so it cannot
+/// pay anything.
+///
+/// create-float never noticed because it calls `add_node` straight afterwards.
+/// The FACTORY cannot do that — its entire purpose is ONE browser signature,
+/// so there is no afterwards, and it cannot call `add_node` anyway because
+/// that is owner-only and the factory is not the owner. So the factory was
+/// producing unusable vaults, and the 33-byte stub used in its testnet run
+/// could not reveal it because that stub's `new` does nothing.
+///
+/// RECIPIENTS ARE PART OF THIS, not a separate step. A root with
+/// `recipients: None` means "inherit from the nearest ancestor with Some", and
+/// the root has no ancestor — so every payment would be refused
+/// NO_RECIPIENTS_SET. A root node that cannot pay anyone is the same bug one
+/// layer down.
+#[test]
+fn new_creates_a_usable_root_node() {
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    let v = Vault::new(
+        owner(),
+        "sandbox".to_string(),
+        false,
+        limit(1000, 500),
+        Some(vec![payee()]),
+    );
+    let tree = v.get_tree();
+    assert_eq!(tree.len(), 1, "a fresh vault must have exactly one node");
+    let root = &tree[0];
+    assert_eq!(root.id, 0, "the root is node 0");
+    assert_eq!(root.label, "root");
+    assert_eq!(root.parent, None);
+    assert!(root.path.is_empty());
+    assert_eq!(root.limits, limit(1000, 500));
+    assert_eq!(
+        root.recipients,
+        Some(vec![payee()]),
+        "without an allowlist on the root every payment is NO_RECIPIENTS_SET",
     );
 }

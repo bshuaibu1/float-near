@@ -204,7 +204,7 @@ import { statSync as skStat } from "node:fs";
 import { vaultFunding, codeStakeYocto } from "../bin/funding.mjs";
 import { usage as skUsage } from "../bin/args.mjs";
 
-const AGENT_ACCOUNT_NEAR = 0.55; // 0.5 key allowance + 0.05 storage
+const AGENT_ACCOUNT_NEAR = 0.12; // a VIRTUAL agent: gasKeyFunding() default
 
 /**
  * ROUND UP, NEVER TO NEAREST — and this test previously REQUIRED the bug.

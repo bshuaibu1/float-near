@@ -120,7 +120,7 @@ test("REAL DATA: usage() never UNDERSTATES what the wizard will demand", () => {
   // usage() may round UP, never down.
   const bytes = statSync(RES_WASM).size;
   const bare = Number(vaultFunding(bytes)) / 1e24;
-  const withAgent = bare + 0.55; // AGENT_KEY_ALLOWANCE 0.5 + AGENT_STORAGE 0.05
+  const withAgent = bare + 0.12; // a VIRTUAL agent: gasKeyFunding() default
   const ceil3 = (n) => (Math.ceil(n * 1000) / 1000).toFixed(3);
 
   const text = usage();

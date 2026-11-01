@@ -694,14 +694,42 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     if (already) {
       skip("already initialised");
     } else {
+      // THE ROOT NODE IS CREATED BY `new` NOW, not by the tree loop below.
+      //
+      // `new` used to leave the vault with zero nodes and this wizard covered
+      // for it with a follow-up `add_node`. A FACTORY cannot: one browser
+      // signature, no follow-up, and `add_node` is owner-only so it could not
+      // batch one either — so factory-created vaults had nothing to spend
+      // against. Moving root creation into `new` fixes that path and costs
+      // this one a transaction.
+      //
+      // The tree loop below is unchanged and still correct: it reads get_tree
+      // first and skips labels that already exist, so it sees the root `new`
+      // just made and moves on.
+      const rootNode = nodes.find((n) => n.parent === null);
       await vaultAcct.callFunction({
         contractId: vault,
         methodName: "new",
-        args: { owner, network: NETWORK, strict_allocation: false },
+        args: {
+          owner,
+          network: NETWORK,
+          strict_allocation: false,
+          root_limits: [
+            {
+              token,
+              daily_cap: String(toBaseUnits(rootNode.daily, decimals)),
+              per_tx_cap: String(toBaseUnits(rootNode.perTx, decimals)),
+            },
+          ],
+          // The owner, so the vault can pay SOMEONE the moment it exists. A
+          // root with `null` means "inherit from the nearest ancestor", the
+          // root has none, and every payment returns NO_RECIPIENTS_SET.
+          root_recipients: [owner],
+        },
         gas: 100n * 10n ** 12n,
         deposit: 0n,
       });
-      ok(`initialised, owner ${owner}, overcommit mode`);
+      ok(`initialised, owner ${owner}, root ${rootNode.daily}/day`);
     }
 
     // ---- 6. Tree.
