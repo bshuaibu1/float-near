@@ -137,11 +137,17 @@
     </div>
 
     <script type="module">
-      import { setupWalletSelector } from "https://esm.sh/@near-wallet-selector/core@8.9.13";
-      import { setupModal } from "https://esm.sh/@near-wallet-selector/modal-ui@8.9.13";
-      import { setupMyNearWallet } from "https://esm.sh/@near-wallet-selector/my-near-wallet@8.9.13";
-      import { setupMeteorWallet } from "https://esm.sh/@near-wallet-selector/meteor-wallet@8.9.13";
-
+      // NOTHING IS IMPORTED AT THE TOP, deliberately.
+      //
+      // The first version used static `import` statements. A static import that
+      // fails takes the WHOLE module with it — the script body never runs, so
+      // the try/catch inside it never exists, and the page sits on "loading…"
+      // forever with the real error visible only in a console nobody opened.
+      // That is the same failure this repo keeps paying for in other forms: a
+      // check that cannot report looks exactly like a check that passed.
+      //
+      // So: a global error trap FIRST, then dynamic imports one at a time, each
+      // announcing itself. A failure now names the module that caused it.
       const $ = (id) => document.getElementById(id);
       const show = (...ids) => {
         for (const s of ["loading", "connect", "plan", "signing", "done", "error"]) $(s).classList.add("hide");
@@ -171,22 +177,63 @@
 
       let selector, modal, wasm;
 
+      // Anything that escapes — including an error inside a library's own async
+      // code — lands on screen instead of in the console.
+      const trap = (e) => {
+        const err = e?.reason ?? e?.error ?? e;
+        fail(`${step_ || "startup"} failed.\n\n${err?.message ?? String(err)}`);
+      };
+      let step_ = "";
+      window.addEventListener("error", trap);
+      window.addEventListener("unhandledrejection", trap);
+
+      const loading = (m) => {
+        $("loading").textContent = m;
+      };
+
+      /** Import one module, saying which one if it throws. */
+      async function need(label, url, pick) {
+        step_ = `Loading ${label}`;
+        loading(`loading ${label}…`);
+        const mod = await import(url);
+        const fn = mod[pick] ?? mod.default?.[pick];
+        if (typeof fn !== "function") {
+          throw new Error(
+            `${label} loaded but has no ${pick}() — exports: ${Object.keys(mod).join(", ") || "(none)"}`,
+          );
+        }
+        return fn;
+      }
+
+      const CDN = "https://esm.sh/@near-wallet-selector";
+      const V = "8.9.13";
+
       try {
+        step_ = "Fetching the contract";
+        loading("loading contract…");
         // The contract ships next to this page. Fetched once so its real size
         // is shown rather than a number typed into the copy.
         const res = await fetch("./vault.wasm");
         if (!res.ok) throw new Error(`vault.wasm ${res.status}`);
         wasm = new Uint8Array(await res.arrayBuffer());
 
+        const setupWalletSelector = await need("wallet-selector", `${CDN}/core@${V}`, "setupWalletSelector");
+        const setupModal = await need("the wallet picker", `${CDN}/modal-ui@${V}`, "setupModal");
+        const setupMyNearWallet = await need("MyNearWallet", `${CDN}/my-near-wallet@${V}`, "setupMyNearWallet");
+        const setupMeteorWallet = await need("Meteor", `${CDN}/meteor-wallet@${V}`, "setupMeteorWallet");
+
+        step_ = "Starting the wallet selector";
+        loading("connecting to NEAR…");
         selector = await setupWalletSelector({
           network: NETWORK,
           modules: [setupMyNearWallet(), setupMeteorWallet()],
         });
         modal = setupModal(selector, { contractId: TOKEN });
+        step_ = "";
         selector.store.observe(render);
         render();
       } catch (e) {
-        fail(`Could not start.\n${e?.message ?? e}`);
+        trap(e);
       }
 
       function accountId() {
