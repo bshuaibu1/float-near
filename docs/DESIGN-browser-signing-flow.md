@@ -241,6 +241,92 @@ The CLI needs the owner's account id up front to know what to poll for. That is
 a public identifier the user already knows, so asking for it costs nothing and
 removes the entire backend.
 
+## Hosting and domains (decided 2026-11-01)
+
+The Solana Float is being **retired**. `usefloat.xyz` becomes the marketing
+page; `app.usefloat.xyz` serves everything else, including the signing page at
+`app.usefloat.xyz/create`.
+
+Retirement removes most of the collision risk `deploy-vps.sh` was written
+against — but **not yet**. `float-dashboard` / `float-admin` / `float-api` are
+live under pm2 out of `/srv/float` until they are actually turned off, so until
+then the script's refusal to touch a pm2 process it did not create still earns
+its keep. `pm2 restart float-api` would restart the Solana product.
+
+**Serve the page from the VPS; do not make it depend on the VPS.** The signing
+page is static, so `app.usefloat.xyz` is a convenience, not a dependency: a user
+onboarding during an outage still gets a vault, because the CLI polls the chain
+rather than our API. The moment a link-session API sits in that path, every
+onboarding inherits our uptime. That is a real guarantee to give away for
+convenience we do not need.
+
+## Does any of this need a database? Mostly no.
+
+The question is worth answering precisely, because the Solana version needed a
+substantial one and the reason does not carry over.
+
+**Why Solana Float needed a store.** It is custodial. The server provisions the
+agent wallet and treasury via Dynamic, so it *must* persist owner records,
+control keys, agent-wallet records and policy — there is nowhere else for them
+to live. `ownerControlKey` exists because the server, not the user, holds the
+authority. Link sessions need storing for the same reason: the signed artifact
+is a message only the server can act on.
+
+**None of that is true here.** The vault contract *is* the database:
+
+| state | where it lives | DB needed? |
+| --- | --- | --- |
+| owner, tree, caps, recipients, thresholds | on-chain, `get_config` / `get_tree` | no |
+| today's budget and spend | on-chain, `get_node_budget` | no |
+| payment history | on-chain request ledger | no, with a caveat below |
+| agent authority | a key bound on the vault | no |
+| agent's own key | the user's `.float/adapter.env` | not ours to hold |
+| link sessions | not needed — the chain is the callback | no |
+| who is logged in | the connected wallet | **no** |
+
+That last row is the one worth dwelling on. **A non-custodial dashboard needs no
+login system at all.** Vault state is public, so reads need no auth; and writes
+are signed by the user's wallet, so they need no server-side session. No JWT, no
+bearer token, no user table, no password reset, no session expiry — none of it,
+because we never hold anything on the user's behalf. The `ownerControlKey` in
+localStorage has no NEAR equivalent and should not be invented.
+
+### The two things that genuinely want storage
+
+**1. History beyond `purge_settled`.** Measured today: purging 20 requests freed
+5,758 bytes, and that storage refund is why an owner would do it. So on-chain
+history is deliberately *deletable*, and a dashboard that wants a permanent
+ledger needs its own copy.
+
+**2. Cross-vault queries.** The RPC answers "what is in this vault". It cannot
+answer "total spend across all vaults this month" without reading each one.
+
+Both are **indexer** problems, not system-of-record problems, and the
+distinction decides the architecture:
+
+> Anything we store must be a **derived cache that can be deleted and rebuilt
+> from the chain.** The moment a database holds state that is not recoverable
+> from on-chain data, we have reintroduced custody — a thing users must trust us
+> to keep, and a single point of failure for a product whose pitch is that there
+> is none.
+
+Practically: no database for v1. When history or analytics justify one, add a
+read-only indexer (Postgres fed by a NEAR indexer or a polling worker), and keep
+the rule that deleting it loses nothing but speed.
+
+### The one real gap: finding a user's vault
+
+With the factory, vaults are sub-accounts of `float.near` — and **NEAR has no
+RPC to enumerate an account's sub-accounts.** So "show me my vault" needs either
+a deterministic name or a registry.
+
+Deterministic is better and costs nothing: `alice.near` →
+`alice.float.near`. The dashboard computes it and reads it; no lookup, no index,
+no DB. It only breaks if one owner wants several vaults, at which point the
+factory can keep a small on-chain `owner -> Vec<vault>` map — on-chain, so it
+stays rebuildable and trust-free, and at a measured 192 bytes per map-ish entry
+it is immaterial.
+
 ## Decisions this needs
 
 1. **Factory or direct multi-action?** Decides the vault naming scheme and
