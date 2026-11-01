@@ -89,11 +89,34 @@ availability.
 
 ## 4. The economics: burn, not stake — and it is 10x
 
-**Verified from the NEP, and this is the number the first draft of this note
-omitted.** The deployer does not *stake* for a global contract, it **burns**:
-the tokens are gone, not locked. And `global_contract_storage_amount_per_byte`
-is set to **10x the normal storage staking cost**, to pay for distributing the
-code network-wide.
+**MEASURED 2026-11-01 by `scripts/measure-global-burn.sh`.** This used to read
+"verified from the NEP", which was the weakest link in a figure that decides a
+~30 NEAR expense per release: mainnet's protocol config exposes
+`global_contract_host_fns: true` and `storage_amount_per_byte: 1e19` but **no
+global-contract rate at all**, so there was nothing to check the NEP against.
+
+Two fresh sizes published on testnet, 258 and 1,282 bytes, differentially — the
+subtraction cancels the unknown fixed action cost, which a single deploy cannot
+separate from the per-byte rate:
+
+```
+  258-byte global: cost 0.025861 NEAR   storage 182 -> 182
+ 1282-byte global: cost 0.128268 NEAR   storage 182 -> 182
+  differential 0.102408 NEAR over 1,024 bytes
+  => 100,007,681,299,900,000 yocto/byte  =  10.001x
+```
+
+The 0.001 excess is the two transactions' gas fees sitting inside the
+differential. **The 10x holds.**
+
+And `storage_usage` grew **0 bytes** across both publishes. That is what
+separates a burn from a stake — a stake raises it. So the tokens really are
+destroyed, not locked; also previously NEP-sourced, now measured.
+
+Caveat kept deliberately: measured on testnet at **protocol 88**, while mainnet
+runs **86**. The rate is a protocol parameter and is unlikely to differ, but it
+is not proven there. A 258-byte global on mainnet costs ~0.0259 NEAR and would
+settle it.
 
 Applied to our measured 280,249-byte build:
 
@@ -150,12 +173,31 @@ Break-even lands on ten whatever the contract size, and that is structural
 rather than a coincidence: the global publish rate **is** ten times the
 per-account rate, so `10·S / S` is always ten.
 
-**"Zero onboarding cost" is still too strong, for a second reason the first
-draft did not have.** A vault stakes for its own state (nodes, ledgers,
-requests — all per-vault), *and* it needs **free** balance for its agents to
-transact at all: measured at **0.100919 NEAR per in-flight 100 TGas call**
-(`SPIKE-self-fc-key-2026-10-31.md`). A vault funded at its stake alone cannot
-make a payment. Realistically ~0.15–0.25 NEAR per usable vault, not ~0.05.
+**"Zero onboarding cost" is still too strong**, because a vault stakes for its
+own state — nodes, ledgers, requests, all per-vault. Measured 2026-11-01 by
+`scripts/measure-vault-state.mjs`, on a live vault by differential (a fresh
+flat vault would have cost 3.35 NEAR to deploy and this testnet pool holds ~2.7
+NEAR, mostly locked):
+
+| component | bytes | NEAR | notes |
+| --- | --- | --- | --- |
+| global reference | 214 | 0.00214 | independent of code size |
+| flat base: config + prefixes + root node | 2,341 | 0.02341 | |
+| each extra node | 192 | 0.00192 | one token limit, no recipients |
+| each payment record | 287 | 0.00287 | **reclaimable** via `purge_settled` |
+
+So a flat vault plus 50 payments is **0.169 NEAR**, and plus 100 is **0.313** —
+against today's flat `STATE_HEADROOM` of 0.35, which turns out to cover the base
+plus ~113 unpurged payments. The 0.35 was chosen for safety and lands close to a
+sensible number; what changes is that it is now a number with a derivation.
+
+~~A vault needs free balance for its agents to transact: 0.100919 NEAR per
+in-flight 100 TGas call.~~ **Obsolete as of 2026-11-01.** With a bound NEP-611
+gas key the vault pays **0.000000** gas — validated on mainnet, where the
+agent's gas key burned 0.000925 and the vault's balance moved by exactly its
+storage growth and nothing else. The gas now lives in the agent's gas key, which
+the user funds per agent (~0.06, withdrawable), so the vault needs **storage
+only**. See `docs/SELF-SUBMIT-PATH.md`.
 
 ### Two things the first real run of the measurement script fixed
 
