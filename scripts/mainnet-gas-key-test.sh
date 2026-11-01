@@ -63,7 +63,25 @@ command -v near >/dev/null || { echo "FATAL: near-cli-rs not found" >&2; exit 1;
   echo "FATAL: no mainnet credentials for $ACCOUNT" >&2; exit 1; }
 
 GK="$(node -e "console.log(require('./$SECRETS').public_key)")"
-SK="$(node -e "console.log(require('./$SECRETS').private_key)")"
+
+# ---- NEVER pass the secret as a CLI argument.
+#
+# The first mainnet run used `sign-with-plaintext-private-key "$SK"`, and
+# near-cli-rs helpfully echoed a "console command if you need to re-run" line
+# containing the full private key. It went into the operator's shell scrollback
+# and into a chat transcript. Harmless that time — the key was a throwaway,
+# restricted to one read-only view method, and deleted minutes later — but the
+# pattern leaks any key it is given, and this script is the kind of thing that
+# gets copied.
+#
+# `sign-with-access-key-file` takes a PATH. The path is what gets echoed.
+KEYFILE=.demo/gaskey-access-key.json
+node -e "
+const s = require('./$SECRETS');
+require('fs').writeFileSync('$KEYFILE', JSON.stringify({
+  account_id: '$ACCOUNT', public_key: s.public_key, private_key: s.private_key,
+}, null, 2));
+"
 state() { node scripts/gas-key-state.mjs "$ACCOUNT" "$GK" mainnet; }
 field() { state | grep "^$1=" | cut -d= -f2; }
 near6() { node -e "process.stdout.write((Number(process.argv[1])/1e24).toFixed(6))" "$1"; }
@@ -102,7 +120,9 @@ cleanup() {
     near account delete-keys "$ACCOUNT" public-keys "$GK" $NET >/dev/null 2>&1 \
       && ok "gas key deleted" || bad "could not delete the gas key — remove it by hand"
   fi
+  rm -f "$KEYFILE"
   info "$ACCOUNT free is now $(near6 "$(field free)") NEAR, $(field keys) key(s)"
+  info "removed $KEYFILE; delete $SECRETS too once you are done with it"
   exit $code
 }
 
@@ -143,7 +163,7 @@ FREE_BEFORE="$(field free)"
 near contract call-function as-transaction "$VAULT" "$METHOD" \
   json-args '{}' prepaid-gas "$TGAS.0 Tgas" attached-deposit '0 NEAR' \
   sign-as "$ACCOUNT" network-config mainnet \
-  sign-with-plaintext-private-key "$SK" send 2>&1 | tail -6 \
+  sign-with-access-key-file "$KEYFILE" send 2>&1 | tail -6 \
   && ok "the call executed" || bad "the call failed — read the output above"
 GAS_AFTER="$(wait_change gas "$GAS_BEFORE")" || info "(gas balance unchanged after 20s of polling)"
 FREE_AFTER="$(field free)"
@@ -154,8 +174,13 @@ bold "VERDICT"
 if [ "$GAS_AFTER" != "$GAS_BEFORE" ]; then
   ok "the GAS KEY's own balance paid for the call"
   ok "=> gas keys work on mainnet. Adopt them; skip the sub-account recovery fix."
-  info "   An agent then costs ~0.05 recoverable instead of 0.55 stranded,"
-  info "   and agents do not contend for the vault's free NEAR."
+  info "   An agent needs no sub-account, its float is RECOVERABLE, and agents"
+  info "   do not contend for the vault's free NEAR."
+  info ""
+  info "   SIZING, and do not read '$FUND covers it' off this run: the balance"
+  info "   must clear the RESERVATION, which is prepaid_gas x 1e9. This test used"
+  info "   $TGAS TGas, so ~$(near6 $(( TGAS * 1000000000000 * 1000000000 ))). request_payment runs at 100 TGas,"
+  info "   where the floor is ~0.1009. Fund a real agent's gas key accordingly."
 else
   bad "the gas key's balance did not move — read the two lines above"
   info "=> do NOT adopt gas keys on this evidence. Re-measure before deciding."

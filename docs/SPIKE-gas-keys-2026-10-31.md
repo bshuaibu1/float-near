@@ -1,8 +1,81 @@
 # Spike: NEP-611 gas keys remove the agent sub-account
 
-Status: **answered — gas keys dominate every other agent-gas option.**
-Measured on testnet (protocol 88) 2026-10-31 with `scripts/spike-gas-key.mjs`
-against the 1,081-byte `no_std` probe from `SPIKE-self-fc-key-2026-10-31.md`.
+Status: **answered, and CONFIRMED ON MAINNET 2026-10-31.**
+Testnet (protocol 88) with `scripts/spike-gas-key.mjs` against the 1,081-byte
+`no_std` probe from `SPIKE-self-fc-key-2026-10-31.md`; mainnet (protocol 86) with
+`scripts/mainnet-gas-key-test.sh`, run by Bashir.
+
+## MAINNET RESULT — the whole thing cost 0.000370 NEAR
+
+Four transactions on `test015.near`. The live vault was never a signer; the key
+was function-call restricted to one read-only view method on it.
+
+```
+before                     free 0.178927   1 key    gas key: none
+[1] add gas key            ACCEPTED        own balance 0.000000  (empty, as documented)
+[2] fund 0.05              gas key 0.000000 -> 0.050000
+                           acct free 0.176638 -> 0.126580
+[3] call, signed by it     gas key 0.050000 -> 0.049836   <- paid
+                           acct free 0.126580 -> 0.126580   <- UNTOUCHED
+[cleanup] withdraw+delete  recovered 0.049836, key removed
+after                      free 0.178557   1 key    gas key: none
+```
+
+Verified independently off chain afterwards rather than from the script's own
+output: `free=178557464374003699999987`, `gas=none`, `keys=1`.
+
+So on mainnet, at protocol 86:
+
+- **`AddGasKey` is accepted.** This was the one unverified assumption behind the
+  whole architecture choice.
+- **The gas key's own balance pays** — 0.000164 for a 30 TGas call — and the
+  account's free balance did not move by a single yocto.
+- **The float is recoverable.** `withdraw-from-gas-key` returned 0.049836.
+
+### Correcting the headline this spike first gave
+
+The first write-up — and the script's own verdict line — said an agent costs
+"~0.05 recoverable instead of 0.55 stranded". **That reads the wrong number off
+this run.** The 0.05 only sufficed because the test used **30 TGas**, whose
+reservation is ~0.0309. A gas key's balance must clear the reservation, which is
+`prepaid_gas × 1e9`:
+
+| prepaid | reservation floor |
+| --- | --- |
+| 30 TGas | 0.0309 |
+| 50 TGas (`MIN_GAS_FOR_DISPATCH`) | 0.0515 |
+| **100 TGas (`DEFAULT_GAS_TGAS`, what `request_payment` actually uses)** | **0.1009** |
+
+Burn per call is separate and small: 0.000164 measured here for a trivial view
+call, and ~0.00107 per *real* mainnet payment (from `r1`'s key, three payments
+consuming 0.003221). So payments affordable ≈ `(balance − floor) / 0.00107`:
+
+| gas key funded | at 100 TGas | at 50 TGas |
+| --- | --- | --- |
+| 0.15 | ~45 payments | ~92 |
+| 0.25 | ~139 | ~186 |
+| 0.55 | ~420 | ~466 |
+
+**So the honest claim is not "a tenth of the capital".** It is: *comparable
+capital, but recoverable instead of stranded, with no sub-account and no
+contention* — plus a lever, since dropping `DEFAULT_GAS_TGAS` from 100 to ~60
+would nearly halve the floor.
+
+That is the third number I have had to correct today after stating it (the
+others: the allowance reservation being "permanently deducted", and the per-vault
+cost under global contracts). The pattern is the same each time — a figure
+measured under one set of parameters quoted as if it were general.
+
+### A flaw in the staging itself
+
+The run used `sign-with-plaintext-private-key`, and near-cli-rs echoed a
+"console command if you need to re-run" line **containing the full private key**,
+into the operator's scrollback and a chat transcript. Harmless this time: the key
+was a throwaway, restricted to one read-only method, and deleted minutes later —
+confirmed off chain. But the pattern leaks whatever key it is given, and a script
+like this gets copied. `mainnet-gas-key-test.sh` now writes a temporary
+access-key file and uses `sign-with-access-key-file`, so the **path** is what
+gets echoed, and the cleanup deletes it.
 
 ## The question that prompted it
 
@@ -111,10 +184,15 @@ Then the agent is autonomous, nothing is stranded, and the user paid once.
 
 ## Not measured — do not build on these without checking
 
-- **Mainnet.** Tested on testnet protocol 88. Gas keys landed at 86 and mainnet
-  is on 86, so it should work, but it has **not** been tested there. Four failed
-  mainnet deploys this week all came from assuming a testnet result transfers.
-- **`num_nonces` at scale.** 4 was honoured; 1,024 untested.
+- ~~**Mainnet.**~~ **Done** — see the mainnet result at the top. The gap is
+  closed.
+- **`num_nonces` at scale.** 4 was honoured on testnet, 1 on mainnet; 1,024
+  untested.
+- **Concurrency on mainnet.** The no-contention result (two keys paying from
+  their own pots while the account could not cover one reservation) is from
+  **testnet only**. The mainnet run used a single key. The mechanism is the
+  same and the mainnet call provably did not touch the account's balance, but
+  two-at-once has not been run there.
 - **That the agent cannot withdraw its own gas float.** `withdrawFromGasKey` is
   a distinct action type, not a `FunctionCall`, so a function-call key should be
   unable to sign it — the same reasoning that bars `DeleteAccount`. High
