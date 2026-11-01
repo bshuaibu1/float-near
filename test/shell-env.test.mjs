@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 /**
@@ -273,6 +273,43 @@ test("REACHABILITY: upgrade-vault.sh actually routes USE_WASM through the guard"
   // And the mismatch arm must actually STOP.
   const arm = UPGRADE.slice(UPGRADE.indexOf("    mismatch)"));
   assert.match(arm.slice(0, 400), /exit 1/, "the mismatch arm does not exit");
+});
+
+test("no script reads a repo file relative to the CWD", () => {
+  // MEASURED 2026-11-01: a staged mainnet validation run was launched from
+  // C:\Users\BASHIR and died with MODULE_NOT_FOUND before doing anything,
+  // because the artifact comparison read "packages/create-float/res/vault.wasm"
+  // relative to the working directory.
+  //
+  // These scripts are run by someone following written instructions, from
+  // whatever directory their shell is in. Depending on the cwd makes the
+  // instructions part of the mechanism — and the failure arrives as a Node
+  // stack trace, which reads like a broken script rather than a wrong `cd`.
+  //
+  // Resolve from import.meta.dirname instead.
+  const files = readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".mjs"));
+  // State the expected scale FIRST. A glob that silently matched nothing would
+  // make this test pass while scanning zero files — the exact "zero matches and
+  // cannot-match look identical" trap this repo keeps paying for.
+  assert.ok(files.length >= 10, `only found ${files.length} scripts — the scan is probably broken`);
+
+  const offenders = [];
+  for (const f of files) {
+    const src = readFileSync(join(ROOT, "scripts", f), "utf8");
+    // A bare relative path inside a filesystem read. Anything starting with a
+    // variable, `join(`, `resolve(`, `/`, or a drive letter is fine, as is a
+    // path that came in as an argv value.
+    for (const m of src.matchAll(/(?:readFileSync|statSync|existsSync)\(\s*"([^"]+)"/g)) {
+      const p = m[1];
+      if (/^(?:[a-zA-Z]:|\/|\\)/.test(p)) continue; // absolute
+      offenders.push(`${f}: ${p}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "these read a repo path relative to the cwd; resolve from import.meta.dirname",
+  );
 });
 
 test("the pinned-artifact branch does not skip the storage-margin check", () => {

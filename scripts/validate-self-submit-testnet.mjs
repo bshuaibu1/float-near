@@ -22,8 +22,24 @@
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Account, KeyPair, KeyPairSigner, JsonRpcProvider } from "near-api-js";
+
+/**
+ * The repo root, derived from THIS FILE's location rather than the cwd.
+ *
+ * The artifact comparison used to read "packages/create-float/res/vault.wasm"
+ * relative to the working directory, so running the script from anywhere but
+ * the repo root died with MODULE_NOT_FOUND or ENOENT. Measured 2026-11-01: a
+ * staged mainnet run was launched from C:\Users\BASHIR and failed before doing
+ * anything, which cost a round trip to diagnose something the script already
+ * knew — where it lives.
+ *
+ * A validation script is run by someone following written instructions, from
+ * whatever directory their shell happens to be in. Depending on the cwd makes
+ * the instructions part of the mechanism.
+ */
+const ROOT = resolve(import.meta.dirname, "..");
 
 // ---- MAINNET MODE.
 //
@@ -254,7 +270,7 @@ if (process.env.REQUIRE_VAULT && process.env.REQUIRE_VAULT !== VAULT) {
 try {
   step(0, "Preflight");
   const code = Buffer.from((await provider.viewContractCode({ contractId: VAULT })).code_base64, "base64");
-  const local = readFileSync("packages/create-float/res/vault.wasm");
+  const local = readFileSync(join(ROOT, "packages", "create-float", "res", "vault.wasm"));
   info(`deployed ${code.length} bytes, local ${local.length}`);
   check("the vault runs the EXACT artifact create-float ships", code.equals(local));
   check("the deployed code contains signer_account_pk", code.includes(Buffer.from("signer_account_pk")));

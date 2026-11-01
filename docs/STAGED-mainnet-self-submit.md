@@ -156,8 +156,15 @@ node -e "new (require('near-api-js').JsonRpcProvider)({url:'https://free.rpc.fas
 ## Step 2 — run the validation
 
 ```powershell
-$env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; $env:REQUIRE_VAULT="float.test015.near"; node scripts/validate-self-submit-testnet.mjs
+$env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; $env:REQUIRE_VAULT="float.test015.near"; node C:\Users\BASHIR\Documents\near-vault\scripts\validate-self-submit-testnet.mjs
 ```
+
+Runnable **from any directory** — the script resolves the repo from its own
+location. It did not used to: a run launched from `C:\Users\BASHIR` died with
+`MODULE_NOT_FOUND` before doing anything, which arrives as a Node stack trace
+and reads like a broken script rather than a wrong `cd`. A guard in the root
+suite now fails if any script in `scripts/` reads a repo file relative to the
+working directory.
 
 It now opens with a header naming the network, vault, owner, payee and legs, and
 the final line repeats the target — so a pasted tail is attributable to a chain.
