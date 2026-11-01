@@ -188,11 +188,55 @@ Then the agent is autonomous, nothing is stranded, and the user paid once.
   closed.
 - **`num_nonces` at scale.** 4 was honoured on testnet, 1 on mainnet; 1,024
   untested.
-- **Concurrency on mainnet.** The no-contention result (two keys paying from
-  their own pots while the account could not cover one reservation) is from
-  **testnet only**. The mainnet run used a single key. The mechanism is the
-  same and the mainnet call provably did not touch the account's balance, but
-  two-at-once has not been run there.
+- ~~**Concurrency on mainnet.**~~ **Done** — see below.
+
+## Concurrency CONFIRMED on mainnet
+
+`scripts/mainnet-gas-key-concurrency.mjs`, 60 TGas, two gas keys on
+`test015.near`:
+
+```
+[3] account free        0.04330    <- BELOW one 0.06092 reservation
+    key 1 gas balance   0.06492
+    key 2 gas balance   0.06492
+    ok   account CANNOT cover one reservation; both keys CAN
+
+[4] key 1: EXECUTED  block F2Ve54YxTSFC…
+    key 2: EXECUTED  block F2Ve54YxTSFC…     <- SAME BLOCK
+
+    2/2 executed, distinct blocks 1
+```
+
+**Both executed in one block while the account could not cover a single
+reservation.** There is nowhere else the gas could have come from. Gas keys do
+not contend on mainnet, so one vault can host many agents paying simultaneously.
+
+60 TGas is forced, not chosen: the account must be unable to cover one
+reservation while both keys can, which needs `R > free/3`. At 0.178 free that
+is `R > 0.0595`, so prepaid > ~59 TGas; 100 TGas would need 0.210 of funding and
+does not fit.
+
+### The per-call cost that run printed is wrong by 358x
+
+It showed `key 1 gas 0.06492 -> 0.00400`, i.e. 0.06092 per call — **exactly the
+reservation**, because the reservation was still held when the line printed.
+Cleanup then withdrew **0.06475** from each key, so the real burn is:
+
+| | |
+| --- | --- |
+| funded per key | 0.06492 |
+| withdrawn by cleanup | 0.06475 |
+| **real burn per call** | **0.00017** |
+| single-key mainnet run, for comparison | 0.000164 |
+
+Whole run: account 0.17815 → 0.17521, **0.00294** total — of which 0.00034 was
+the two calls and 0.00260 was gas for the eight account-signed transactions
+(~0.000325 each).
+
+The script now waits for the refund before quoting a cost, and says so
+explicitly when it has not settled. The figure was dangerous precisely because
+it matched the reservation to the yocto, which reads as a finding rather than
+as a stale read.
 - **That the agent cannot withdraw its own gas float.** `withdrawFromGasKey` is
   a distinct action type, not a `FunctionCall`, so a function-call key should be
   unable to sign it — the same reasoning that bars `DeleteAccount`. High

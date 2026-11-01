@@ -280,10 +280,41 @@ try {
   });
 
   step(5, "Verdict");
+  // ---- WAIT FOR THE GAS REFUND BEFORE QUOTING A COST.
+  //
+  // The first successful run printed `key 1 gas 0.06492 -> 0.00400`, implying
+  // each call cost 0.06092 — which is EXACTLY the reservation, because the
+  // reservation was still held when the line was printed. The cleanup then
+  // withdrew 0.06475 from each key, so the real burn was 0.00017: the printed
+  // figure overstated the per-call cost by 358x, and it matched the reservation
+  // so precisely that it looked like a finding rather than a stale read.
+  //
+  // The refund has landed once the balance rises back above
+  // (funded - reservation), so that is the predicate — again a positive
+  // assertion about where the value should land, not "wait for a change".
+  const settledFloor = FUND - RESERVATION;
+  let balsAfter = await Promise.all(pks.map(gasBalance));
+  for (let t = 0; t < 30 && balsAfter.some((b) => b !== null && b <= settledFloor); t++) {
+    await wait(1000);
+    balsAfter = await Promise.all(pks.map(gasBalance));
+  }
+  const refundLanded = balsAfter.every((b) => b !== null && b > settledFloor);
   const freeAfter = await freeBalance();
-  const balsAfter = await Promise.all(pks.map(gasBalance));
+
   info(`account free ${near(freeThin)} -> ${near(freeAfter)}`);
-  balsAfter.forEach((b, i) => info(`key ${i + 1} gas  ${near(bals[i] ?? 0n)} -> ${near(b ?? 0n)}`));
+  balsAfter.forEach((b, i) => {
+    const burn = (bals[i] ?? 0n) - (b ?? 0n);
+    info(
+      `key ${i + 1} gas  ${near(bals[i] ?? 0n)} -> ${near(b ?? 0n)}` +
+        (refundLanded
+          ? `   burn ${(Number(burn) / 1e24).toFixed(7)}`
+          : `   (refund NOT yet settled — this is the held reservation, not the cost)`),
+    );
+  });
+  if (!refundLanded) {
+    warn("gas refunds had not settled within 30s; read the cleanup's withdraw amounts");
+    warn(`real burn = ${near(FUND)} funded minus whatever cleanup withdraws below`);
+  }
   info(`${okCount}/2 executed, distinct blocks ${blocks.size}`);
 
   if (okCount === 2) {
