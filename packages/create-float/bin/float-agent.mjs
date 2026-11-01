@@ -7,7 +7,11 @@
  * allowance. The key carries its own balance and pays its own gas.
  *
  *   old, per agent   a sub-account + a restricted key          0.55 NEAR
- *   now, per agent   a gas key bound to a node                ~0.06 NEAR
+ *   now, per agent   a gas key bound to a node                ~0.12 NEAR
+ *
+ * 0.12 is `gasKeyFunding()` at its defaults: a 0.06 reservation plus burn for
+ * 50 payments. The reservation is what NEAR holds per in-flight call and is
+ * returned each time, so it is charged once however many payments are funded.
  *
  * This exists because setup deliberately creates NOTHING that can spend. The
  * wizard makes a flat vault and stops; delegation is a thing the owner does
@@ -43,6 +47,21 @@ const info = (m) => console.log(`    ${C.d(m)}`);
 const step = (n, t) => console.log(`\n${C.b(`[${n}]`)} ${t}`);
 const near6 = (y) => (Number(y) / 1e24).toFixed(6);
 
+/**
+ * The default ask, DERIVED and ROUNDED UP.
+ *
+ * This said "About 0.06 NEAR" — the reservation alone, not the funding. The
+ * real default is `gasKeyFunding()` = reservation + burn x 50 payments = 0.12,
+ * so the help understated by 2x and a user topping up to the documented figure
+ * would fund a key that cannot cover even one call.
+ *
+ * Exactly the failure create-float 0.3.2 shipped to fix, reintroduced here by
+ * writing a derived number down by hand. The only durable fix is not to write
+ * it down. Rounds UP: an overstatement costs nothing because the balance is
+ * withdrawable, an understatement produces a broken agent.
+ */
+const defaultAsk = () => (Math.ceil((Number(gasKeyFunding()) / 1e24) * 100) / 100).toFixed(2);
+
 export function usage() {
   return `float-agent — add a virtual agent to an existing Float vault
 
@@ -52,7 +71,7 @@ USAGE
 WHAT A VIRTUAL AGENT IS
   A gas key bound to a node on your vault. It is not a NEAR account: there is
   no sub-account, and it pays its OWN gas rather than drawing on the vault.
-  About 0.06 NEAR, and withdrawable — against 0.55 for the old agent accounts.
+  About ${defaultAsk()} NEAR by default, and withdrawable.
 
   Its key may call exactly one method on exactly one contract. It cannot move
   tokens directly, raise its own limit, or reach owner functions.

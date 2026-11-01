@@ -79,3 +79,38 @@ test("signerChoice reports NONE rather than guessing", () => {
     "none",
   );
 });
+
+/**
+ * float-agent's `--help` must never UNDERSTATE the funding.
+ *
+ * It said "About 0.06 NEAR" — the RESERVATION alone, not the funding. The
+ * default is `gasKeyFunding()` = reservation + burn x 50 = 0.12, so the help
+ * was wrong by 2x and a user topping up to the documented figure would fund a
+ * key that cannot cover even one call.
+ *
+ * That is the same failure create-float 0.3.2 shipped to fix, reintroduced by
+ * writing a derived number down by hand. One-sided, like its sibling: the help
+ * may round UP, never down. An overstatement costs nothing — the balance is
+ * withdrawable — while an understatement produces a broken agent.
+ */
+test("REAL SOURCE: float-agent's help never quotes less than gasKeyFunding()", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { dirname, join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "..", "bin", "float-agent.mjs"), "utf8");
+
+  const real = Number(gasKeyFunding()) / 1e24;
+  // Every NEAR figure the help text quotes, from the usage() template.
+  const usage = src.slice(src.indexOf("export function usage()"), src.indexOf("const argv ="));
+  const quoted = [...usage.matchAll(/\b(\d+\.\d+)\s*NEAR/g)].map((m) => Number(m[1]));
+  // STATE THE EXPECTATION FIRST: a literal figure here would mean the derived
+  // one was replaced by hand, which is the bug. Zero literals is correct.
+  assert.equal(
+    quoted.length,
+    0,
+    `usage() hardcodes ${quoted} NEAR; it must derive from gasKeyFunding() instead`,
+  );
+  assert.match(usage, /\$\{defaultAsk\(\)\}/, "usage() must interpolate the derived ask");
+  assert.ok(real > 0.1 && real < 0.2, `sanity: gasKeyFunding() is ${real}, outside the expected band`);
+});
