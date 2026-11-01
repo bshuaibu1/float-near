@@ -287,6 +287,70 @@ The sequencing that follows from the above, not a commitment:
    makes this *harder*, since an `AccountId`-mode update changes the code under
    every vault at once while their states migrate independently.
 
+## 7. Can the burn be reduced? Measured 2026-11-01: essentially no.
+
+The burn is linear in bytes — 1e20 yocto each — so 10 KB cut is exactly 1 NEAR
+saved per version. `scripts/wasm-sections.mjs` prices the artifact:
+
+```
+  code        260,617  87.0%   26.06 NEAR
+  data         35,441  11.8%    3.54
+  everything else      < 1.2%   0.36
+  custom sections:  0 bytes
+```
+
+**Zero custom sections**: cargo-near already strips names, debug info and
+producer metadata, so there are no free bytes. And the data section's text is
+mostly *not ours* — `io::ErrorKind` names in a contract with no filesystem,
+serde_json parse errors, digit lookup tables — with our own prose totalling
+3,981 bytes (0.40 NEAR). Shortening error messages is not where the money is.
+
+### wasm-opt is already applied, and `-Oz` buys 0.5%
+
+The expectation going in was 5–15%, i.e. 1.5–4.5 NEAR. **Wrong by an order of
+magnitude.** Measured with wasm-opt 116 against the shipped artifact:
+
+| variant | bytes | delta | saving |
+| --- | --- | --- | --- |
+| shipped | 299,620 | — | — |
+| `-O` again | 299,523 | −97 (−0.03%) | 0.010 |
+| `-Oz` | 298,027 | −1,593 (−0.53%) | **0.159** |
+| `-Oz` ×3 | 297,965 | −1,655 | 0.166 |
+
+The `-O` row is the control, and it is what explains the rest: re-running `-O`
+moves 97 of 299,620 bytes, so the artifact **had already been through
+wasm-opt**. cargo-near runs `wasm-opt -O` as a post-step by default — its
+`--no-wasmopt` help text calls it "required for correctness of build on
+rustc >= 1.82" — and no build path here disables it. With `opt-level = "z"` and
+`lto` on the Rust side too, the size work was done before anyone asked.
+
+0.16 NEAR in exchange for a non-default toolchain step, a new code hash, and a
+full re-validation. Not worth it.
+
+### The lever that is NOT the artifact
+
+`overflow-checks = true` contributes the arithmetic panic strings and their
+checking code. It is a deliberate safety property of a contract that moves
+money. It stays.
+
+What actually controls the cost is **release cadence**, because under
+`CodeHash` the burn is per *version*:
+
+| | NEAR |
+| --- | --- |
+| a 10% size cut, per version | 3.00 |
+| `wasm-opt -Oz`, per version | 0.16 |
+| **one avoided release** | **29.96** |
+
+One avoided release is worth 188x what `-Oz` saves, and more than a 100% size
+reduction could. The burn also amortises across users *and time*: a publish
+serves every vault ever created on that hash, and `CodeHash` means none of them
+is ever forced off it. 29.96 NEAR is 0.30/user at 100 users and 0.03 at 1,000.
+
+So the plan is: get the artifact right **before** the first publish — the one
+moment size work is free of a double burn — then treat each release as a ~30
+NEAR line item and batch accordingly.
+
 ## Sources
 
 - NEP-591, Global Contracts (status: Final) —
