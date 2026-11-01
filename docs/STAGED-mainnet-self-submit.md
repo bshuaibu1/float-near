@@ -1,5 +1,50 @@
 # STAGED: validate the virtual-agent gas-key path on MAINNET
 
+## ROUND 3 — STAGED. `5UcToT1F…`, the root-node build
+
+Round 2's result is stale for the same reason round 1's was: the artifact moved
+again. `new()` now creates the root node, so a factory-created vault is usable
+from one signature. 299,996 → **301,033 B** (+1,037).
+
+This is intended to be the LAST one before the global publish — the contract is
+feature-complete for the designed flow.
+
+```
+deployed 299996 B   new 301033 B   (delta +1037)
+locked   3.06907 -> 3.07944        margin after 0.19758
+VERDICT  fits, with 0.1 NEAR headroom to spare
+```
+
+`NO_MIGRATE=1` verified against **what is actually deployed** (`9y21mGCss…`,
+commit 150d865), not against an older commit: the `Vault` struct is
+byte-for-byte identical, 37 lines, borsh layout unchanged.
+
+Note the margin is shrinking each round — 0.233 → 0.215 → 0.198 — because every
+upgrade burns gas and the contract keeps growing. The run's peak draw is ~0.075
+(gas-key funding, withdrawn in cleanup), so there is room, but this is not a
+sequence to repeat indefinitely without topping the vault up.
+
+### Step 1 — upgrade
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' -c "cd /c/Users/BASHIR/Documents/near-vault && USE_WASM=packages/create-float/res/vault.wasm EXPECT_CODE_HASH=5UcToT1FShk3Ec2vjG7EgXjWtwBiEwsAe98ofh81TQCi NETWORK=mainnet CONFIRM_MAINNET=1 NO_MIGRATE=1 VAULT=float.test015.near bash scripts/upgrade-vault.sh"
+```
+
+### Step 2 — re-run the validation
+
+```powershell
+Set-Location C:\Users\BASHIR\Documents\near-vault; $env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; $env:REQUIRE_VAULT="float.test015.near"; node scripts/validate-self-submit-testnet.mjs
+```
+
+Expect **7/7**, and the `unexplained ≈ -0.00015` warning again — that residual
+is documented under round 2 and is in the safe direction.
+
+The already-initialized mainnet vault keeps its existing 4-node tree; `new` is
+`#[init]` and does not re-run, so the root-node change affects only vaults
+created from here on.
+
+---
+
 ## ROUND 2 — DONE, 2026-11-01. 7/7 against `9y21mGCss…`
 
 ```
