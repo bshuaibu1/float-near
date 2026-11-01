@@ -24,6 +24,6 @@
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
     "bundle-wasm": "node scripts/bundle-wasm.mjs",
-    "prepack": "node scripts/bundle-wasm.mjs && node -e \"require('fs').copyFileSync('../../SKILL.md','SKILL.md')\""
+    "prepack": "node scripts/bundle-wasm.mjs --assert-current && node -e \"require('fs').copyFileSync('../../SKILL.md','SKILL.md')\""
   }
 }

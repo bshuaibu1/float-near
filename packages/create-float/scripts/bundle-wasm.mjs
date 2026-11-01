@@ -176,6 +176,61 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
+// `--assert-current` is `--check` plus the question --check never asks: is the
+// file we are about to SHIP the same as the one we just vetted?
+//
+// This is what `prepack` runs now. It used to run the copying form below, which
+// meant `npm publish` SILENTLY REPLACED res/vault.wasm with whatever happened
+// to be sitting in target/ — a tracked binary, rewritten as a side effect of
+// publishing. The comment above records that exact replacement having already
+// happened once, from a test run.
+//
+// It matters more now than it did then: the bytes in res/vault.wasm are the
+// bytes deployed and validated on MAINNET (code hash
+// 2CwvTaM6p2kXJLzZioFZwRVGj61B8KefS2EYCFmQznqD). "What we published is what we
+// validated" is only true if publishing cannot quietly change it, and
+// `cargo near build non-reproducible-wasm` does not promise the same bytes back
+// from a rebuild.
+//
+// --check alone does NOT close this. It vets SRC against the sources and exits
+// without ever comparing SRC to DEST, so a STALE committed artifact would ship
+// unnoticed. Both directions are failures, so both are named here.
+//
+// Updating the artifact stays explicit: `npm run bundle-wasm`, then commit the
+// new binary and its provenance.
+if (process.argv.includes("--assert-current")) {
+  const h = (b) => createHash("sha256").update(b).digest("hex");
+  if (!existsSync(DEST)) {
+    console.error(`bundle-wasm: ${DEST} is missing — run 'npm run bundle-wasm' and commit it`);
+    process.exit(1);
+  }
+  const srcBytes = readFileSync(SRC);
+  const destBytes = readFileSync(DEST);
+  if (!srcBytes.equals(destBytes)) {
+    console.error(
+      [
+        "bundle-wasm: REFUSING to publish — the shipped artifact is not the built one.",
+        "",
+        `  built   ${SRC}`,
+        `          ${h(srcBytes)}  ${srcBytes.length} bytes`,
+        `  shipped ${DEST}`,
+        `          ${h(destBytes)}  ${destBytes.length} bytes`,
+        "",
+        "  Publishing used to overwrite the shipped file here, silently. It does",
+        "  not any more, because those bytes are the ones running on mainnet.",
+        "",
+        "  If the BUILD is what you want: npm run bundle-wasm, then commit",
+        "  res/vault.wasm and res/vault.sources.json.",
+        "  If the SHIPPED file is what you want: rebuild from the matching source,",
+        "  or publish from a clean checkout.",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+  console.log(`bundle-wasm: shipped artifact matches the build (sha256 ${h(destBytes).slice(0, 16)}…)`);
+  process.exit(0);
+}
+
 mkdirSync(DEST_DIR, { recursive: true });
 copyFileSync(SRC, DEST);
 
