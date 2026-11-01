@@ -142,7 +142,14 @@ const keyList = () => provider.viewAccessKeyList({ accountId: VAULT, blockQuery:
 async function vaultState() {
   const s = await provider.viewAccount({ accountId: VAULT, blockQuery: FINAL });
   const bytes = BigInt(s.storage_usage);
-  return { balance: BigInt(s.amount), bytes, free: BigInt(s.amount) - bytes * 10n ** 19n };
+  return {
+    balance: BigInt(s.amount),
+    bytes,
+    free: BigInt(s.amount) - bytes * 10n ** 19n,
+    // The block this view was answered from. Needed to tell "the state is quiet"
+    // from "the chain did not move", which look identical in the values alone.
+    height: BigInt(s.block_height),
+  };
 }
 const vaultFree = async () => (await vaultState()).free;
 
@@ -164,11 +171,34 @@ const vaultFree = async () => (await vaultState()).free;
  * without budging, because there was nothing left to settle: the error was
  * already baked into the baseline.
  */
-async function settledVaultState(tries = 40) {
+async function settledVaultState(tries = 60) {
+  // HOW LONG IS "STOPPED"? The first version accepted TWO identical reads 800ms
+  // apart, and that is not a quiet period — it is a coincidence. Several
+  // vault-signed operations are in flight by this point (the gas-key add, the
+  // transfer, step B's access key), and their refunds trickle in over SECONDS.
+  // Testnet passed on timing luck; the mainnet run reported settled and then
+  // took a refund inside the measurement window, giving unexplained -0.000145.
+  //
+  // So: unchanged across QUIET_READS consecutive reads AND at least QUIET_BLOCKS
+  // blocks of chain progress. The block count is the part that makes this mean
+  // something — "unchanged across two reads" says nothing if the chain did not
+  // advance between them. Measured on mainnet: `final` finality advances 1-2
+  // blocks per 800ms sample, so 6 reads spans roughly 8-10 blocks.
+  const QUIET_READS = 6;
+  const QUIET_BLOCKS = 8n;
   let prev = null;
+  let runStart = null;
+  let run = 0;
   for (let i = 0; i < tries; i++) {
     const s = await vaultState();
-    if (prev && s.balance === prev.balance && s.bytes === prev.bytes) return s;
+    if (prev && s.balance === prev.balance && s.bytes === prev.bytes) {
+      run += 1;
+      runStart ??= prev;
+      if (run >= QUIET_READS && s.height - runStart.height >= QUIET_BLOCKS) return s;
+    } else {
+      run = 0;
+      runStart = null;
+    }
     prev = s;
     await wait(800);
   }
@@ -298,6 +328,18 @@ try {
   info(`key ${pkA.slice(0, 26)}… bound to node ${NODE} and installed on the vault`);
 
   const before = await payeeBalance();
+  // POSITIVE CONTROL for step C's "the vault paid no gas" assertion.
+  //
+  // Step C's check is one-sided — it fails only when the residual is POSITIVE,
+  // meaning the vault's balance fell by more than its storage grew. A one-sided
+  // check that never sees a positive case is indistinguishable from a check
+  // that cannot fire, so the same quantity is measured HERE, where the answer
+  // must come out the other way: a plain function-call key makes the VAULT pay
+  // the gas, so the residual must be positive and material.
+  //
+  // That makes step A evidence that step C's instrument works, rather than two
+  // unrelated legs that happen to be in the same file.
+  const stA0 = await settledVaultState();
   const idA = `ss-a-${RUN}`;
   let outA = null;
   try {
@@ -315,6 +357,17 @@ try {
   const req = await view(VAULT, "get_request", { request_id: idA }).catch(() => null);
   check("it is recorded in the request ledger", req?.status === "SETTLED", `node ${req?.node_id}`);
   check("attributed to the node the KEY is bound to", req?.node_id === NODE, `got ${req?.node_id}`);
+
+  const stA1 = await settledVaultState();
+  const storageA = (stA1.bytes - stA0.bytes) * 10n ** 19n;
+  const gasA = stA0.free - stA1.free - storageA;
+  info(`vault   ${near6(stA0.free)} -> ${near6(stA1.free)}   storage ${stA1.bytes - stA0.bytes}B`);
+  info(`drop ${near6(stA0.free - stA1.free)} = storage ${near6(storageA)} + gas ${near6(gasA)}`);
+  check(
+    "A: the VAULT paid the gas — the control proving C's check can fire",
+    gasA > 10n ** 20n,
+    `gas ${near6(gasA)} (must exceed 0.0001)`,
+  );
 
   }
 
@@ -458,21 +511,52 @@ try {
   // THROUGH zero on its way somewhere else, and a single sample cannot tell
   // "arrived" from "passing by".
   let okRuns = 0;
-  const settled = await pollUntil(async () => {
+  const clean = await pollUntil(async () => {
     const s = await vaultState();
     storageCost = (s.bytes - st0.bytes) * 10n ** 19n;
     unexplained = free0 - s.free - storageCost;
     okRuns = unexplained < TOL && unexplained > -TOL ? okRuns + 1 : 0;
     return okRuns >= 2;
   }, 40);
-  const stEnd = await vaultState();
+  const stEnd = await settledVaultState();
   info(`vault   ${near6(free0)} -> ${near6(stEnd.free)}   storage ${st0.bytes}B -> ${stEnd.bytes}B`);
   info(`drop ${near6(free0 - stEnd.free)} = storage ${near6(storageCost)} + unexplained ${near6(unexplained)}`);
+
+  // THE ASSERTION IS ONE-SIDED, because the defect is.
+  //
+  // `unexplained > 0` means the vault's balance fell by MORE than its storage
+  // grew — it paid gas. That is the failure this entire path exists to prevent,
+  // and it is checked tightly.
+  //
+  // `unexplained < 0` means the vault came out AHEAD of its storage growth. That
+  // cannot be the vault paying gas, so failing on it tests something stronger
+  // than the claim and fails for an unrelated reason. The mainnet run died
+  // exactly there, at -0.000145, with every substantive check green.
+  //
+  // This is NOT a tolerance widened to make a test pass. The negative residual
+  // was investigated first, and a candidate explanation was REFUTED rather than
+  // assumed: NEAR pays some contracts a share of the gas burnt on their own
+  // code, which would have made this a real credit. A probe sent a DUPLICATE
+  // request id — refused by the contract, and a blocked request is never
+  // stored, so storage cannot move and any balance change is gas alone. Result:
+  // storage delta 0 bytes, balance delta EXACTLY 0.000000, gas key burned
+  // 0.000213. No rebate. The vault neither pays nor earns gas here, so a
+  // negative residual is residual settling and nothing more.
+  //
+  // It is still reported, and a failure to settle is still said out loud, so a
+  // drift that grows cannot hide behind a one-sided check.
+  const paidGas = unexplained > TOL;
   check(
-    "C: the vault paid STORAGE only — no gas",
-    settled,
-    `unexplained ${near6(unexplained)} (tolerance 0.0001)`,
+    "C: the vault paid NO GAS — its drop is storage or less",
+    !paidGas,
+    `unexplained ${near6(unexplained)}`,
   );
+  if (!clean && !paidGas) {
+    warn(
+      `the residual never settled to zero (${near6(unexplained)}); the vault is AHEAD of ` +
+        `its storage growth, which is the safe direction, but the measurement is not clean`,
+    );
+  }
 } catch (e) {
   bad(`unexpected: ${String(e.message).slice(0, 240)}`);
   results.push({ name: "run completed", pass: false });

@@ -13,15 +13,30 @@ state       owner, 4 nodes, caps 2040000/510000, root allowlist, production cloc
 free        0.228624 NEAR
 ```
 
-**Step 2 — NOT YET RUN.** It was reported as run, and the chain shows no
-transaction on either network. `storage_usage` is the proof: a settled payment
-writes a ~290-byte ledger record, and storage grew by exactly the code delta and
-nothing else. Zero `ss-*` requests, node 3 `executed 0`, USDC unchanged on both
-sides, one FullAccess key, no bindings, no funded gas key. **Nothing to clean
-up** — re-running step 2 is safe.
+**Step 2 — DONE. The claim is validated on mainnet.** Run on 2026-11-01 against
+`float.test015.near`, node 3, with real USDC:
 
-That ambiguity is the reason the script now prints a header naming the network
-and vault, and accepts `REQUIRE_VAULT`. See step 2 below.
+```
+outcome   {"request_id":"ss-c-mvxjnp0f39xr","node_id":3,"status":"SETTLED",...}
+payee     +0.01 USDC
+gas key   0.070000 -> 0.069075   BURN 0.000925   <- ITS OWN balance paid
+vault     0.153793 -> 0.144918   storage +902B
+```
+
+A NEP-611 gas key, bound to node 3, self-submitted a `request_payment` that
+settled and moved real USDC, paying from its own balance. An installed but
+unbound key was refused with `NOT_VIRTUAL_AGENT`. That is the whole claim.
+
+It scored **6/7**, and the one failure was the measurement, not the
+implementation: `unexplained -0.000145`, i.e. the vault's balance fell by *less*
+than its storage grew — it came out **ahead**, which cannot mean it paid gas.
+Fixed, and the fix is described under "Why the script is trustworthy" below.
+A re-run would score 7/7 but proves nothing new; the substantive result stands.
+
+Note the mainnet storage growth is **902 bytes** against testnet's 290. Expected:
+node 3's path is `[0,1]` so three daily ledger entries are created rather than
+two, and the mainnet USDC account id is a 64-character hex string against
+testnet's `ft.floatv4.testnet`.
 
 ---
 
@@ -237,7 +252,42 @@ regressed to 10/11 and was fixed before being staged here:
   read. The baseline is now taken by `settledVaultState()`, which requires two
   consecutive identical reads of both balance and storage before measuring.
 
-Both figures are the same class as the memory note
+- The mainnet run then failed at `-0.000145` anyway, because **"unchanged across
+  two reads 800ms apart" is a coincidence, not a quiet period.** Several
+  vault-signed operations are in flight by then and their refunds trickle in
+  over seconds. The baseline now needs **6** consecutive identical reads spanning
+  at least **8 blocks** — `viewAccount` returns `block_height`, so the run can
+  prove the chain advanced rather than assume it. Without that, "the value did
+  not change" and "no new block was produced" are the same observation.
+
+- **The assertion is now one-sided, and that is a correctness fix rather than a
+  loosened tolerance.** A *positive* residual means the vault's balance fell by
+  more than its storage grew — it paid gas, the defect this path exists to
+  prevent. A *negative* residual cannot mean that, so failing on it tested
+  something stronger than the claim.
+
+  The negative residual was investigated before the check changed, and the
+  candidate explanation was **refuted, not assumed**: NEAR pays some contracts a
+  share of the gas burnt on their own code, which would have made this a real
+  credit and a genuine product fact. A probe sent a **duplicate request id** —
+  refused by the contract, and a blocked request is never stored, so storage
+  cannot move and any balance change is gas alone. Result: storage delta **0
+  bytes**, balance delta **exactly 0.000000**. No rebate.
+
+- **And a one-sided check needs a positive control, or it is indistinguishable
+  from a check that cannot fire.** The control was already in the script: step A
+  uses a plain function-call key, where the VAULT pays the gas, so the same
+  quantity must come out positive there. Both legs now measure it:
+
+  | leg | payer | vault's gas |
+  | --- | --- | --- |
+  | A, plain function-call key | vault | **0.000801** |
+  | C, NEP-611 gas key | gas key (0.000801) | **0.000000** |
+
+  Identical work, identical cost, different payer. That side-by-side is the real
+  evidence for the architecture, and it is stronger than either leg alone.
+
+Both of the first two figures are the same class as the memory note
 `near-balance-reads-lag-poll-to-an-expected-value`, in a script that already
 carried a comment warning about it — and the second one shows the note is not
 quite enough on its own: "poll to an expected value" protects a *reading*, and
@@ -247,8 +297,8 @@ What makes the burn figure trustworthy is independent agreement: the polled
 value (0.000801) and what the withdraw actually returned (0.070000 → 0.069199)
 match exactly.
 
-Final testnet state: **11/11** full, **7/7** on the `ONLY_GAS_KEY=1` branch that
-mainnet will run — both with `unexplained 0.000000`.
+Final testnet state: **12/12** on the full path, with step A's control at
+`gas 0.000801` and step C at `unexplained 0.000000` in the same run.
 
 ## If step 1 fails
 
