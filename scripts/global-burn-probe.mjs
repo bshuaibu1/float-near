@@ -22,8 +22,19 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-const RPC = "https://test.rpc.fastnear.com";
-const STATE = resolve(import.meta.dirname, "..", ".demo", "global-burn-marks.json");
+// NETWORK is explicit and defaults to testnet, so a mainnet figure can never be
+// produced by forgetting to set something. The marks file is per-network too:
+// mixing a mainnet `before` with a testnet `after` would silently difference
+// two chains and report a confident number.
+const NETWORK = process.env.NETWORK === "mainnet" ? "mainnet" : "testnet";
+const RPC =
+  NETWORK === "mainnet" ? "https://free.rpc.fastnear.com" : "https://test.rpc.fastnear.com";
+const STATE = resolve(
+  import.meta.dirname,
+  "..",
+  ".demo",
+  `global-burn-marks.${NETWORK}.json`,
+);
 
 const [account, cmd, ...rest] = process.argv.slice(2);
 if (!account || !cmd) {
@@ -148,6 +159,60 @@ if (!account || !cmd) {
         const breakEven = Number(rate) / Number(BASE);
         console.log(`  break-even ~${breakEven.toFixed(1)} vaults`);
       }
+    }
+  } else if (cmd === "predict") {
+    // STATE THE EXPECTED VALUE BEFORE THE MEASUREMENT, not after. A burn is
+    // irreversible, so there is no re-run to fall back on, and a figure
+    // interpreted after the fact is one that can be talked into agreeing with
+    // whatever came out. The two hypotheses are 10x apart, which is why a
+    // SINGLE deploy is decisive here even though the testnet run needed a
+    // differential to separate rate from fixed cost.
+    const bytes = BigInt(rest[0]);
+    const BASE = 10n ** 19n;
+    console.log(`  module size          ${bytes} bytes`);
+    console.log(`  if NO multiplier     ~${near(bytes * BASE)} NEAR  (1x, ${BASE}/byte)`);
+    console.log(`  if the 10x holds     ~${near(bytes * BASE * 10n)} NEAR  (10x, measured on testnet)`);
+    console.log(`  plus gas, order      ~0.00003 NEAR`);
+    console.log(`  storage_usage must NOT change — a rise would mean stake, not burn`);
+  } else if (cmd === "confirm") {
+    const bytes = BigInt(rest[0]);
+    const need = ["before", "after"];
+    const missing = need.filter((k) => !marks[k]);
+    if (missing.length) {
+      console.error(`FATAL: missing marks ${missing} — cannot confirm`);
+      process.exitCode = 1;
+    } else {
+      const b = { amount: BigInt(marks.before.amount), bytes: BigInt(marks.before.bytes) };
+      const a = { amount: BigInt(marks.after.amount), bytes: BigInt(marks.after.bytes) };
+      const drop = b.amount - a.amount;
+      const BASE = 10n ** 19n;
+      const p1 = bytes * BASE;
+      const p10 = bytes * BASE * 10n;
+      console.log("");
+      console.log(`  observed drop        ${near(drop)} NEAR`);
+      console.log(`  1x prediction        ${near(p1)}`);
+      console.log(`  10x prediction       ${near(p10)}`);
+      console.log(`  storage_usage        ${b.bytes} -> ${a.bytes}`);
+      console.log("");
+      if (a.bytes !== b.bytes) {
+        const staked = (a.bytes - b.bytes) * BASE;
+        console.log(`  NOT a pure burn: storage rose, ${near(staked)} NEAR of it is STAKED`);
+      } else {
+        console.log(`  BURN confirmed on ${NETWORK}: storage unchanged, tokens destroyed`);
+      }
+      // Tolerance is the gas, which is ~0.00003 — three orders below the
+      // separation between the hypotheses, so the comparison is not close.
+      const TOL = 2n * 10n ** 21n; // 0.002
+      const near10 = drop > p10 - TOL && drop < p10 + TOL;
+      const near1 = drop > p1 - TOL && drop < p1 + TOL;
+      if (near10) console.log(`  VERDICT: 10x CONFIRMED on ${NETWORK}.`);
+      else if (near1) console.log(`  VERDICT: 1x on ${NETWORK} — the 10x does NOT apply here.`);
+      else console.log(`  VERDICT: matches NEITHER prediction. Do not publish anything until this is understood.`);
+      const VAULT = 299620n;
+      const impliedRate = drop / bytes;
+      console.log("");
+      console.log(`  implied rate         ${impliedRate} yocto/byte`);
+      console.log(`  => publishing the 299,620-byte vault on ${NETWORK} would burn ${near(impliedRate * VAULT)} NEAR`);
     }
   } else {
     console.error(`unknown command ${cmd}`);
