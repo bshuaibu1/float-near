@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Create your Float vault</title>
+    <!--
+      wallet-selector's modal ships its own stylesheet and renders unstyled
+      without it — a broken-looking wallet picker reads as "this site is
+      broken", which is the worst possible first impression at the exact moment
+      a user is deciding whether to trust it with a key.
+    -->
+    <link rel="stylesheet" href="https://esm.sh/@near-wallet-selector/modal-ui@8.9.13/styles.css" />
+    <!--
+      THE MINIMAL PAGE, built to answer ONE question: will a real wallet sign a
+      301 KB transaction?
+
+      Everything else about the browser flow — the CLI handoff, polling the
+      chain, owner actions — is already designed and costs nothing to build.
+      This is the only part no amount of code can settle, because it depends on
+      a wallet's own UI. So it ships first, alone.
+
+      NO BACKEND, deliberately. The page reads its intent from the URL, builds
+      the transaction client-side, and the wallet submits it. The CLI learns the
+      outcome by polling the CHAIN, not us. A user onboarding during an outage
+      still gets a vault.
+
+      The transaction is the one proven on testnet by
+      scripts/validate-one-tx-create-testnet.mjs (9/9): CreateAccount +
+      Transfer + DeployContract + new(). Every action is in wallet-selector's
+      LEGACY union, so no NEP-591 type is involved.
+
+      Visual language lifted from the Solana Float link page
+      (float-dashboard/app/link/page.tsx) so the two products look related.
+    -->
+    <style>
+      :root {
+        --bg: #fbfbfa;
+        --ink: #111111;
+        --muted: #787774;
+        --faint: #a0a09a;
+        --line: #eaeaea;
+        --card: #ffffff;
+        --chip: #f3f3f1;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 40px 16px;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+      }
+      .col { width: 100%; max-width: 448px; display: flex; flex-direction: column; gap: 24px; align-items: center; }
+      h1 { font-size: 32px; font-weight: 600; letter-spacing: -0.04em; margin: 0; text-align: center; }
+      .sub { color: var(--muted); text-align: center; margin: 12px 0 0; max-width: 384px; }
+      code { background: var(--chip); border-radius: 6px; padding: 2px 6px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .card { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: 24px; }
+      .row { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; }
+      .row span:first-child { color: var(--muted); }
+      .row span:last-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; text-align: right; word-break: break-all; }
+      .total { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 14px; font-weight: 600; }
+      button {
+        width: 100%; height: 48px; border-radius: 16px; border: 0;
+        background: var(--ink); color: #fff; font-size: 15px; font-weight: 500;
+        cursor: pointer; font-family: inherit;
+      }
+      button:disabled { opacity: 0.4; cursor: default; }
+      button.ghost { background: var(--chip); color: var(--ink); }
+      .note { color: var(--faint); font-size: 12px; text-align: center; }
+      .warn { background: #fff8e6; border: 1px solid #f0e0b0; border-radius: 18px; padding: 14px; font-size: 13px; }
+      .err { background: #fdf0f0; border: 1px solid #f0c8c8; border-radius: 18px; padding: 14px; font-size: 13px; color: #8a2020; white-space: pre-wrap; }
+      .ok { background: #f1f8f2; border: 1px solid #cce4d0; border-radius: 18px; padding: 14px; font-size: 13px; }
+      .hide { display: none; }
+      a { color: var(--ink); }
+    </style>
+  </head>
+  <body>
+    <div class="col">
+      <div>
+        <h1 id="title">Create your Float vault</h1>
+        <p class="sub" id="sub">Connect the wallet that will own it.</p>
+      </div>
+
+      <div id="panel" class="card">
+        <div id="loading" class="note">loading…</div>
+
+        <div id="connect" class="hide">
+          <button id="btn-connect">Connect wallet</button>
+          <p class="note" style="margin-bottom: 0">
+            Your key stays in your wallet. This page never sees it.
+          </p>
+        </div>
+
+        <div id="plan" class="hide">
+          <div class="row"><span>owner</span><span id="p-owner"></span></div>
+          <div class="row"><span>vault</span><span id="p-vault"></span></div>
+          <div class="row"><span>network</span><span id="p-net"></span></div>
+          <div class="row"><span>contract</span><span id="p-size"></span></div>
+          <div class="row"><span>daily limit</span><span id="p-daily"></span></div>
+          <div class="row total"><span>you send</span><span id="p-total"></span></div>
+          <p class="note" style="text-align: left; margin: 14px 0 18px">
+            Almost all of this is a refundable deposit, not a fee. Nothing can
+            spend from this vault until you add an agent.
+          </p>
+          <button id="btn-create">Create vault</button>
+          <button id="btn-disconnect" class="ghost" style="margin-top: 10px">Use a different wallet</button>
+        </div>
+
+        <div id="signing" class="hide">
+          <div class="warn">
+            <strong>Approve in your wallet.</strong><br />
+            This transaction carries the whole contract — about 294 KB — so some
+            wallets take a few seconds to display it.
+          </div>
+        </div>
+
+        <div id="done" class="hide">
+          <div class="ok"><strong>Vault created.</strong> <span id="d-vault"></span></div>
+          <p class="note" style="text-align: left">
+            Return to your terminal — it is watching the chain and will pick this
+            up on its own.
+          </p>
+          <a id="d-explorer" target="_blank" rel="noopener"><button class="ghost">View on explorer</button></a>
+        </div>
+
+        <div id="error" class="hide"><div class="err" id="err-text"></div></div>
+      </div>
+
+      <p class="note" id="foot">
+        Float — a budget an agent cannot talk its way out of
+      </p>
+    </div>
+
+    <script type="module">
+      import { setupWalletSelector } from "https://esm.sh/@near-wallet-selector/core@8.9.13";
+      import { setupModal } from "https://esm.sh/@near-wallet-selector/modal-ui@8.9.13";
+      import { setupMyNearWallet } from "https://esm.sh/@near-wallet-selector/my-near-wallet@8.9.13";
+      import { setupMeteorWallet } from "https://esm.sh/@near-wallet-selector/meteor-wallet@8.9.13";
+
+      const $ = (id) => document.getElementById(id);
+      const show = (...ids) => {
+        for (const s of ["loading", "connect", "plan", "signing", "done", "error"]) $(s).classList.add("hide");
+        for (const id of ids) $(id).classList.remove("hide");
+      };
+      const fail = (m) => {
+        $("err-text").textContent = m;
+        show("error");
+      };
+
+      // ---- intent from the URL. No backend, so the link carries everything.
+      const q = new URLSearchParams(location.search);
+      const NETWORK = q.get("network") === "mainnet" ? "mainnet" : "testnet";
+      const TOKEN = q.get("token") ?? (NETWORK === "mainnet"
+        ? "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+        : "usdc.fakes.testnet");
+      const DECIMALS = Number(q.get("decimals") ?? 6);
+      const DAILY = q.get("daily") ?? (NETWORK === "mainnet" ? "2.04" : "100");
+      const PERTX = q.get("pertx") ?? (NETWORK === "mainnet" ? "0.51" : "10");
+      const PREFIX = q.get("prefix") ?? "float";
+
+      const units = (human) => {
+        const [i, f = ""] = String(human).split(".");
+        return BigInt(i + (f + "0".repeat(DECIMALS)).slice(0, DECIMALS));
+      };
+      const near = (y) => (Number(y) / 1e24).toFixed(3);
+
+      let selector, modal, wasm;
+
+      try {
+        // The contract ships next to this page. Fetched once so its real size
+        // is shown rather than a number typed into the copy.
+        const res = await fetch("./vault.wasm");
+        if (!res.ok) throw new Error(`vault.wasm ${res.status}`);
+        wasm = new Uint8Array(await res.arrayBuffer());
+
+        selector = await setupWalletSelector({
+          network: NETWORK,
+          modules: [setupMyNearWallet(), setupMeteorWallet()],
+        });
+        modal = setupModal(selector, { contractId: TOKEN });
+        selector.store.observe(render);
+        render();
+      } catch (e) {
+        fail(`Could not start.\n${e?.message ?? e}`);
+      }
+
+      function accountId() {
+        const s = selector?.store?.getState?.();
+        return s?.accounts?.find((a) => a.active)?.accountId ?? s?.accounts?.[0]?.accountId ?? null;
+      }
+
+      function render() {
+        const who = accountId();
+        if (!who) return show("connect");
+
+        const vault = `${PREFIX}.${who}`;
+        // The deposit: the contract's storage stake plus headroom for the root
+        // node's state. Derived from the real artifact, never hardcoded — the
+        // figure that was hardcoded is the one that went stale twice.
+        const stake = BigInt(wasm.length) * 10n ** 19n;
+        const total = stake + 36n * 10n ** 22n;
+
+        $("p-owner").textContent = who;
+        $("p-vault").textContent = vault;
+        $("p-net").textContent = NETWORK;
+        $("p-size").textContent = `${(wasm.length / 1024).toFixed(0)} KB`;
+        $("p-daily").textContent = `${DAILY} / day, ${PERTX} / tx`;
+        $("p-total").textContent = `${near(total)} NEAR`;
+        $("btn-create").onclick = () => create(who, vault, total);
+        show("plan");
+      }
+
+      $("btn-connect").onclick = () => modal.show();
+      $("btn-disconnect").onclick = async () => {
+        const w = await selector.wallet();
+        await w.signOut();
+      };
+
+      async function create(who, vault, total) {
+        show("signing");
+        try {
+          const wallet = await selector.wallet();
+          // EVERY ACTION HERE IS IN WALLET-SELECTOR'S LEGACY UNION. That is the
+          // point: the factory design existed to avoid UseGlobalContract, a
+          // NEP-591 type that nothing proves a wallet will serialise. None is
+          // used, so this should work in any wallet that works at all.
+          //
+          // No AddKey: a keyless vault cannot be drained by a stolen key, and
+          // the owner controls it through predecessor_account_id alone.
+          await wallet.signAndSendTransaction({
+            receiverId: vault,
+            actions: [
+              { type: "CreateAccount" },
+              { type: "Transfer", params: { deposit: total.toString() } },
+              { type: "DeployContract", params: { code: wasm } },
+              {
+                type: "FunctionCall",
+                params: {
+                  methodName: "new",
+                  args: {
+                    owner: who,
+                    network: NETWORK,
+                    strict_allocation: false,
+                    root_limits: [
+                      {
+                        token: TOKEN,
+                        daily_cap: units(DAILY).toString(),
+                        per_tx_cap: units(PERTX).toString(),
+                      },
+                    ],
+                    // The owner, so the vault can pay SOMEONE immediately. A
+                    // root with null inherits from its ancestor, and the root
+                    // has none — every payment would be NO_RECIPIENTS_SET.
+                    root_recipients: [who],
+                  },
+                  gas: "60000000000000",
+                  deposit: "0",
+                },
+              },
+            ],
+          });
+          $("d-vault").textContent = vault;
+          $("d-explorer").href =
+            NETWORK === "mainnet"
+              ? `https://explorer.near.org/accounts/${vault}`
+              : `https://explorer.testnet.near.org/accounts/${vault}`;
+          $("title").textContent = "Done";
+          $("sub").textContent = "Your vault is live.";
+          show("done");
+        } catch (e) {
+          const m = e?.message ?? String(e);
+          fail(
+            /size|too large|exceed/i.test(m)
+              ? `The wallet refused the transaction size.\n\n${m}\n\nThis is the risk this page exists to test — the fallback is a factory contract.`
+              : `${m}`,
+          );
+        }
+      }
+    </script>
+  </body>
+</html>
