@@ -1,5 +1,43 @@
 # Browser signing flow for NEAR Float
 
+## AND THE WAY ROUND IT: pass the wasm as a call ARGUMENT
+
+Computed from the protocol's own cost table, both chains, 2026-11-01. The
+browser already fetches the 294 KB contract to show its size — it can send it
+as an ARGUMENT to a plain `FunctionCall` rather than as a `DeployContract`
+action. The wallet sees an ordinary method call, which it has no policy
+against, and the deploy happens inside the factory.
+
+```
+  deliver 401,380 B of base64 args       3.0 TGas
+  the promise batch (deploy 294 KB)     31.0 TGas
+  the vault new()                       30.0 TGas
+  factory logic                         10.0 TGas
+  -------------------------------------------
+  TOTAL                                 74.0 TGas     of 300 attachable
+```
+
+Size is not close either: base64 args are 401,380 B against a
+`max_transaction_size` of 1,572,864 — **25.5%** — and `max_arguments_length` is
+4,194,304. Meteor already rendered a 301 KB transaction cleanly, so 401 KB is
+not a new kind of ask.
+
+**So option A works, and it needs no global contract and no factory storage.**
+Three limits each had an order of magnitude of headroom, which is the comfort
+worth having before building on it.
+
+One honest caveat: these are PROTOCOL costs, computed, not a receipt from a
+real call. The contract-side cost of handling a 294 KB `Base64VecU8` — near-sdk
+decoding it into a `Vec<u8>` — is the part a cost table cannot tell us. The
+30 TGas allowed for `new()` and 10 for factory logic are headroom, not
+measurements. A real call settles it.
+
+| | burn? | factory cost | per vault | status |
+| --- | --- | --- | --- | --- |
+| **A** wasm as a call argument | no | none | ~3.37 | gas and size verified as feasible |
+| **B** factory stores the code | no | ~3 NEAR once | ~3.37 | viable — `max_length_storage_value` is 4 MB |
+| **C** `use_global_contract` | **30 NEAR** | none | **~0.13** | the cheap end state; `set_code_hash` already wired |
+
 ## THE DECIDING MEASUREMENT: wallets block `DeployContract` (2026-11-01)
 
 A real wallet was finally asked to sign the direct-creation transaction. Meteor,
