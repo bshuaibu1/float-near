@@ -156,15 +156,25 @@ node -e "new (require('near-api-js').JsonRpcProvider)({url:'https://free.rpc.fas
 ## Step 2 — run the validation
 
 ```powershell
-$env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; $env:REQUIRE_VAULT="float.test015.near"; node C:\Users\BASHIR\Documents\near-vault\scripts\validate-self-submit-testnet.mjs
+Set-Location C:\Users\BASHIR\Documents\near-vault; $env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; $env:REQUIRE_VAULT="float.test015.near"; node scripts/validate-self-submit-testnet.mjs
 ```
 
-Runnable **from any directory** — the script resolves the repo from its own
-location. It did not used to: a run launched from `C:\Users\BASHIR` died with
-`MODULE_NOT_FOUND` before doing anything, which arrives as a Node stack trace
-and reads like a broken script rather than a wrong `cd`. A guard in the root
-suite now fails if any script in `scripts/` reads a repo file relative to the
-working directory.
+**The `Set-Location` is part of the command, not a prerequisite to remember.**
+Two attempts were lost to this, both from `C:\Users\BASHIR`, both ending in
+
+```
+Error: Cannot find module 'C:\Users\BASHIR\scripts\validate-self-submit-testnet.mjs'
+```
+
+That is Node failing to resolve the *script file* from a relative argument,
+before a single line executes — so no change inside the script can prevent it.
+(The first round of this was misdiagnosed as the script's own cwd-relative
+artifact read. That was a real latent bug, fixed, and guarded by the root suite
+— but it was a *different* bug, and it would have bitten on the next line rather
+than this one.)
+
+Putting the `cd` inside the pasted line fixes it for good, and leaves the shell
+in the repo so any follow-up command also resolves.
 
 It now opens with a header naming the network, vault, owner, payee and legs, and
 the final line repeats the target — so a pasted tail is attributable to a chain.
