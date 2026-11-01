@@ -1,5 +1,49 @@
 # STAGED: validate the virtual-agent gas-key path on MAINNET
 
+## ROUND 2 — 2026-11-01, re-validating the NEW artifact
+
+The round-1 result below is **stale**. It was measured against code hash
+`2CwvTaM6p2…` (299,620 B), and the vault has since gained the parent-init
+exemption the factory requires. The repo now builds `9y21mGCss…` (299,996 B),
+so the claim "the gas-key path works" is currently proven for an artifact we
+would no longer publish.
+
+Preflight, read-only, all run:
+
+```
+signer      ed25519:DHyH8bh… , 1 FULL key   -> can sign a deploy
+deployed    299620 B    new 299996 B   (delta +376)
+locked      3.06194 -> 3.06570          margin after 0.21468
+VERDICT     fits, with 0.1 NEAR headroom to spare
+```
+
+**`NO_MIGRATE=1` is verified, not assumed.** The flag that can brick a vault,
+so the `Vault` struct was diffed across the change rather than reasoned about:
+byte-for-byte identical, 37 lines, borsh layout unchanged.
+
+### Step 1 — upgrade to the new artifact
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' -c "cd /c/Users/BASHIR/Documents/near-vault && USE_WASM=packages/create-float/res/vault.wasm EXPECT_CODE_HASH=9y21mGCssBiMAQqcVfXayqpZFNrqJUR1fq5ZBgv4QGAG NETWORK=mainnet CONFIRM_MAINNET=1 NO_MIGRATE=1 VAULT=float.test015.near bash scripts/upgrade-vault.sh"
+```
+
+### Step 2 — re-run the validation
+
+```powershell
+Set-Location C:\Users\BASHIR\Documents\near-vault; $env:ALLOW_MAINNET="1"; $env:ONLY_GAS_KEY="1"; $env:REQUIRE_VAULT="float.test015.near"; node scripts/validate-self-submit-testnet.mjs
+```
+
+Expect **7/7**. Its first check compares the deployed bytes against
+`packages/create-float/res/vault.wasm`, so it fails loudly if step 1 did not
+land — the two steps verify each other.
+
+Peak draw during the run is ~0.075 (the gas-key funding, withdrawn in cleanup)
+against the 0.215 margin.
+
+---
+
+## ROUND 1 — the original staging, kept for the record
+
 ## Status, 2026-11-01
 
 **Step 1 — DONE.** `float.test015.near` runs the pinned artifact. Verified off
