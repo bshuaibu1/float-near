@@ -20,15 +20,24 @@
 import { xchainCap } from "./xchain.mjs";
 
 /**
- * The default tree deliberately OVERCOMMITS: the leaves may together spend more
- * than the pool above them, so a new user's first encounter is an agent refused
- * while its own limit still has room. A tidy non-overlapping tree would hide
- * the behaviour that makes this different from a per-agent spending limit.
+ * THE DEFAULT IS FLAT: one root node, and nothing that can spend.
  *
- * MIND WHICH BRANCH IS WHICH. Mainnet gets the SMALL tree — real money, sized
- * so a total loss is a rounding error. Testnet gets the GENEROUS one — fake
- * tokens, sized to make the hierarchy legible. Reading these backwards is the
- * mistake that shipped in 9d03e99 and was fixed in e00c5bb.
+ * It used to be `root -> research -> r1, r2` with `agent: true` on both leaves,
+ * which committed every new user to a shape they never asked for and to two
+ * sub-account agents at 0.55 NEAR each. The justification was pedagogical — the
+ * leaves overcommitted on purpose so a user's first encounter was an agent
+ * refused while its own limit still had room.
+ *
+ * That is a good lesson and the wrong place to teach it. Setup should create
+ * the vault and NOTHING that can spend; a tree is what an owner builds when
+ * they have something to delegate. Agents are added afterwards, on request, as
+ * VIRTUAL agents — a gas key bound to a node, ~0.06 NEAR and no sub-account —
+ * rather than guessed at during setup.
+ *
+ * MIND WHICH BRANCH IS WHICH. Mainnet gets the SMALL caps — real money, sized
+ * so a total loss is a rounding error. Testnet gets the GENEROUS ones — fake
+ * tokens. Reading these backwards is the mistake that shipped in 9d03e99 and
+ * was fixed in e00c5bb.
  */
 export function defaultTree(mainnet) {
   return mainnet
@@ -50,17 +59,6 @@ export function defaultTree(mainnet) {
         label: "root",
         daily: xchainCap(2),
         perTx: xchainCap(0.5),
-        children: [
-          {
-            label: "research",
-            daily: xchainCap(1.5),
-            perTx: xchainCap(0.5),
-            children: [
-              { label: "r1", daily: xchainCap(1), perTx: xchainCap(0.5), agent: true },
-              { label: "r2", daily: xchainCap(1), perTx: xchainCap(0.5), agent: true },
-            ],
-          },
-        ],
       }
     : {
         // Testnet. ROUND CAPS, deliberately NOT pre-sized: Intents is
@@ -70,17 +68,6 @@ export function defaultTree(mainnet) {
         label: "root",
         daily: 100,
         perTx: 10,
-        children: [
-          {
-            label: "research",
-            daily: 60,
-            perTx: 10,
-            children: [
-              { label: "r1", daily: 50, perTx: 10, agent: true },
-              { label: "r2", daily: 50, perTx: 10, agent: true },
-            ],
-          },
-        ],
       };
 }
 

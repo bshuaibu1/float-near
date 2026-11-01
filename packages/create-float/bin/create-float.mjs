@@ -405,6 +405,29 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     // that does not round-trip as an integer.
     const agents = candidateAgents.slice(0, agentCount(agentOpt, candidateAgents.length));
 
+    // `--agents` ONLY EVER ATTACHED TO agent-TAGGED TREE NODES, and the default
+    // tree is now FLAT, so there are none. Rather than silently create nothing
+    // — which looks like success and leaves a vault that cannot pay — say so.
+    //
+    // The replacement is a VIRTUAL agent: a gas key bound to a node, ~0.06 NEAR
+    // and no sub-account, added when the owner asks for it. Validated on
+    // mainnet 2026-11-01. It is not wired into this wizard yet, which is
+    // exactly what this message has to admit.
+    if (agentOpt && agentOpt !== "0" && candidateAgents.length === 0) {
+      console.log(`
+    ${C.r("--agents has nothing to attach to.")}
+
+    The default tree is flat — one root node, and setup deliberately creates
+    nothing that can spend. The old default built root/research/r1/r2 and
+    tagged two leaves as agents; that is gone.
+
+    Agents are now VIRTUAL: a gas key bound to a node, about 0.06 NEAR and no
+    sub-account. That path is not in this wizard yet. Create the vault first,
+    then add one.
+`);
+      return;
+    }
+
     // RESUMABILITY, in the one place it was missing. Step 4 skips when the vault
     // already exists, so its funding is not needed again — but `total` charged
     // for it unconditionally, and the affordability gate then refused a resume
@@ -492,7 +515,10 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       );
     } else {
       console.log(
-        `      ${C.dim("agent accounts")}       ${C.dim("none — add later with --agents, 0.55 NEAR each")}`,
+        // NOT "add later with --agents, 0.55 NEAR each" — that path attached to
+        // agent-tagged tree nodes, which the flat default no longer has. A cost
+        // line advertising a dead flag is worse than no line.
+        `      ${C.dim("agents")}               ${C.dim("none — nothing can spend until you add one")}`,
       );
     }
     console.log(`      ${C.b("you send")}             ${C.b(fmtNear(total))} NEAR`);

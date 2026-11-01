@@ -26,12 +26,10 @@ import { xchainCeiling } from "../bin/xchain.mjs";
 const lines = (mainnet) => planTreeLines(flatten(defaultTree(mainnet)));
 
 test("the mainnet plan renders pre-sized caps, not round ones", () => {
-  assert.deepEqual(lines(true), [
-    "      root  2.04/day, 0.51/tx",
-    "        research  1.53/day, 0.51/tx",
-    "          r1  1.02/day, 0.51/tx ← agent, gets a restricted key",
-    "          r2  1.02/day, 0.51/tx ← agent, gets a restricted key",
-  ]);
+  // The caps stay xchainCap-derived even though the tree is flat: 0.51 is what
+  // lets a cross-chain payment actually DELIVER 0.50 once the ~2% solver spread
+  // is charged. Tidying it to 0.50 silently reintroduces the refusal.
+  assert.deepEqual(lines(true), ["      root  2.04/day, 0.51/tx"]);
 });
 
 test("the testnet plan renders ROUND caps", () => {
@@ -39,12 +37,7 @@ test("the testnet plan renders ROUND caps", () => {
   // so there is no spread to absorb here. Inflating these would loosen limits
   // for nothing — and seeing 10.2 in this list is exactly the symptom of the
   // two branches being swapped.
-  assert.deepEqual(lines(false), [
-    "      root  100/day, 10/tx",
-    "        research  60/day, 10/tx",
-    "          r1  50/day, 10/tx ← agent, gets a restricted key",
-    "          r2  50/day, 10/tx ← agent, gets a restricted key",
-  ]);
+  assert.deepEqual(lines(false), ["      root  100/day, 10/tx"]);
 });
 
 test("the two trees are not the same tree", () => {
@@ -88,26 +81,46 @@ test("every mainnet cap can deliver the round amount it was sized for", () => {
   }
 });
 
-test("the tree overcommits, on both networks", () => {
-  // The property the product exists to demonstrate: leaves may together spend
-  // more than the pool above them, so an agent gets refused while its own
-  // limit still has room. Pre-sizing the caps must not accidentally fix it.
-  for (const mainnet of [true, false]) {
-    const nodes = flatten(defaultTree(mainnet));
-    const leaves = nodes.filter((n) => n.agent);
-    const pool = nodes.find((n) => n.label === leaves[0].parent);
-    const sum = leaves.reduce((a, n) => a + n.daily, 0);
-    assert.ok(
-      sum > pool.daily,
-      `${mainnet ? "mainnet" : "testnet"}: leaves sum to ${sum} but the pool holds ` +
-        `${pool.daily} — no contention, so the first thing a new user sees is a tidy ` +
-        `tree that hides what makes this different from a per-agent limit`,
-    );
-  }
+/**
+ * OVERCOMMITMENT IS NO LONGER A SETUP-TIME PROPERTY, deliberately.
+ *
+ * This used to assert that the default tree's leaves could together outspend
+ * the pool above them, so a new user's first encounter was an agent refused
+ * while its own limit still had room. That is the behaviour that makes a budget
+ * TREE different from a per-agent limit, and it is worth showing — but not by
+ * building a four-node tree for someone who asked for a vault.
+ *
+ * `flatten` and `planTreeLines` still have to handle a nested, overcommitted
+ * tree, because that is what an owner builds later. So the shape moved into
+ * this fixture instead of the default, and the rendering tests below drive it.
+ */
+const nested = {
+  label: "root",
+  daily: 2.04,
+  perTx: 0.51,
+  children: [
+    {
+      label: "research",
+      daily: 1.53,
+      perTx: 0.51,
+      children: [
+        { label: "r1", daily: 1.02, perTx: 0.51, agent: true },
+        { label: "r2", daily: 1.02, perTx: 0.51, agent: true },
+      ],
+    },
+  ],
+};
+
+test("a nested tree can still overcommit, and flatten preserves it", () => {
+  const nodes = flatten(nested);
+  const leaves = nodes.filter((n) => n.agent);
+  const pool = nodes.find((n) => n.label === leaves[0].parent);
+  const sum = leaves.reduce((a, n) => a + n.daily, 0);
+  assert.ok(sum > pool.daily, `leaves sum to ${sum} but the pool holds ${pool.daily}`);
 });
 
 test("flatten keeps parents before children, and tags the agents", () => {
-  const nodes = flatten(defaultTree(true));
+  const nodes = flatten(nested);
   assert.deepEqual(nodes.map((n) => n.label), ["root", "research", "r1", "r2"]);
   assert.equal(nodes[0].parent, null);
   assert.equal(nodes[1].parent, "root");
@@ -186,5 +199,35 @@ test("exponential notation is refused rather than mis-parsed", () => {
 test("non-numeric or negative caps are refused", () => {
   for (const bad of ["abc", "-1", "", "1e6", "1.2.3"]) {
     assert.throws(() => toBaseUnits(bad, 6), /not a positive decimal/, `"${bad}"`);
+  }
+});
+
+/**
+ * THE DEFAULT IS FLAT, and nothing is created that can spend.
+ *
+ * The old default was root -> research -> r1, r2 with `agent: true` on both
+ * leaves, which committed a new user to a shape they did not ask for and to two
+ * sub-account agents at 0.55 NEAR each. The design this replaces it with is:
+ * create the vault, create NOTHING that can spend, and add virtual agents later
+ * — on request, as gas keys bound to a node, which cost ~0.06 and need no
+ * sub-account at all.
+ *
+ * A tree is a thing the owner builds when they have something to delegate. It
+ * is not a thing setup should guess at.
+ */
+test("the default tree is FLAT — root only, and no agents", () => {
+  for (const mainnet of [true, false]) {
+    const t = defaultTree(mainnet);
+    const nodes = flatten(t);
+    assert.deepEqual(
+      nodes.map((n) => n.label),
+      ["root"],
+      `${mainnet ? "mainnet" : "testnet"} default should be a single root node`,
+    );
+    assert.deepEqual(
+      nodes.filter((n) => n.agent),
+      [],
+      "setup must not create anything that can spend",
+    );
   }
 });

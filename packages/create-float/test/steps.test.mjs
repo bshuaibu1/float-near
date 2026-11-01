@@ -473,15 +473,22 @@ test("a RESUME is not billed for a vault that already exists", async () => {
   }
 });
 
-test("a resume still bills for the agents it has not created", async () => {
-  // The other direction, so the fix is "skip what is paid for" rather than
-  // "skip everything once the vault exists". Agents are created in step 7,
-  // AFTER the vault, so an existing vault says nothing about them — and a
-  // resume that silently stopped charging 0.55 each would pass the
-  // affordability gate and then run out mid-way through creating them.
+test("--agents refuses loudly now that the default tree is flat", async () => {
+  // THIS TEST CHANGED MEANING, and the old meaning is worth recording.
+  //
+  // It used to assert that a RESUME still bills for agents it has not created:
+  // agents are made in step 7, AFTER the vault, so an existing vault says
+  // nothing about them, and a resume that silently stopped charging 0.55 each
+  // would pass the affordability gate and then run out mid-way.
+  //
+  // That scenario is now unreachable. `--agents` only ever attached to
+  // agent-TAGGED tree nodes, and the default tree is flat, so there are none.
+  // The wizard must refuse rather than quietly create nothing and report
+  // success — which would leave a vault that cannot pay, the exact failure
+  // SKILL.md warns about.
   const creds = scratchCreds("testnet", "me.testnet");
   const rpc = await rpcStub({
-    nearBalance: 0.9, // enough for a bare resume, NOT for two agents
+    nearBalance: 0.9,
     existingAccounts: ["me.testnet", "v.me.testnet"],
   });
   try {
@@ -491,8 +498,12 @@ test("a resume still bills for the agents it has not created", async () => {
       { creds },
     );
     const txt = plain(r.out);
-    assert.notEqual(r.code, 0, "two agents at 0.55 do not fit in 0.9 NEAR");
-    assert.match(txt, /insufficient balance: need 1\.101/);  // + token registration
+    assert.match(
+      txt,
+      /--agents has nothing to attach to/,
+      "asking for agents on a flat tree must say so, not quietly create none",
+    );
+    assert.match(txt, /gas key bound to a node/, "it must point at the replacement");
   } finally {
     await rpc.close();
     rmSync(creds, { recursive: true, force: true });
