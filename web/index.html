@@ -219,15 +219,41 @@
 
         const setupWalletSelector = await need("wallet-selector", `${CDN}/core@${V}`, "setupWalletSelector");
         const setupModal = await need("the wallet picker", `${CDN}/modal-ui@${V}`, "setupModal");
-        const setupMyNearWallet = await need("MyNearWallet", `${CDN}/my-near-wallet@${V}`, "setupMyNearWallet");
-        const setupMeteorWallet = await need("Meteor", `${CDN}/meteor-wallet@${V}`, "setupMeteorWallet");
+
+        // WALLETS ARE OPTIONAL, INDIVIDUALLY. One wallet's CDN module failing
+        // must not take the page down — the user only needs ONE of these to
+        // work, and which one is none of our business.
+        //
+        // Worth having several: the original NEAR Wallet
+        // (wallet.testnet.near.org) is retired and its account creation is
+        // disabled, which is the dead end people hit first. MyNearWallet is its
+        // replacement; Meteor and Nightly are extensions that make a testnet
+        // account without any website at all.
+        const WALLETS = [
+          ["MyNearWallet", "my-near-wallet", "setupMyNearWallet"],
+          ["Meteor", "meteor-wallet", "setupMeteorWallet"],
+          ["Bitte", "bitte-wallet", "setupBitteWallet"],
+          ["HERE", "here-wallet", "setupHereWallet"],
+          ["Nightly", "nightly", "setupNightly"],
+        ];
+        const modules = [];
+        const skipped = [];
+        for (const [label, pkg, fn] of WALLETS) {
+          try {
+            const setup = await need(label, `${CDN}/${pkg}@${V}`, fn);
+            modules.push(setup());
+          } catch (e) {
+            skipped.push(`${label}: ${String(e?.message ?? e).slice(0, 60)}`);
+          }
+        }
+        if (!modules.length) {
+          throw new Error(`no wallet module loaded.\n${skipped.join("\n")}`);
+        }
+        if (skipped.length) console.warn("wallets skipped:", skipped);
 
         step_ = "Starting the wallet selector";
         loading("connecting to NEAR…");
-        selector = await setupWalletSelector({
-          network: NETWORK,
-          modules: [setupMyNearWallet(), setupMeteorWallet()],
-        });
+        selector = await setupWalletSelector({ network: NETWORK, modules });
         modal = setupModal(selector, { contractId: TOKEN });
         step_ = "";
 
