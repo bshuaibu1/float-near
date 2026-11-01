@@ -1,5 +1,51 @@
 # Browser signing flow for NEAR Float
 
+## THE DECIDING MEASUREMENT: wallets block `DeployContract` (2026-11-01)
+
+A real wallet was finally asked to sign the direct-creation transaction. Meteor,
+testnet:
+
+> **Contract deployment blocked.** This app is trying to put contract code on
+> your account, which could give it control of your account. Meteor blocks this
+> for apps.
+
+Approve greyed out, no override. Two findings, and the second reverses a
+decision made earlier in this document.
+
+**SIZE WAS NEVER THE PROBLEM.** The wallet parsed and rendered the 294 KB
+transaction cleanly — amount, From, To, fees, all correct. Every concern about
+`max_transaction_size` and wallets choking on large payloads was misplaced.
+
+**ACTION TYPE IS.** `DeployContract` from a dApp is refused by policy — and the
+policy is blanket: our deploy targeted a NEW sub-account
+(`float.work12.testnet`, shown in the wallet's own To field), not the signer's
+account, and it was blocked anyway. Their wording, "on your account", is
+imprecise for this case; blocking the action type regardless of receiver is the
+conservative and defensible choice on their side.
+
+**So the FACTORY is required after all**, for a better reason than the one it
+was designed for. It was built to dodge NEP-591 serialisation risk, then
+discarded when parent-init made direct creation possible
+(`validate-one-tx-create-testnet.mjs`, 9/9 on chain). The real justification is
+this: with a factory the browser signs ONE PLAIN `FunctionCall`, which no wallet
+objects to, and the deploy happens inside the contract where no wallet policy
+reaches.
+
+Two ways to feed the factory, both browser-compatible:
+
+| | needs the 30 NEAR burn? | cost per vault |
+| --- | --- | --- |
+| factory holds the code, uses `deploy_contract` | **no** | ~3.37 (each vault stores its own copy) |
+| factory uses `use_global_contract` | yes | **~0.13** |
+
+The first unblocks the browser flow today. The second is the cheap end state.
+They are not exclusive — the factory can start with one and switch to the other
+by changing one call, since `set_code_hash` already exists.
+
+STILL UNKNOWN: whether other wallets apply the same policy. If MyNearWallet
+allows `DeployContract`, that is a wallet-specific exception, not a reason to
+ship a flow that works in some wallets only.
+
 ## STATUS: the contract half is VERIFIED on testnet (2026-11-01)
 
 `scripts/validate-factory-testnet.mjs` — **12/12**:
