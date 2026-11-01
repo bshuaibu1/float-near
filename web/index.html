@@ -274,6 +274,56 @@
         $("p-total").textContent = `${near(total)} NEAR`;
         $("btn-create").onclick = () => create(who, vault, total);
         show("plan");
+
+        // CHECK AFFORDABILITY BEFORE OFFERING THE BUTTON.
+        //
+        // Without this an underfunded account produces "the transaction
+        // failed", which is indistinguishable from the wallet refusing the
+        // 294 KB payload — and that distinction is the entire reason this page
+        // exists right now. A confusing failure here would cost a wrong
+        // conclusion, not just a wrong message.
+        //
+        // Read-only, and it never blocks the plan from rendering: if the RPC is
+        // unreachable the button stays live rather than locking the user out
+        // over a check that is only advisory.
+        affordable(who, total).catch(() => {});
+      }
+
+      /**
+       * Does the connected account hold enough? Storage stake is LOCKED, so the
+       * figure that matters is balance minus what the account already has
+       * staked — the same free-balance arithmetic the CLI uses.
+       */
+      async function affordable(who, total) {
+        const rpc = NETWORK === "mainnet"
+          ? "https://free.rpc.fastnear.com"
+          : "https://test.rpc.fastnear.com";
+        const r = await fetch(rpc, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0", id: 1, method: "query",
+            params: { request_type: "view_account", finality: "final", account_id: who },
+          }),
+        }).then((x) => x.json());
+        if (!r.result) return;
+        const free = BigInt(r.result.amount) - BigInt(r.result.storage_usage) * 10n ** 19n;
+        const btn = $("btn-create");
+        if (free < total) {
+          btn.disabled = true;
+          btn.textContent = `Not enough NEAR — ${near(free)} of ${near(total)}`;
+          const p = document.createElement("p");
+          p.className = "note";
+          p.style.cssText = "text-align:left;margin:12px 0 0";
+          p.textContent =
+            NETWORK === "testnet"
+              ? `Top up ${who} at near-faucet.io and reload.`
+              : `Send at least ${near(total - free)} more NEAR to ${who} and reload.`;
+          btn.parentElement.appendChild(p);
+        } else {
+          btn.disabled = false;
+          btn.textContent = "Create vault";
+        }
       }
 
       $("btn-connect").onclick = () => modal.show();
