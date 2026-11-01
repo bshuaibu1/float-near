@@ -1,6 +1,57 @@
 # The self-submit path: an agent keyed on the vault
 
-**Status: implemented, unit-tested, sandbox-tested-but-UNRUN, NOT DEPLOYED.**
+**Status: implemented, unit-tested, VALIDATED ON A REAL NODE (testnet), sandbox
+suite still unrun, not on mainnet.**
+
+## Validated on testnet, 11/11
+
+The sandbox tier could not run (see below), so the same ground was covered
+against an actual chain instead — `scripts/validate-self-submit-testnet.mjs`
+against `approve.floatv4.testnet`, upgraded to the **exact** artifact
+`packages/create-float/res/vault.wasm` (sha256 `11eb2d0d…`, byte-identical,
+confirmed by reading the deployed code back).
+
+Picking the target was the first real decision. `v4.floatv4.testnet` runs
+280,249 bytes — an old generation with no `NEAR_BUDGET`, no `PARENT_COOLDOWN`
+and no approval gate — so upgrading it would have been a multi-generation jump
+where F2/F3 may have moved `Vault` fields, and `NO_MIGRATE=1` could have bricked
+it. `approve.floatv4.testnet` runs **299,016 bytes, the same generation as
+mainnet and as this change's base commit**, so the delta is +604 bytes and is
+*only* this change. That made `NO_MIGRATE=1` established rather than assumed.
+(`migrate()` reads `LegacyVault`, the pre-2026-10-28 layout, and panics against
+already-migrated state, so running it would simply have reverted.)
+
+| | result |
+| --- | --- |
+| state survived the upgrade | owner, flags, 2 nodes, **25 requests** all intact; production clock |
+| **the 20/20 approval demo re-run on the new contract** | **20/20** — every existing path still works on a real node |
+| a bound function-call key on the vault pays | `SETTLED`, payee **+1.00**, ledger entry attributed to node 1 |
+| an installed but **unbound** key | `NOT_VIRTUAL_AGENT: signing key is not bound to a node` |
+| a bound **gas key** pays | `SETTLED`, payee **+2.00**, gas key 0.080000 → 0.079200 |
+| **whose balance paid** | `drop 0.002740 = storage 0.002740 + unexplained 0.000000` |
+
+That last row is the one worth keeping. The gas key spent **0.0008**; the
+vault's free balance fell by exactly **274 bytes × 1e19** — the storage for one
+request-ledger record, which *every* path writes, including agent accounts.
+**Zero unexplained**, so the vault paid storage and no gas at all.
+
+### Three of my own test bugs on the way, and what each taught
+
+- **`DUPLICATE_REQUEST`.** My request id came from the payee balance mod 100000,
+  which is 0 for any round balance, so the second run reused the first's id. The
+  contract was right to refuse it; the id generator was wrong.
+- **`unexplained 0.080058`** — exactly my `transferToGasKey`. I polled the *gas
+  key* to an expected value and then took a single `final` read of the *vault*,
+  which had not caught up with the outflow. It read as the vault paying gas,
+  i.e. as this whole design failing. **Sixth instance of that bug class in this
+  project**, in a script that already carried a comment warning about it: the
+  warning had been applied to one read and not the other.
+- A cosmetic "2 keys remaining" line — a stale read of a `deleteKey` that had
+  not settled. Seventh instance, harmless.
+
+The pattern is stable enough to state plainly: **every balance read in this
+project must poll to an expected value, and "I already polled the other one" is
+not protection.**
 
 `request_payment` now resolves the spending node from `env::signer_account_pk()`
 when the predecessor is the vault itself. That is what lets an agent hold a key
