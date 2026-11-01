@@ -123,6 +123,46 @@ test("the skill does not promise that SETTLED means cross-chain delivery", () =>
 // the 19 call sites passing a literal AND the 3 passing a local, which between
 // them supply the six cap/cooldown codes a literal-only grep misses.
 
+test("every reason code the AGENT ENTRY POINTS can emit is documented in SKILL.md", () => {
+  // WIDER THAN THE TEST BELOW, AND THAT GAP WAS REAL. The scan below covers
+  // `dispatch_payment` only, on the reasoning that "every refusal an agent can
+  // receive comes from a `blocked(..)` inside dispatch_payment". That misses
+  // the codes the ENTRY POINTS raise before they ever reach dispatch — agent
+  // resolution failures — and both of them were undocumented:
+  //
+  //   NOT_AGENT          an unbound ACCOUNT calling request_payment
+  //   NOT_VIRTUAL_AGENT  an unbound KEY, via request_payment_signed or, since
+  //                      the self-submit path, request_payment itself
+  //
+  // They arrive as PANICS rather than BLOCKED outcomes — deliberately, since
+  // there is no node to attribute a blocked event to — so an agent sees a
+  // failed transaction, not a reason_code field. That makes them MORE in need
+  // of documentation, not less: an agent that cannot tell "your key is not
+  // bound" from a network error will retry forever.
+  const lib = read(join(ROOT, "contracts", "vault", "src", "lib.rs"));
+  const doc = read(SKILL);
+  const screaming = (s) => s.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
+
+  const entryPoints = ["pub fn request_payment(", "pub fn request_payment_signed("];
+  const emitted = new Set();
+  for (const sig of entryPoints) {
+    const start = lib.indexOf(sig);
+    assert.ok(start > 0, `${sig} not found — this scan is measuring nothing`);
+    const rest = lib.slice(start + sig.length);
+    const endRel = rest.search(/\n {4}(pub )?fn /);
+    const body = endRel < 0 ? rest : rest.slice(0, endRel);
+    for (const m of body.matchAll(/ReasonCode::([A-Za-z]+)/g)) emitted.add(m[1]);
+  }
+  assert.ok(emitted.size >= 2, `only found ${emitted.size} codes in the entry points — scan is broken`);
+
+  const missing = [...emitted].map(screaming).filter((c) => !doc.includes(c));
+  assert.deepEqual(
+    missing,
+    [],
+    `SKILL.md does not mention ${missing.length} entry-point code(s) an agent can hit: ${missing.join(", ")}`,
+  );
+});
+
 test("every reason code dispatch_payment can emit is documented in SKILL.md", () => {
   const lib = read(join(ROOT, "contracts", "vault", "src", "lib.rs"));
 

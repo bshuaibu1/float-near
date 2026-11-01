@@ -20,7 +20,15 @@ import { funcImports, importsHostFn } from "../scripts/wasm-imports.mjs";
  *
  * MEASURED 2026-10-30 on this contract, after building both ways:
  *
- *   cargo near build      40 env imports, incl. panic_utf8 and sha256
+ *   cargo near build      41 env imports, incl. panic_utf8 and sha256
+ *
+ * The count was 40 until the SELF-SUBMIT path added a call to
+ * `env::signer_account_pk()` in `request_payment` — a host function the
+ * contract had never used, so it became a 41st import. Verified rather than
+ * assumed: `scripts/wasm-imports.mjs` lists `signer_account_pk` in the env
+ * module beside `predecessor_account_id` and `current_account_id`, and the
+ * count moved by exactly one. A bare count would not have told anyone WHICH
+ * import appeared, which is why the name is asserted below too.
  *   plain cargo build     38 env imports, panic_utf8 and sha256 ABSENT
  *
  * Two corrections to what the repo previously believed, both of which cost me
@@ -63,10 +71,23 @@ function withoutPanicImport() {
   return out;
 }
 
-test("REAL DATA: the shipped contract imports 40 env functions including panic_utf8", () => {
+test("REAL DATA: the shipped contract imports 41 env functions including panic_utf8", () => {
   const imps = funcImports(readFileSync(CARGO_NEAR_WASM));
   const env = imps.filter((i) => i.module === "env");
-  assert.equal(env.length, 40, `expected 40 env imports, got ${env.length}`);
+  assert.equal(env.length, 41, `expected 41 env imports, got ${env.length}`);
+  // Name the imports the count is made of that matter, so a future drift says
+  // WHICH import came or went rather than only that the number moved.
+  //
+  // `i.field`, not `env.includes(name)` — these are import RECORDS, not
+  // strings. The first version of this loop used `includes` and failed against
+  // a contract that does have the import, with the correct idiom sitting two
+  // lines below it in this very test.
+  for (const needed of ["signer_account_pk", "predecessor_account_id", "current_account_id"]) {
+    assert.ok(
+      env.some((i) => i.field === needed),
+      `the self-submit path needs ${needed}`,
+    );
+  }
   for (const fn of ["panic_utf8", "sha256"]) {
     assert.ok(
       env.some((i) => i.field === fn),
@@ -212,7 +233,7 @@ test("REACHABILITY: bundle-wasm ACCEPTS the real cargo-near contract", () => {
 test("funcImports excludes imports that are not FUNCTIONS", () => {
   // Written while the mutation that removed the kind filter was still applied
   // (tdd-extras 7a). Dropping that filter survived every other test, because
-  // all 40 of this contract's imports happen to be functions — so the filter
+  // all 41 of this contract's imports happen to be functions — so the filter
   // was asserted nowhere while a comment implied it mattered.
   //
   // It matters because a memory/global/table import can carry ANY name,
@@ -276,6 +297,6 @@ test("REACHABILITY: the root CLI still works when RUN directly", () => {
     cwd: REPO,
     encoding: "utf8",
   });
-  assert.match(out, /function imports: 40/);
+  assert.match(out, /function imports: 41/);
   assert.match(out, /panic_utf8/);
 });

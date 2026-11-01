@@ -3362,3 +3362,358 @@ fn rejecting_a_held_payment_is_owner_only() {
     testing_env!(ctx(stranger(), YOCTO, 2).build());
     v.reject_payment("gr".into());
 }
+
+// =====================================================================
+// SELF-SUBMIT (gas-key) PATH
+//
+// An agent can hold a NEP-611 gas key — or a plain function-call key — ON THE
+// VAULT itself, restricted to `request_payment`. It then submits its own
+// transactions and pays its own gas, with no sub-account and no relayer.
+// Measured on mainnet 2026-10-31 (docs/SPIKE-gas-keys-2026-10-31.md): the key's
+// own balance pays, the account's does not move by a yocto, the float is
+// withdrawable, and two keys do not contend.
+//
+// WHEN A KEY ON THE VAULT SIGNS, `predecessor_account_id()` IS THE VAULT. So
+// the caller cannot be identified by account, and the only thing that
+// distinguishes one agent from another is `signer_account_pk()`.
+//
+// WHY THIS IS PURELY ADDITIVE, AND WHY THERE IS NO FALLBACK: `assert_bindable`
+// refuses the owner and the vault —
+//     "agent must not be the owner or the vault"
+// — so `account_to_node` can NEVER contain the vault. Before this change a
+// self-submitted `request_payment` hit `account_to_node.get(vault)` -> None ->
+// NotAgent, unconditionally. There is no prior behaviour to preserve.
+//
+// The binding reused is `pubkey_to_node`, the same map `bind_virtual_agent`
+// writes. Deliberate: a new map on `Vault` would be a borsh layout change and
+// therefore a migration, and the capability is identical either way — for this
+// path to work the owner must BOTH bind the pubkey AND install it as a key on
+// the vault, which needs a full-access key. Either alone does nothing, so no
+// unprivileged actor gains anything.
+
+/// Distinct deterministic keys. The existing `signing_key()` is a single fixed
+/// `[7u8; 32]`, and several tests here need two agents that are not each other.
+fn seeded_key(seed: u8) -> SigningKey {
+    SigningKey::from_bytes(&[seed; 32])
+}
+
+/// Context for a call signed by a key ON THE VAULT: predecessor is the vault
+/// itself, and the signing public key is what identifies the agent.
+fn ctx_self(pk: PublicKey, ts_ns: u64) -> VMContextBuilder {
+    let mut b = ctx(vault_id(), ZERO, ts_ns);
+    b.signer_account_pk(pk);
+    b
+}
+
+#[test]
+fn the_vault_can_never_be_bound_as_an_agent_account() {
+    // The invariant the whole design rests on. If a future change let the vault
+    // be bound here, a self-submitted call would have two possible resolutions
+    // and this path would need a fallback. Pinned so that change breaks loudly.
+    let mut t = tree();
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        t.v.bind_agent(t.ops, vault_id());
+    }));
+    assert!(r.is_err(), "the vault was bound as an agent account");
+}
+
+#[test]
+fn a_bound_key_signing_as_the_vault_spends_from_its_node() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(71));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_dispatched(t.v.request_payment("s1".into(), tok(), usdc(100), payee(), "".into(), None));
+}
+
+#[test]
+#[should_panic(expected = "NOT_VIRTUAL_AGENT")]
+fn an_unbound_key_signing_as_the_vault_is_refused() {
+    // A PANIC, not a Blocked outcome, and deliberately so — the same choice
+    // `request_payment_signed` already makes for an unbound key, for the reason
+    // stated there: there is no node to attribute a `blocked` event to.
+    let mut t = tree();
+    // Deliberately NOT bound.
+    testing_env!(ctx_self(va_pubkey(&seeded_key(72)), 0).build());
+    let _ = t.v.request_payment("s2".into(), tok(), usdc(1), payee(), "".into(), None);
+}
+
+#[test]
+fn the_wrong_bound_key_spends_from_its_own_node_not_another() {
+    // Keys are not interchangeable, or the per-agent budget means nothing.
+    //
+    // r1's per-tx cap is 500 and r2's is 300, so ONE amount — 400 — dispatches
+    // for r1 and is refused for r2. The only thing that differs is which key
+    // signed, which is exactly the property under test.
+    //
+    // THE REFUSAL GOES FIRST, and that ordering is load-bearing. r1 and r2
+    // share the research pool of 500, so paying 400 from r1 first leaves 100
+    // and r2's 400 is then refused by PARENT_DAILY_BUDGET before its own
+    // per-tx cap is ever consulted — the test would pass for the wrong clause.
+    // A blocked payment charges nothing, so refusing first keeps the state
+    // clean for the dispatch. (The first version of this test did it the other
+    // way and failed with exactly that mis-attribution.)
+    let mut t = tree();
+    let pk1 = va_pubkey(&seeded_key(81));
+    let pk2 = va_pubkey(&seeded_key(82));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk1.clone());
+    t.v.bind_virtual_agent(t.n_r2, pk2.clone());
+
+    testing_env!(ctx_self(pk2, 0).build());
+    assert_blocked(
+        t.v.request_payment("w2".into(), tok(), usdc(400), payee(), "".into(), None),
+        ReasonCode::PerTxLimit,
+    );
+
+    testing_env!(ctx_self(pk1, 0).build());
+    assert_dispatched(t.v.request_payment("w1".into(), tok(), usdc(400), payee(), "".into(), None));
+}
+
+#[test]
+fn the_agent_account_path_still_works_unchanged() {
+    // Regression. predecessor != vault must still resolve by ACCOUNT, with no
+    // signing key involved at all. `tree()` already binds r1() to n_r1.
+    let mut t = tree();
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(t.v.request_payment("a1".into(), tok(), usdc(100), payee(), "".into(), None));
+}
+
+#[test]
+#[should_panic(expected = "NOT_AGENT")]
+fn an_unknown_account_still_gets_not_agent_not_the_key_error() {
+    // The two refusals must stay DISTINGUISHABLE: an unbound ACCOUNT is
+    // NOT_AGENT, an unbound KEY is NOT_VIRTUAL_AGENT. Collapsing them would
+    // make the cause unreadable for the agent that has to act on it.
+    //
+    // The two strings cannot satisfy each other's `expected`: "NOT_AGENT"
+    // requires "NOT_" followed immediately by "AGENT", and in
+    // "NOT_VIRTUAL_AGENT" what follows "NOT_" is "VIRTUAL". So this assertion
+    // genuinely discriminates rather than matching either.
+    let mut t = tree();
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    let _ = t.v.request_payment("u1".into(), tok(), usdc(1), payee(), "".into(), None);
+}
+
+#[test]
+fn both_paths_share_the_same_parent_pool() {
+    // An account-bound agent and a key-bound self-submitter under one parent
+    // must contend for the SAME pool, or the hierarchy leaks.
+    //
+    // research holds 500. r1 (by account) takes 400; r2 (by key) then asks 200,
+    // which its own 300 cap allows but the parent's remaining 100 does not.
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(83));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r2, pk.clone());
+
+    testing_env!(ctx(r1(), ZERO, 0).build());
+    assert_dispatched(t.v.request_payment("m1".into(), tok(), usdc(400), payee(), "".into(), None));
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("m2".into(), tok(), usdc(200), payee(), "".into(), None),
+        ReasonCode::ParentDailyBudget,
+    );
+}
+
+#[test]
+fn self_submit_is_bound_by_the_per_tx_cap() {
+    // The 2-row table the comparator gate asks for: one input that MUST refuse
+    // and one that MUST pass, both against the SAME fresh state.
+    //
+    // Refusal first, deliberately. r2's 300 cap equals its share of a 500
+    // parent pool, so dispatching 300 first leaves 200 and the 301 is then
+    // refused by PARENT_DAILY_BUDGET rather than by the per-tx cap this test is
+    // named for. A blocked payment charges nothing, so this order keeps both
+    // rows honest.
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(84));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r2, pk.clone());
+
+    testing_env!(ctx_self(pk.clone(), 0).build());
+    assert_blocked(
+        t.v.request_payment("c2".into(), tok(), usdc(301), payee(), "".into(), None),
+        ReasonCode::PerTxLimit,
+    );
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_dispatched(t.v.request_payment("c1".into(), tok(), usdc(300), payee(), "".into(), None));
+}
+
+#[test]
+fn self_submit_is_bound_by_the_daily_budget() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(85));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r2, pk.clone());
+
+    // r2 is 300/day and 300/tx, so one full-cap payment exhausts the day.
+    testing_env!(ctx_self(pk.clone(), 0).build());
+    assert_dispatched(t.v.request_payment("d1".into(), tok(), usdc(300), payee(), "".into(), None));
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("d2".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::DailyBudget,
+    );
+}
+
+#[test]
+fn self_submit_respects_the_recipient_allowlist() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(86));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("rr".into(), tok(), usdc(1), stranger(), "".into(), None),
+        ReasonCode::RecipientNotAllowed,
+    );
+}
+
+#[test]
+fn self_submit_is_blocked_by_a_frozen_node() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(87));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+    t.v.freeze_node(t.n_r1, true);
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("f1".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::NodeFrozen,
+    );
+}
+
+#[test]
+fn self_submit_is_blocked_by_a_frozen_ancestor() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(88));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+    t.v.freeze_node(t.research, true);
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("f2".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::NodeFrozen,
+    );
+}
+
+#[test]
+fn self_submit_is_blocked_by_the_pause_switch() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(89));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+    t.v.set_paused(true);
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("p1".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::VaultPaused,
+    );
+}
+
+#[test]
+fn self_submit_is_held_by_the_approval_threshold_then_approved() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(90));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+    t.v.set_approval_threshold(t.n_r1, Some(usdc(50)));
+
+    // At the threshold: straight through.
+    testing_env!(ctx_self(pk.clone(), 0).build());
+    assert_dispatched(t.v.request_payment("q1".into(), tok(), usdc(50), payee(), "".into(), None));
+
+    // Above it but inside the caps: HELD, with a ticket.
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("q2".into(), tok(), usdc(51), payee(), "".into(), None),
+        ReasonCode::ApprovalRequired,
+    );
+    assert!(t.v.get_pending_approval("q2".into()).is_some(), "no ticket was stored");
+
+    // The owner approves and it dispatches.
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    assert_dispatched(t.v.approve_payment("q2".into()));
+}
+
+#[test]
+fn self_submit_above_the_caps_is_refused_not_held() {
+    // The gate sits INSIDE the caps, so no threshold can widen them.
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(91));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r2, pk.clone());
+    t.v.set_approval_threshold(t.n_r2, Some(usdc(10)));
+
+    testing_env!(ctx_self(pk, 0).build());
+    assert_blocked(
+        t.v.request_payment("q3".into(), tok(), usdc(301), payee(), "".into(), None),
+        ReasonCode::PerTxLimit,
+    );
+    assert!(t.v.get_pending_approval("q3".into()).is_none(), "a capped payment was held");
+}
+
+#[test]
+fn unbinding_the_key_closes_the_self_submit_path() {
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(92));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+
+    testing_env!(ctx_self(pk.clone(), 0).build());
+    assert_dispatched(t.v.request_payment("x1".into(), tok(), usdc(1), payee(), "".into(), None));
+
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.unbind_virtual_agent(pk.clone());
+
+    // `catch_unwind` rather than `#[should_panic]`, because the point of this
+    // test is the BEFORE and AFTER in one body: a should_panic attribute would
+    // be satisfied by the first half failing for any reason at all.
+    testing_env!(ctx_self(pk, 0).build());
+    let after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = t.v.request_payment("x2".into(), tok(), usdc(1), payee(), "".into(), None);
+    }));
+    let msg = after
+        .expect_err("the unbound key still spent")
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(msg.contains("NOT_VIRTUAL_AGENT"), "wrong refusal: {msg}");
+}
+
+#[test]
+fn self_submit_shares_one_cooldown_with_the_node() {
+    // A cooldown that reset per entry point would be bypassable by alternating
+    // doors, so the self-submit path must land on the same `last_paid_ns`.
+    //
+    // The base timestamp is deliberately enormous: `last_paid_ns` has no entry
+    // until a first payment and the guard reads a missing entry as 0, so while
+    // `now < cooldown` a node carrying a cooldown refuses everything. Mainnet
+    // timestamps are ~1.76e18, so this mirrors production rather than a fresh
+    // localnet.
+    let mut t = tree();
+    let pk = va_pubkey(&seeded_key(93));
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    t.v.bind_virtual_agent(t.n_r1, pk.clone());
+    t.v.set_cooldown(t.n_r1, 3600);
+
+    let base = 10_000_000_000_000_000_000u64;
+    testing_env!(ctx_self(pk.clone(), base).build());
+    assert_dispatched(t.v.request_payment("k1".into(), tok(), usdc(1), payee(), "".into(), None));
+
+    testing_env!(ctx_self(pk, base + 1).build());
+    assert_blocked(
+        t.v.request_payment("k2".into(), tok(), usdc(1), payee(), "".into(), None),
+        ReasonCode::Cooldown,
+    );
+}

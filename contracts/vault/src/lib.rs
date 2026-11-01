@@ -1155,10 +1155,57 @@ impl Vault {
         route: Option<Route>,
     ) -> PromiseOrValue<PaymentOutcome> {
         let caller = env::predecessor_account_id();
-        let node_id = *self
-            .account_to_node
-            .get(&caller)
-            .unwrap_or_else(|| fail(ReasonCode::NotAgent, "caller is not bound to a node"));
+        let node_id = if caller == env::current_account_id() {
+            // ---- SELF-SUBMIT: a key ON THIS VAULT signed the transaction.
+            //
+            // An agent can hold a NEP-611 gas key, or a plain function-call
+            // key, on the vault itself, restricted to `request_payment`. It
+            // then submits its own transactions and pays its own gas — no
+            // sub-account to fund and strand, and no relayer to run. Measured
+            // on mainnet 2026-10-31: the key's own balance pays, the account's
+            // does not move, the float is withdrawable, and two keys do not
+            // contend (docs/SPIKE-gas-keys-2026-10-31.md).
+            //
+            // In that case `predecessor_account_id()` is the VAULT, so the
+            // caller cannot be identified by account. `signer_account_pk()` is
+            // the only thing that distinguishes one agent from another.
+            //
+            // THIS BRANCH IS PURELY ADDITIVE AND NEEDS NO FALLBACK.
+            // `assert_bindable` refuses the owner and the vault — "agent must
+            // not be the owner or the vault" — so `account_to_node` can NEVER
+            // contain the vault. Before this existed, a self-submitted call hit
+            // `account_to_node.get(vault)` -> None -> NOT_AGENT every time, so
+            // there is no prior behaviour to preserve and nothing this branch
+            // could shadow. Pinned by
+            // `the_vault_can_never_be_bound_as_an_agent_account`.
+            //
+            // NOTHING INTERNAL REACHES HERE. `request_payment` is called from
+            // exactly one place in this contract: nowhere. `approve_payment`
+            // and `request_payment_signed` both call `dispatch_payment`
+            // directly, and the callbacks are `#[private]`. So the only way the
+            // predecessor can be this vault is a transaction signed by a key on
+            // it, which only a full-access key holder can install. No
+            // unprivileged actor gains anything.
+            //
+            // The map reused is `pubkey_to_node`, the same one
+            // `bind_virtual_agent` writes. Deliberate: a new map on `Vault`
+            // would change its borsh layout and so require a migration, and the
+            // capability is identical either way — this path needs the owner to
+            // BOTH bind the pubkey AND install it as a key on the vault, and
+            // either action alone does nothing.
+            let pk = env::signer_account_pk();
+            *self.pubkey_to_node.get(&pk).unwrap_or_else(|| {
+                // A panic, not a `blocked` outcome, matching
+                // `request_payment_signed` and for its reason: there is no node
+                // to attribute a `blocked` event to.
+                fail(ReasonCode::NotVirtualAgent, "signing key is not bound to a node")
+            })
+        } else {
+            *self
+                .account_to_node
+                .get(&caller)
+                .unwrap_or_else(|| fail(ReasonCode::NotAgent, "caller is not bound to a node"))
+        };
         self.dispatch_payment(
             node_id,
             request_id,

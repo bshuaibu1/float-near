@@ -131,6 +131,42 @@ These are the exact strings the contract emits. Match on them literally.
 the limit and let the human decide. A budget the agent can talk its way past is
 not a budget.
 
+## When the call FAILS instead of being refused
+
+Everything above is a **BLOCKED** value with a `reason_code`. The errors below
+are different: the transaction **fails** and you get a panic message, not an
+outcome object. That is deliberate — these happen before the vault can work out
+which node you spend from, so there is no node to attribute a refusal to.
+
+Match on the string in the failure. **None of these is retryable**; every one
+needs a human to change something.
+
+| failure | what it means | what to do |
+| --- | --- | --- |
+| `NOT_AGENT` | your ACCOUNT is not bound to a node | stop. Ask the human to bind it, or check you are calling as the right account |
+| `NOT_VIRTUAL_AGENT` | your SIGNING KEY is not bound to a node | stop. The key was never bound, or was unbound. Do not retry with a different id — the key is the problem |
+| `BAD_AGENT_SIGNATURE` | the signature does not verify | your own bug: you signed the wrong bytes, or with the wrong key |
+| `NONCE_NOT_FRESH` | this nonce was already used | increment it. Nonces must strictly increase |
+| `AGENT_SIGNATURE_EXPIRED` | the deadline in the signed payload has passed | re-sign with a later deadline; do not reuse the old payload |
+
+## Three ways an agent is wired, and how to tell which you are
+
+All three land in the same budget tree and obey every limit above. You do not
+choose — the operator configured one.
+
+| | you hold | who pays gas | tell |
+| --- | --- | --- | --- |
+| **agent account** | a key on `<name>.<vault>`, pinned to `request_payment` | you, from that account | you call as your own account |
+| **self-submit** | a key **on the vault**, pinned to `request_payment` | you, from that key's own balance | you call as the VAULT; failures say `NOT_VIRTUAL_AGENT` |
+| **virtual agent** | a raw keypair, no account | whoever relays for you | you sign a payload and hand it to a relayer |
+
+For **self-submit** the operator did two separate things — bound your public key
+to a node, and installed that key on the vault. Either one missing gives
+`NOT_VIRTUAL_AGENT`, and only the human can fix it.
+
+If your key's gas balance runs out you simply stop being able to pay. Say so
+plainly and ask for a top-up; **do not** interpret it as a budget refusal.
+
 ## Setting up a new vault
 
 One command. It creates the account, deploys the contract, builds the budget
