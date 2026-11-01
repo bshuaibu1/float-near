@@ -199,8 +199,38 @@ try {
     await wait(1000);
   }
 
+  // ---- WAIT FOR THE ACCOUNT BALANCE TO SETTLE TO ITS EXPECTED VALUE.
+  //
+  // The first mainnet run aborted here on a STALE read. It polled the two GAS
+  // balances until both were funded — and then read the ACCOUNT balance exactly
+  // once, immediately. The gas balances had settled; the account's had not:
+  //
+  //   projected after two funds   0.04772
+  //   what step 3 read            0.10900   <- one fund behind
+  //
+  // so the guard concluded "the account can still cover a reservation" and
+  // refused to fire. The guard was right about what it saw and wrong about the
+  // world. Proven afterwards from the end state: the account finished at
+  // 0.17595 having spent only 0.00261, which is only possible if BOTH transfers
+  // landed and both withdrawals returned.
+  //
+  // AND NOTE WHY "POLL UNTIL IT CHANGES" WOULD NOT HAVE SAVED THIS. 0.10900 had
+  // already changed from 0.17856. The predicate has to be a POSITIVE ASSERTION
+  // about where the value should land, not merely that it moved.
+  const expectMax = free0 - 2n * FUND + 3n * 10n ** 21n; // + 0.003 slack for gas
+  let freeThin = await freeBalance();
+  for (let t = 0; t < 30 && freeThin > expectMax; t++) {
+    await wait(1000);
+    freeThin = await freeBalance();
+  }
+  if (freeThin > expectMax) {
+    bad(`the account balance never settled: ${near(freeThin)} still above ${near(expectMax)}`);
+    info("the two funding transfers may not both have landed. Cleaning up and stopping.");
+    exitCode = 1;
+    throw new Error("unsettled");
+  }
+
   step(3, "Verify the discriminator ON CHAIN before firing");
-  const freeThin = await freeBalance();
   const bals = await Promise.all(pks.map(gasBalance));
   info(`account free        ${near(freeThin)}`);
   bals.forEach((b, i) => info(`key ${i + 1} gas balance   ${near(b ?? 0n)}`));
@@ -267,7 +297,7 @@ try {
     exitCode = 1;
   }
 } catch (e) {
-  if (!["non-discriminating", "underfunded"].includes(e.message)) {
+  if (!["non-discriminating", "underfunded", "unsettled"].includes(e.message)) {
     bad(`unexpected: ${String(e.message).slice(0, 200)}`);
     exitCode = 1;
   }
