@@ -27,7 +27,11 @@
  * RELATIVE PATHS ARE NOT SUPPORTED in `args` — they are handed straight to the
  * OS process launcher — so the path is absolute and asserted to exist.
  */
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+// `readFileSync` was missing here and the script died at runtime with
+// "ReferenceError: readFileSync is not defined". `node --check` passed, because
+// it is a SYNTAX check and never resolves identifiers — it cannot catch a
+// missing import, so it is not the safety net it looks like.
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -110,7 +114,21 @@ const shownText = `${JSON.stringify(shown, null, 2)}\n`;
 
 mkdirSync(join(ROOT, ".demo"), { recursive: true });
 const out = join(ROOT, ".demo", "mcp-json-to-save.txt");
+
+// DELETE BEFORE WRITING, so a crash leaves nothing behind to copy.
+//
+// This script died once at a missing import, leaving the PREVIOUS run's file
+// in place — and the `Copy-Item .demo\... .mcp.json` that followed happily
+// copied it, installing a config for the wrong vault with no agent key. The
+// copy reported success. Same failure shape as a stale build artifact, and the
+// same fix as scripts/build-factory.sh: remove first, require existence after,
+// so "did nothing" cannot masquerade as "succeeded".
+if (existsSync(out)) rmSync(out);
 writeFileSync(out, text, "utf8");
+if (!existsSync(out)) {
+  console.error(`FATAL: ${out} was not written.`);
+  process.exit(1);
+}
 
 console.log(`\n  server   ${SERVER}`);
 console.log(`  vault    ${VAULT}`);
