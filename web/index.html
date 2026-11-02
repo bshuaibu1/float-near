@@ -33,8 +33,9 @@
 
       So the contract travels as an ARGUMENT to an ordinary method call, which
       no wallet has a policy about, and the deploy happens inside the factory.
-      Computed before building: ~74 TGas of 300, args 25.5% of the transaction
-      limit.
+      MEASURED on testnet, not estimated: 124.9 TGas of the 200 attached, args
+      25.5% of the transaction limit. Meteor rendered and signed a 401 KB
+      argument without complaint — size was never the objection.
 
       NO BACKEND, deliberately. The page reads its intent from the URL and the
       wallet submits the call. The CLI learns the outcome by polling the CHAIN,
@@ -435,11 +436,29 @@
           // contract travels as a base64 ARGUMENT, which Meteor already renders
           // without complaint at this size.
           //
-          // 300 TGas: the computed cost is ~74 (3 to deliver the args, ~31 for
-          // the batch, ~30 for the vault's new()), but the contract-side cost of
-          // near-sdk decoding a 294 KB Base64VecU8 is the one thing a fee table
-          // cannot predict. Unused gas is refunded, so the only cost of asking
-          // for the maximum is a larger reservation held during the call.
+          // 200 TGas, against a MEASURED commitment of 124.88:
+          //
+          //   42.79  delivering + decoding the 401 KB argument  (measured on
+          //          chain via scripts/measure-create-gas-testnet.mjs)
+          //    7.70  CreateAccount          }
+          //    0.23  Transfer               }  protocol fee schedule,
+          //   34.16  DeployContract         }  33.79 of it per-byte
+          //   30.00  GAS_FOR_VAULT_NEW      }  factory constants
+          //   10.00  GAS_FOR_REFUND         }
+          //
+          // This said "~74" for a while and that number was invented. Trusting
+          // it and trimming the attached gas to 100 would have broken the flow
+          // at the wallet, after the user had already decided to proceed.
+          //
+          // NOT a free choice of maximum. Unused gas is refunded, but the
+          // RESERVATION is prepaid_gas * 1e9 — the max gas price — and the user
+          // must hold it at signing time on top of the deposit. At 300 TGas
+          // that is 0.3 NEAR, and it is exactly what rejected the first real
+          // attempt:
+          //   "does not have enough balance 3.5234 for operation costing
+          //    3.674061500357969"   (3.674 - 3.3703 deposit = the reservation)
+          // 200 keeps 60% headroom over the measurement and takes 0.1 NEAR off
+          // what a user must hold to create a vault.
           await wallet.signAndSendTransaction({
             receiverId: FACTORY,
             actions: [
@@ -453,7 +472,7 @@
                     root_limits: rootLimits,
                     root_recipients: rootRecipients,
                   },
-                  gas: "300000000000000",
+                  gas: "200000000000000",
                   deposit: total.toString(),
                 },
               },
