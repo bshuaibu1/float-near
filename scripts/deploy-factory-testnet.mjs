@@ -204,26 +204,54 @@ console.log(`\n  ${WALLET} would get   ${derived}`);
 //
 // Funding to deposit + a little is therefore not enough, and the shortfall
 // scales with the gas the caller attaches, not with the contract size.
-const PAGE_TGAS = 300n;
-const gasReservation = PAGE_TGAS * 10n ** 12n * 10n ** 9n; // 0.3 NEAR
+// 200, matching web/index.html. Was 300; the page was cut to 200 once the real
+// commitment was MEASURED at 124.88 TGas, which takes 0.1 NEAR off what a user
+// must hold. A stale number here over-funds and, when the parent is thin,
+// turns a convenience into a failure.
+const PAGE_TGAS = 200n;
+const gasReservation = PAGE_TGAS * 10n ** 12n * 10n ** 9n; // 0.2 NEAR
 const vaultNeed =
   BigInt(statSync(VAULT_WASM).size) * 10n ** 19n + 36n * 10n ** 22n + gasReservation;
 const haveW = await free(WALLET);
-if (haveW < vaultNeed) {
-  const send = vaultNeed - haveW + 15n * 10n ** 22n;
-  console.log(`\n  ${WALLET} has ${near(haveW)}, needs ${near(vaultNeed)} — sending ${near(send)}`);
-  await parent.transfer({ receiverId: WALLET, amount: send });
-  let ok = false;
-  for (let i = 0; i < 30; i++) {
-    if ((await free(WALLET)) >= vaultNeed) {
-      ok = true;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  if (!ok) console.log(`  WARNING: never reached the expected balance — read again`);
+
+// THIS STEP IS OPTIONAL AND MUST NOT FAIL THE RUN.
+//
+// It bit exactly that way: the factory deployed successfully, then this threw
+// `NotEnoughBalanceError` because the parent held 1.21 and the top-up wanted
+// 3.31 — and the whole run ended in a stack trace, reading as "the deploy
+// failed" when the deploy had in fact worked. The top-up only matters if
+// someone is about to create ANOTHER vault through the browser; it has nothing
+// to do with whether the factory is live.
+if (haveW >= vaultNeed) {
+  console.log(`\n  ${WALLET} already covers a new vault`);
 } else {
-  console.log(`\n  ${WALLET} already covers the vault`);
+  const short = vaultNeed - haveW;
+  const parentFree = await free(PARENT);
+  const send = short + 15n * 10n ** 22n;
+  if (parentFree < send) {
+    console.log(`\n  ${WALLET} holds ${near(haveW)} and a new vault needs ${near(vaultNeed)}.`);
+    console.log(`  NOT topping up: ${PARENT} only has ${near(parentFree)} free, short by`);
+    console.log(`  about ${near(send - parentFree)}. This does NOT affect the factory, which`);
+    console.log(`  is deployed and live — it only means no NEW vault can be created until`);
+    console.log(`  ${PARENT} is funded. An existing vault keeps working.`);
+  } else {
+    console.log(`\n  ${WALLET} has ${near(haveW)}, needs ${near(vaultNeed)} — sending ${near(send)}`);
+    try {
+      await parent.transfer({ receiverId: WALLET, amount: send });
+      let ok = false;
+      for (let i = 0; i < 30; i++) {
+        if ((await free(WALLET)) >= vaultNeed) {
+          ok = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (!ok) console.log(`  WARNING: never reached the expected balance — read again`);
+    } catch (e) {
+      console.log(`  top-up FAILED: ${String(e.message).slice(0, 120)}`);
+      console.log(`  The factory is still deployed and live; only the top-up did not happen.`);
+    }
+  }
 }
 
 console.log(`\n  ${PARENT}   free ${near(await free(PARENT))}`);

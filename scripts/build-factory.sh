@@ -38,6 +38,28 @@ FINAL="target/near/$CRATE/$CRATE.wasm"
 INTERMEDIATE="target/wasm32-unknown-unknown/release/$CRATE.wasm"
 
 command -v cargo-near >/dev/null || {
+  # "not found" is usually a LIE here, and the honest cause is the shell.
+  #
+  # On Windows, PowerShell's `bash` resolves to C:\WINDOWS\system32\bash.exe —
+  # which is WSL, a different machine with a different filesystem and a PATH
+  # that does not contain ~/.cargo/bin. cargo-near is installed and working;
+  # this shell simply cannot see it. Telling the user to install it sends them
+  # off to reinstall something they already have.
+  # Detect WSL from /proc/version, not from whether ~/.cargo/bin is missing.
+  # The first version of this check tested `[ ! -d "$HOME/.cargo/bin" ]` and
+  # NEVER FIRED — WSL here has its own Linux cargo install, so the directory
+  # exists and the condition was false. It fell through to the same misleading
+  # "cargo-near not found" it was written to replace.
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    echo "FATAL: this is running under WSL, which has its own PATH and cannot see" >&2
+    echo "       your Windows cargo install. Use git-bash instead:" >&2
+    echo >&2
+    echo "         & \"C:\\Program Files\\Git\\bin\\bash.exe\" scripts/build-factory.sh${1:+ $1}" >&2
+    echo >&2
+    echo "       (check with: Get-Command bash | Select -ExpandProperty Source —" >&2
+    echo "        if it says system32\\bash.exe, that is WSL.)" >&2
+    exit 1
+  fi
   echo "cargo-near not found. Install with: cargo install cargo-near --locked" >&2
   exit 1
 }
