@@ -32,8 +32,43 @@ if (!existsSync(DIST)) {
 const { scanRange, mergeScan, emptyStore, createRpc } = await import(pathToFileURL(DIST).href);
 
 const RPC = process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com";
-const VAULT = process.env.NEAR_VAULT_CONTRACT ?? "v3.floatvault-12329.testnet";
-const STORE = process.env.BLOCKED_LOG ?? ".demo/blocked-log.json";
+
+/**
+ * NO DEFAULT VAULT. This read `?? "v3.floatvault-12329.testnet"`, and that
+ * default is the root cause of a real data-integrity incident:
+ *
+ *   run with NEAR_VAULT_CONTRACT unset -> scans v3 -> writes v3's refusals to
+ *   the SHARED default path .demo/blocked-log.json -> the adapter, pointed at a
+ *   different vault, loads them -> six refusals from nodes 5..20 render on a
+ *   vault that has exactly one node.
+ *
+ * It compounded from there: the adapter merged and saved the file back under
+ * ITS OWN vault's name, so the records ended up labelled with a vault they did
+ * not come from — and a provenance check that compares that label is
+ * structurally unable to detect it.
+ *
+ * A default that silently points at someone else's data is not a convenience.
+ * Refuse, and make the caller say which vault they mean.
+ */
+const VAULT = process.env.NEAR_VAULT_CONTRACT;
+if (!VAULT) {
+  console.error("FATAL: NEAR_VAULT_CONTRACT is not set.");
+  console.error("  There is deliberately no default. The previous one pointed at");
+  console.error("  v3.floatvault-12329.testnet and wrote ITS refusals into the shared");
+  console.error("  log, which then rendered on a different vault's dashboard.");
+  console.error("");
+  console.error("  NEAR_VAULT_CONTRACT=<vault> node scripts/scan-blocked.mjs [--from N]");
+  process.exit(2);
+}
+
+/**
+ * PER-VAULT PATH BY DEFAULT. One shared file for every vault is what let the
+ * contamination spread in the first place. Putting the vault id in the
+ * filename makes a cross-vault read impossible rather than merely detectable,
+ * which is the difference between a guard and a design that cannot go wrong.
+ */
+const STORE =
+  process.env.BLOCKED_LOG ?? `.demo/blocked-log.${VAULT.replace(/[^a-z0-9._-]/gi, "_")}.json`;
 
 const argv = process.argv.slice(2);
 const argOf = (name, dflt) => {

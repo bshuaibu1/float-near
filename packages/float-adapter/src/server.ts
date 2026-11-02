@@ -98,7 +98,18 @@ const env = {
   // restart — the file is small and this is a dashboard, not a hot path.
   relayLedger: process.env.RELAY_LEDGER ?? ".demo/relay-ledger.json",
   // Refusals recovered from chain by scripts/scan-blocked.mjs.
-  blockedLog: process.env.BLOCKED_LOG ?? ".demo/blocked-log.json",
+  //
+  // PER-VAULT PATH, and it MUST match the scanner's default or the two write
+  // and read different files while both look healthy — the scan reports
+  // refusals recorded, the dashboard shows none, and nothing says why.
+  //
+  // The old shared `.demo/blocked-log.json` is what let one vault's refusals
+  // render on another's dashboard: the scanner defaulted to a different vault
+  // entirely, wrote there, and the adapter read it. Putting the vault id in
+  // the filename makes that impossible rather than merely detectable.
+  blockedLog:
+    process.env.BLOCKED_LOG ??
+    `.demo/blocked-log.${(process.env.NEAR_VAULT_CONTRACT ?? "unset").replace(/[^a-z0-9._-]/gi, "_")}.json`,
   // Several agents, so the payment path can exercise the hierarchy the
   // dashboard draws. This is the file create-float writes.
   agentKeysPath: process.env.NEAR_VAULT_AGENT_KEYS ?? ".float/agent-keys.json",
