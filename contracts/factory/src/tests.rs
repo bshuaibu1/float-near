@@ -37,14 +37,18 @@ fn required() -> NearToken {
     NearToken::from_millinear(100)
 }
 
-/// The whole no-backend design rests on this being deterministic and injective.
+/// The whole no-backend design rests on this being DETERMINISTIC.
 ///
 /// A dashboard computes the vault id from the owner's account id client-side.
 /// NEAR has no RPC to list an account's sub-accounts, so if this were not
 /// derivable we would need a registry — which means stored state, which means a
 /// database holding something not recoverable from the chain.
+///
+/// This was named `..._so_the_mapping_stays_injective` while asserting a single
+/// mapping, which does not test injectivity — and the mapping is not injective.
+/// Renamed to claim only what it checks; the collision has its own test.
 #[test]
-fn derive_prefix_replaces_the_dot_so_the_mapping_stays_injective() {
+fn derive_prefix_replaces_the_dot_rather_than_truncating_at_it() {
     // `alice` would collide across every TLD and every parent: alice.near,
     // alice.testnet and alice.pool.near would all want the same vault.
     assert_eq!(derive_prefix("alice.near"), "alice-near");
@@ -290,4 +294,136 @@ fn create_vault_with_code_honours_the_kill_switch() {
     f.set_paused(true);
     testing_env!(fctx(alice(), NearToken::from_near(2)).build());
     let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients());
+}
+
+// ─── the `label` escape hatch, which had no tests at all ─────────────────────
+
+/// AN ARBITRARY LABEL LETS ANY CALLER SQUAT ANY OTHER USER'S VAULT ID.
+///
+/// `create_vault`'s own doc comment explains that taking the owner as a
+/// parameter would let an attacker "squat the derived id of an account they do
+/// not control, permanently denying that user the vault the dashboard will
+/// look for" — and then `label` hands over exactly that capability, because
+/// `begin` interpolates it verbatim with no check that it belongs to the
+/// caller.
+///
+/// It is worse than denial. The vault's `new` is called with
+/// `owner = predecessor`, so the squatter OWNS the vault sitting at the
+/// victim's expected address. A dashboard that resolves a user's vault by
+/// derivation — which is the entire no-backend design, and why `vault_id_for`
+/// is a public view — would show the victim an attacker-controlled vault and
+/// route their funds into it.
+///
+/// Unprivileged attacker, unprivileged victim, real capability delta.
+/// TWO DEFENCES, and this asserts which one fires.
+///
+/// `bob.near`'s prefix is `bob-near`, so the charset rule catches it — the
+/// hyphen is refused outright. Asserting only "alice did not get bob's id"
+/// would stay green if the charset rule were deleted, because rooting would
+/// still redirect it; and it would stay green if rooting were deleted, because
+/// the charset rule still refuses. A test that passes either way names neither.
+#[test]
+fn a_label_cannot_take_another_users_derived_vault_id() {
+    let f = ready();
+    testing_env!(fctx(alice(), NearToken::from_near(2)).build());
+
+    let bobs_prefix = derive_prefix("bob.near");
+    assert_eq!(bobs_prefix, "bob-near", "the victim's prefix holds a hyphen");
+
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f.begin(&Some(bobs_prefix), required())
+    }));
+    assert!(r.is_err(), "alice.near reached bob.near's derived id");
+}
+
+/// AND WHEN THE CHARSET RULE CANNOT HELP, rooting still has to.
+///
+/// A victim with a TOP-LEVEL id has no dot, so its derived prefix has no
+/// hyphen and passes the charset check cleanly. This is the case that proves
+/// rooting carries real weight rather than being belt-and-braces: delete the
+/// prefix rooting and this test goes red on its own.
+#[test]
+fn a_label_matching_a_top_level_victims_prefix_is_still_redirected() {
+    let f = ready();
+    testing_env!(fctx(alice(), NearToken::from_near(2)).build());
+
+    // A top-level account: no dot, so derive_prefix is the identity and the
+    // label passes [a-z0-9] with nothing to object to.
+    let victim = "bobnear";
+    assert_eq!(derive_prefix(victim), victim);
+
+    let (owner, vault) = f.begin(&Some(victim.to_string()), required());
+
+    assert_eq!(owner, alice());
+    assert_ne!(
+        vault.as_str(),
+        format!("{}.{}", victim, factory_id()),
+        "alice.near took the top-level account `bobnear`'s derived vault id"
+    );
+    assert_eq!(
+        vault.as_str(),
+        format!("alice-near-{}.{}", victim, factory_id()),
+        "the label must land under the caller's own prefix"
+    );
+}
+
+/// A LABEL MUST STAY INSIDE THE CALLER'S OWN NAMESPACE.
+///
+/// The positive half of the rule above: the hatch still has to work, and the
+/// id it produces has to be one only this caller could have asked for.
+#[test]
+fn a_label_lands_under_the_callers_own_prefix() {
+    let f = ready();
+    testing_env!(fctx(alice(), NearToken::from_near(2)).build());
+
+    let (owner, vault) = f.begin(&Some("two".to_string()), required());
+
+    assert_eq!(owner, alice());
+    assert_eq!(
+        vault.as_str(),
+        format!("{}-two.{}", derive_prefix("alice.near"), factory_id()),
+        "a label must be rooted in the caller's derived prefix"
+    );
+}
+
+/// A LABEL THE DERIVATION COULD NEVER PRODUCE MUST BE REFUSED.
+///
+/// Rooting the label in the caller's prefix is only sound if the label itself
+/// cannot smuggle more structure in. A label containing a hyphen lets the
+/// caller reach further: `alice.near` with label `near-bob-near` would build
+/// `alice-near-bob-near`, and if an account literally named `alice-near-bob`
+/// existed, its derived prefix would be reachable again.
+#[test]
+fn a_label_with_separators_is_refused() {
+    let f = ready();
+    testing_env!(fctx(alice(), NearToken::from_near(2)).build());
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f.begin(&Some("near-bob-near".to_string()), required())
+    }));
+    assert!(r.is_err(), "a label containing a hyphen must be refused");
+}
+
+/// THE DERIVATION IS NOT INJECTIVE, despite what its comment claims.
+///
+/// `derive_prefix` is documented as keeping the mapping INJECTIVE, and the
+/// test asserting that only ever checked a single mapping
+/// (`alice.near -> alice-near`), which no more proves injectivity than one
+/// passing case proves a guard's direction.
+///
+/// `replace('.', "-")` merges the dot into an alphabet that already contains
+/// the hyphen, so `a.b.testnet` and `a-b.testnet` — two different accounts —
+/// both land on `a-b-testnet`. Whoever creates first denies the other.
+///
+/// This is NOT fully fixable while ids stay human-readable: NEAR forbids
+/// consecutive separators, so there is no escape sequence available, and the
+/// only injective option is a hash prefix that gives up readability. Recorded
+/// here as a known, bounded limitation rather than left as a false claim.
+#[test]
+fn derive_prefix_collides_between_a_dot_and_a_hyphen() {
+    assert_eq!(
+        derive_prefix("a.b.testnet"),
+        derive_prefix("a-b.testnet"),
+        "if this ever stops being equal the derivation became injective — \
+         update the comment and reconsider whether `label` is still needed"
+    );
 }

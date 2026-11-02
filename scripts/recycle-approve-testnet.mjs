@@ -76,8 +76,32 @@ await new Promise((r) => setTimeout(r, 3000));
 const mid = await p.viewAccount({ accountId: A, blockQuery: { finality: "final" } });
 console.log(`  storage ${before.storage_usage} -> ${mid.storage_usage} B`);
 
+// SWEEP IF THE DELETE IS STILL REFUSED, which it was here.
+//
+// Shrinking the CODE does not remove the STATE. approve went 309,917 -> 10,330
+// bytes, of which 10,297 is leftover vault trie entries, and NEAR bounds
+// deletion on the TOTAL — so it refused again. The balance is free either way,
+// so sweep it rather than leaving 3 NEAR stranded behind a failed delete.
+//
+// reclaim-testnet-accounts.mjs already had this fallback. This script was
+// written without it and stopped at the first refusal, which is how 3.088
+// ended up sitting in an account nobody was going to look at again.
 console.log(`  deleting ${A}, balance to ${PARENT}…`);
-await acct.deleteAccount(PARENT);
+try {
+  await acct.deleteAccount(PARENT);
+  console.log("  deleted");
+} catch (e) {
+  console.log(`  delete refused: ${String(e.message).slice(0, 90)}`);
+  const keep = 2n * 10n ** 22n; // leave 0.02 so the account stays valid
+  const f = await free(A);
+  const send = f > keep ? f - keep : 0n;
+  if (send > 0n) {
+    await acct.transfer({ receiverId: PARENT, amount: send });
+    console.log(`  swept ${near(send)} instead (account kept, bricked)`);
+  } else {
+    console.log("  nothing to sweep");
+  }
+}
 
 // POLL TO AN EXPECTED VALUE. A read taken straight after a delete is a whole
 // transaction behind — this project has paid for that eleven times, including

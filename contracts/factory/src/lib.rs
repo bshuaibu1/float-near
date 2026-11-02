@@ -27,9 +27,20 @@ const GAS_FOR_REFUND: Gas = Gas::from_tgas(10);
 /// sub-accounts, so without a deterministic rule "show me my vault" would need
 /// stored state.
 ///
-/// Dots become hyphens so the mapping is INJECTIVE over accounts that contain
-/// a dot: `alice.near` -> `alice-near`, not `alice`, because `alice.near` and
-/// `alice.testnet` and `alice.pool.near` would all collapse to `alice`.
+/// Dots become hyphens rather than being truncated at: `alice.near` ->
+/// `alice-near`, not `alice`, because `alice.near` and `alice.testnet` and
+/// `alice.pool.near` would all collapse to `alice`.
+///
+/// THIS IS NOT INJECTIVE, and said so here for a while. `replace('.', "-")`
+/// merges the dot into an alphabet that already holds the hyphen, so
+/// `a.b.testnet` and `a-b.testnet` both land on `a-b-testnet` and whoever
+/// creates first denies the other. The test that claimed to cover injectivity
+/// asserted a single mapping, which proves nothing about it.
+///
+/// It is not fixable while ids stay human-readable: NEAR forbids consecutive
+/// separators, so no escape sequence is available, and the only injective
+/// alternative is a hash prefix that gives up readability. Bounded and
+/// recorded — see `derive_prefix_collides_between_a_dot_and_a_hyphen`.
 pub fn derive_prefix(owner: &str) -> String {
     owner.replace('.', "-")
 }
@@ -193,14 +204,52 @@ impl Factory {
             env::panic_str("DEPOSIT_TOO_SMALL: attach at least the required deposit");
         }
         let owner = env::predecessor_account_id();
-        let factory = env::current_account_id();
-        let vault = match label {
-            Some(l) => format!("{}.{}", l, factory).parse::<AccountId>().ok(),
-            None => vault_id(owner.as_str(), factory.as_str()),
-        };
-        match vault {
+        match self.resolve_vault(&owner, label) {
             Some(v) => (owner, v),
             None => env::panic_str("BAD_VAULT_ID: that owner has no legal derived vault id"),
+        }
+    }
+
+    /// The vault id this caller may ask for, labelled or not.
+    ///
+    /// A LABEL IS ROOTED IN THE CALLER'S OWN PREFIX, and restricted to
+    /// `[a-z0-9]`. Both halves are load-bearing.
+    ///
+    /// It used to be interpolated verbatim — `format!("{}.{}", label, factory)`
+    /// — which made it a universal squatting tool: any caller could pass
+    /// `bob-near` and create a vault at exactly the id `bob.near` derives, with
+    /// themselves as owner. Since the whole no-backend design resolves a user's
+    /// vault BY DERIVATION (that is what `vault_id_for` is for), the victim
+    /// would be shown an attacker-owned vault at their own address. Proven in
+    /// `a_label_cannot_take_another_users_derived_vault_id`.
+    ///
+    /// Rooting alone is not enough, hence the charset. A label may not contain
+    /// a separator, because `alice.near` labelling itself `near-bob-near` would
+    /// rebuild `alice-near-bob-near` and reach outside its namespace again if an
+    /// account named `alice-near-bob` existed.
+    ///
+    /// RESIDUAL, stated rather than papered over: a caller can still reach the
+    /// derived prefix of an account whose id is literally
+    /// `<their-prefix>-<label>` as a TOP-LEVEL account. Mainnet TLAs are
+    /// registrar-gated and long, so this is contrived rather than reachable, but
+    /// it is not zero. Closing it completely means not trusting derivation for
+    /// identity at all — storing `owner -> vault` in factory state and having
+    /// the dashboard read that instead.
+    fn resolve_vault(&self, owner: &AccountId, label: &Option<String>) -> Option<AccountId> {
+        let factory = env::current_account_id();
+        match label {
+            None => vault_id(owner.as_str(), factory.as_str()),
+            Some(l) => {
+                let ok = !l.is_empty()
+                    && l.len() <= 16
+                    && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+                if !ok {
+                    env::panic_str("BAD_LABEL: a label must be 1-16 characters of a-z or 0-9");
+                }
+                format!("{}-{}.{}", derive_prefix(owner.as_str()), l, factory)
+                    .parse()
+                    .ok()
+            }
         }
     }
 
@@ -218,28 +267,15 @@ impl Factory {
         root_limits: near_sdk::serde_json::Value,
         root_recipients: near_sdk::serde_json::Value,
     ) -> Promise {
-        if self.paused {
-            env::panic_str("PAUSED: vault creation is disabled");
-        }
+        // `begin`, NOT a second copy of its checks. This path used to duplicate
+        // the pause gate, the deposit gate and the label handling inline —
+        // which is precisely the drift `begin`'s own doc comment warns about,
+        // and it is how the label fix would have landed on one path only. The
+        // floor stays a parameter because it differs: fixed here (a global
+        // reference costs a flat 214 bytes) and scaled by the code argument in
+        // `create_vault_with_code`.
         let deposit = env::attached_deposit();
-        if deposit < self.required_deposit {
-            env::panic_str("DEPOSIT_TOO_SMALL: attach at least the required deposit");
-        }
-        let owner = env::predecessor_account_id();
-        let factory = env::current_account_id();
-
-        // `label` exists as an escape hatch, not as the normal path. The
-        // derived id can in principle be squatted by whoever owns a top-level
-        // account matching the hyphenated form, and without an override that
-        // user would have no way to ever get a vault.
-        let vault = match &label {
-            Some(l) => format!("{}.{}", l, factory).parse::<AccountId>().ok(),
-            None => vault_id(owner.as_str(), factory.as_str()),
-        };
-        let vault = match vault {
-            Some(v) => v,
-            None => env::panic_str("BAD_VAULT_ID: that owner has no legal derived vault id"),
-        };
+        let (owner, vault) = self.begin(&label, self.required_deposit);
 
         // ONE BATCH, so a partial create is impossible: if `new` panics, NEAR
         // reverts the account creation with it rather than leaving an
