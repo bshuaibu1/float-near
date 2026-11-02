@@ -61,6 +61,9 @@ createServer((req, res) => {
   console.log(`\n  create page   http://127.0.0.1:${PORT}/`);
   console.log(`  contract      ${bytes} bytes (${(bytes / 1024).toFixed(0)} KB), served from`);
   console.log(`                packages/create-float/res/vault.wasm`);
-  console.log(`\n  testnet:  http://127.0.0.1:${PORT}/?network=testnet`);
+  console.log(`\n  testnet:  http://127.0.0.1:${PORT}/?network=testnet&factory=<factory-account>`);
+  console.log(`\n  The factory is REQUIRED. A wallet refuses a DeployContract action`);
+  console.log(`  from a dApp (measured in Meteor), so the 294 KB contract travels as`);
+  console.log(`  an ARGUMENT to an ordinary method call instead.`);
   console.log(`\n  Ctrl-C to stop.\n`);
 });

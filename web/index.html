@@ -12,23 +12,33 @@
     -->
     <link rel="stylesheet" href="https://esm.sh/@near-wallet-selector/modal-ui@8.9.13/styles.css" />
     <!--
-      THE MINIMAL PAGE, built to answer ONE question: will a real wallet sign a
-      301 KB transaction?
+      THE CREATE PAGE. One plain FunctionCall to a FACTORY.
 
-      Everything else about the browser flow — the CLI handoff, polling the
-      chain, owner actions — is already designed and costs nothing to build.
-      This is the only part no amount of code can settle, because it depends on
-      a wallet's own UI. So it ships first, alone.
+      It did NOT start this way. The first version built the transaction
+      directly — CreateAccount + Transfer + DeployContract + new() — which is
+      proven to work on chain (validate-one-tx-create-testnet.mjs, 9/9) and
+      which a real wallet then refused:
 
-      NO BACKEND, deliberately. The page reads its intent from the URL, builds
-      the transaction client-side, and the wallet submits it. The CLI learns the
-      outcome by polling the CHAIN, not us. A user onboarding during an outage
-      still gets a vault.
+        Contract deployment blocked. This app is trying to put contract code on
+        your account... Meteor blocks this for apps.
 
-      The transaction is the one proven on testnet by
-      scripts/validate-one-tx-create-testnet.mjs (9/9): CreateAccount +
-      Transfer + DeployContract + new(). Every action is in wallet-selector's
-      LEGACY union, so no NEP-591 type is involved.
+      Two things came out of that, and the second is the design:
+
+        SIZE WAS NEVER THE PROBLEM. Meteor rendered the 294 KB transaction
+        cleanly — amount, From, To, fees, all correct. Every worry about
+        max_transaction_size was misplaced.
+
+        ACTION TYPE IS. DeployContract from a dApp is refused by policy, and
+        blanket: our deploy targeted a NEW sub-account and was blocked anyway.
+
+      So the contract travels as an ARGUMENT to an ordinary method call, which
+      no wallet has a policy about, and the deploy happens inside the factory.
+      Computed before building: ~74 TGas of 300, args 25.5% of the transaction
+      limit.
+
+      NO BACKEND, deliberately. The page reads its intent from the URL and the
+      wallet submits the call. The CLI learns the outcome by polling the CHAIN,
+      not us — so a user onboarding during an outage still gets a vault.
 
       Visual language lifted from the Solana Float link page
       (float-dashboard/app/link/page.tsx) so the two products look related.
@@ -99,6 +109,7 @@
         <div id="plan" class="hide">
           <div class="row"><span>owner</span><span id="p-owner"></span></div>
           <div class="row"><span>vault</span><span id="p-vault"></span></div>
+          <div class="row"><span>via factory</span><span id="p-factory"></span></div>
           <div class="row"><span>network</span><span id="p-net"></span></div>
           <div class="row"><span>contract</span><span id="p-size"></span></div>
           <div class="row"><span>daily limit</span><span id="p-daily"></span></div>
@@ -169,11 +180,33 @@
       const PERTX = q.get("pertx") ?? (NETWORK === "mainnet" ? "0.51" : "10");
       const PREFIX = q.get("prefix") ?? "float";
 
+      const FACTORY = q.get("factory");
+
       const units = (human) => {
         const [i, f = ""] = String(human).split(".");
         return BigInt(i + (f + "0".repeat(DECIMALS)).slice(0, DECIMALS));
       };
       const near = (y) => (Number(y) / 1e24).toFixed(3);
+
+      /**
+       * base64 for a 294 KB array.
+       *
+       * `btoa(String.fromCharCode(...bytes))` is the usual one-liner and it
+       * throws "Maximum call stack size exceeded" well below this size —
+       * spreading 300,000 arguments into a function call is not a thing JS
+       * will do. Chunked, so size is not a cliff.
+       */
+      function b64(bytes) {
+        let s = "";
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+        }
+        return btoa(s);
+      }
+
+      /** The factory's own derivation, mirrored. Must agree byte for byte. */
+      const derivePrefix = (owner) => owner.replaceAll(".", "-");
 
       let selector, modal, wasm;
 
@@ -285,15 +318,30 @@
         const who = accountId();
         if (!who) return show("connect");
 
-        const vault = `${PREFIX}.${who}`;
-        // The deposit: the contract's storage stake plus headroom for the root
-        // node's state. Derived from the real artifact, never hardcoded — the
-        // figure that was hardcoded is the one that went stale twice.
+        // THE FACTORY CREATES THE VAULT, not this page.
+        //
+        // A wallet refuses a DeployContract ACTION from a dApp — measured in
+        // Meteor, Approve greyed out, blanket policy even when the target is a
+        // new sub-account. It has no policy about an ordinary method call, so
+        // the contract travels as an ARGUMENT and the deploy happens inside the
+        // factory.
+        //
+        // The id therefore comes from the FACTORY's derivation, not ours:
+        // alice.testnet -> alice-testnet.<factory>. Dots become hyphens so the
+        // mapping stays injective — alice.near and alice.testnet must not
+        // collapse to the same vault.
+        const vault = FACTORY ? `${derivePrefix(who)}.${FACTORY}` : `${PREFIX}.${who}`;
+
+        // The deposit, matching the factory's own floor: the contract's storage
+        // stake plus headroom for the root node's state. Derived from the real
+        // artifact, never hardcoded — the figures this project hardcoded are
+        // the two that went stale and shipped wrong.
         const stake = BigInt(wasm.length) * 10n ** 19n;
         const total = stake + 36n * 10n ** 22n;
 
         $("p-owner").textContent = who;
         $("p-vault").textContent = vault;
+        $("p-factory").textContent = FACTORY ?? "— not configured —";
         $("p-net").textContent = NETWORK;
         $("p-size").textContent = `${(wasm.length / 1024).toFixed(0)} KB`;
         $("p-daily").textContent = `${DAILY} / day, ${PERTX} / tx`;
@@ -362,41 +410,51 @@
         show("signing");
         try {
           const wallet = await selector.wallet();
-          // EVERY ACTION HERE IS IN WALLET-SELECTOR'S LEGACY UNION. That is the
-          // point: the factory design existed to avoid UseGlobalContract, a
-          // NEP-591 type that nothing proves a wallet will serialise. None is
-          // used, so this should work in any wallet that works at all.
+          const rootLimits = [
+            {
+              token: TOKEN,
+              daily_cap: units(DAILY).toString(),
+              per_tx_cap: units(PERTX).toString(),
+            },
+          ];
+          // The owner, so the vault can pay SOMEONE the moment it exists. A
+          // root with null inherits from its ancestor, the root has none, and
+          // every payment would come back NO_RECIPIENTS_SET.
+          const rootRecipients = [who];
+
+          if (!FACTORY) {
+            throw new Error(
+              "No factory configured.\n\nAdd ?factory=<account> to the URL. " +
+                "Creating a vault directly needs a DeployContract action, which " +
+                "wallets refuse from a dApp.",
+            );
+          }
+
+          // ONE PLAIN FunctionCall. No CreateAccount, no DeployContract, no
+          // NEP-591 action — nothing a wallet has a policy about. The 294 KB
+          // contract travels as a base64 ARGUMENT, which Meteor already renders
+          // without complaint at this size.
           //
-          // No AddKey: a keyless vault cannot be drained by a stolen key, and
-          // the owner controls it through predecessor_account_id alone.
+          // 300 TGas: the computed cost is ~74 (3 to deliver the args, ~31 for
+          // the batch, ~30 for the vault's new()), but the contract-side cost of
+          // near-sdk decoding a 294 KB Base64VecU8 is the one thing a fee table
+          // cannot predict. Unused gas is refunded, so the only cost of asking
+          // for the maximum is a larger reservation held during the call.
           await wallet.signAndSendTransaction({
-            receiverId: vault,
+            receiverId: FACTORY,
             actions: [
-              { type: "CreateAccount" },
-              { type: "Transfer", params: { deposit: total.toString() } },
-              { type: "DeployContract", params: { code: wasm } },
               {
                 type: "FunctionCall",
                 params: {
-                  methodName: "new",
+                  methodName: "create_vault_with_code",
                   args: {
-                    owner: who,
-                    network: NETWORK,
-                    strict_allocation: false,
-                    root_limits: [
-                      {
-                        token: TOKEN,
-                        daily_cap: units(DAILY).toString(),
-                        per_tx_cap: units(PERTX).toString(),
-                      },
-                    ],
-                    // The owner, so the vault can pay SOMEONE immediately. A
-                    // root with null inherits from its ancestor, and the root
-                    // has none — every payment would be NO_RECIPIENTS_SET.
-                    root_recipients: [who],
+                    code: b64(wasm),
+                    label: null,
+                    root_limits: rootLimits,
+                    root_recipients: rootRecipients,
                   },
-                  gas: "60000000000000",
-                  deposit: "0",
+                  gas: "300000000000000",
+                  deposit: total.toString(),
                 },
               },
             ],
