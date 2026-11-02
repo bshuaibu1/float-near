@@ -126,6 +126,7 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_plan_set_recipients",
         "vault_request",
         "vault_tree",
+        "vault_create",
       ].sort(),
     );
   });
@@ -154,9 +155,21 @@ describe("the MCP server starts and registers its tools", () => {
       "vault_config",
       "vault_pending_approval",
     ]);
+    // ONBOARDING: reads the factory and returns a URL for the USER's wallet to
+    // approve. Holds no key and signs nothing, so it sits on the read side of
+    // the boundary — but it is listed separately rather than folded into READS
+    // because it is the one tool that talks to someone with no vault, and that
+    // deserves to be visible here rather than hidden in a set named "reads".
+    const ONBOARDING = new Set(["vault_create"]);
     const unclassified = tools
       .map((t) => t.name)
-      .filter((n) => n !== "vault_pay" && !n.startsWith("vault_plan_") && !READS.has(n));
+      .filter(
+        (n) =>
+          n !== "vault_pay" &&
+          !n.startsWith("vault_plan_") &&
+          !READS.has(n) &&
+          !ONBOARDING.has(n),
+      );
     expect(unclassified).toEqual([]);
 
     // And the signer is present, exactly once.

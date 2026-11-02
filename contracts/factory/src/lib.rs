@@ -83,6 +83,25 @@ fn new_args(
     .into_bytes()
 }
 
+/// Everything a client needs to build a create call, in one read.
+///
+/// `vault_id_for` answers WHERE a vault goes. This answers WHAT to attach and
+/// WHETHER creation is open at all — the other half of the question, which a
+/// caller previously had to guess. Guessing low is not a clean failure:
+/// `CreateAccount` succeeds and the vault lands under its own storage
+/// requirement, bricking on the next write.
+///
+/// Every field is already public in contract state; this exposes no secret, it
+/// just saves a client from parsing the trie.
+#[near(serializers = [json])]
+pub struct FactoryConfig {
+    pub owner: AccountId,
+    pub code_hash: Base58CryptoHash,
+    pub network: String,
+    pub required_deposit: NearToken,
+    pub paused: bool,
+}
+
 /// NO REGISTRY, DELIBERATELY. An `owner -> vault` map was scaffolded here and
 /// removed: the id is derivable, so a map would be redundant state whose
 /// storage the FACTORY pays for and which grows with every vault created. The
@@ -365,6 +384,18 @@ impl Factory {
     /// that can drift from the contract's.
     pub fn vault_id_for(&self, owner: AccountId) -> Option<AccountId> {
         vault_id(owner.as_str(), env::current_account_id().as_str())
+    }
+
+    /// The configuration a client needs to build a create call. See
+    /// [`FactoryConfig`].
+    pub fn get_config(&self) -> FactoryConfig {
+        FactoryConfig {
+            owner: self.owner.clone(),
+            code_hash: self.code_hash.into(),
+            network: self.network.clone(),
+            required_deposit: self.required_deposit,
+            paused: self.paused,
+        }
     }
 
     /// Refund the caller if the batch failed. Returns whether it succeeded.

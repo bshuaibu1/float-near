@@ -10,13 +10,27 @@
  *   PLAN tools      emit UNSIGNED payloads for the human's wallet; this
  *                   server never signs anything that changes policy
  *
+ *   CREATE tool     needs no key and no vault. It reads the factory, works out
+ *                   the address and the cost, and hands back a URL the user
+ *                   approves in their own wallet.
+ *
  * Configure with:
- *   NEAR_VAULT_CONTRACT        required
+ *   NEAR_VAULT_CONTRACT        required by every tool EXCEPT vault_create
  *   NEAR_VAULT_RPC_URL         default https://test.rpc.fastnear.com
  *   NEAR_VAULT_TOKEN           default token for pay/budget calls
  *   NEAR_VAULT_TOKEN_DECIMALS  default 6
  *   NEAR_VAULT_AGENT_ID        only needed to PAY
  *   NEAR_VAULT_AGENT_KEY       only needed to PAY. The restricted key.
+ *   NEAR_VAULT_NETWORK         mainnet | testnet, default testnet
+ *   NEAR_VAULT_FACTORY         only needed to CREATE. No mainnet default
+ *                              exists on purpose — guessing it wrong would
+ *                              send a real deposit somewhere unverified.
+ *   NEAR_VAULT_APP_URL         only needed to CREATE, default
+ *                              https://app.usefloat.xyz
+ *
+ * A user with NO vault can therefore run this server with nothing configured,
+ * call `vault_create`, and be onboarded — which is the point. Every other tool
+ * reports that NEAR_VAULT_CONTRACT is unset rather than guessing one.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -40,7 +54,8 @@ import {
   planApprovePayment,
   planRejectPayment,
 } from "./payloads.js";
-import { DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
+import { accountExists, DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
+import { buildCreatePlan, FACTORY_BY_NETWORK } from "./create.js";
 import { buildRoute, sendRequestPayment, type RouteArg } from "./sign.js";
 import { getQuote, signBinding, toBase64 } from "./quote.js";
 
@@ -56,6 +71,10 @@ const cfg = {
   agentId: process.env.NEAR_VAULT_AGENT_ID,
   agentKey: process.env.NEAR_VAULT_AGENT_KEY,
   network: process.env.NEAR_VAULT_NETWORK ?? "testnet",
+  // Onboarding only. Both have safe defaults and neither is needed by any
+  // tool that touches an existing vault.
+  factory: process.env.NEAR_VAULT_FACTORY,
+  appUrl: process.env.NEAR_VAULT_APP_URL ?? "https://app.usefloat.xyz",
 };
 
 function requireVault(): string {
@@ -163,6 +182,73 @@ server.tool(
   "Read vault config: owner, paused, strict-vs-overcommit allocation, node count, and clock mode. No key required.",
   {},
   async () => json(await viewFunction(cfg.rpcUrl, requireVault(), "get_config", {})),
+);
+
+// ------------------------------------------------------------- onboarding
+
+server.tool(
+  "vault_create",
+  "For a user who has NO vault yet. Works out where their vault will live, exactly what it costs to create, and returns a URL they approve in their own wallet. Needs no key and no existing vault — this is the only tool that works before NEAR_VAULT_CONTRACT is set. This server never signs it.",
+  {
+    owner: z.string().describe("the account that will own the vault, e.g. alice.near"),
+    network: z.enum(["mainnet", "testnet"]).optional(),
+    factory: z
+      .string()
+      .optional()
+      .describe("override the factory; defaults to the known one for the network"),
+  },
+  async ({ owner, network, factory }) => {
+    const net = network ?? cfg.network;
+    const fac = factory ?? cfg.factory ?? FACTORY_BY_NETWORK[net];
+    if (!fac) {
+      // DELIBERATELY NOT A GUESS. A wrong mainnet default does not fail
+      // safely — it takes a real signature for a real deposit into an account
+      // nobody verified.
+      return text(
+        `No factory is configured for ${net}. Pass one as \`factory\`, or set ` +
+          `NEAR_VAULT_FACTORY. There is deliberately no built-in mainnet default: ` +
+          `guessing it wrong would send a real deposit somewhere unverified.`,
+      );
+    }
+    const rpc = cfg.rpcUrl;
+
+    const [config, vaultId] = await Promise.all([
+      viewFunction<{ required_deposit: string; paused: boolean; network: string }>(
+        rpc,
+        fac,
+        "get_config",
+        {},
+      ),
+      // The FACTORY's own derivation, never a copy of it.
+      viewFunction<string | null>(rpc, fac, "vault_id_for", { owner }),
+    ]);
+
+    const extra: string[] = [];
+    if (config.network !== net) {
+      extra.push(
+        `The factory reports network "${config.network}" but you asked for ${net}; ` +
+          `the vault will be initialised with "${config.network}".`,
+      );
+    }
+
+    const exists = vaultId ? await accountExists(rpc, vaultId) : false;
+
+    try {
+      const plan = buildCreatePlan({
+        owner,
+        vaultId,
+        factory: fac,
+        network: net,
+        requiredDepositYocto: String(config.required_deposit),
+        paused: config.paused,
+        appUrl: cfg.appUrl,
+        exists,
+      });
+      return json({ ...plan, warnings: [...extra, ...plan.warnings] });
+    } catch (e) {
+      return text(String((e as Error).message));
+    }
+  },
 );
 
 // ------------------------------------------------------------------- pay

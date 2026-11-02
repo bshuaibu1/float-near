@@ -88,6 +88,42 @@ export async function viewFunction<T = unknown>(
   return decodeViewResult<T>(json.result ?? ({} as RawViewResponse));
 }
 
+/**
+ * Does this account exist on chain?
+ *
+ * Used before offering to CREATE a vault at a derived address. Getting this
+ * wrong is not cosmetic: the create batch's first action is `CreateAccount`,
+ * so offering an address that is already taken sends the user to a wallet,
+ * takes their signature, and fails only after they have committed.
+ *
+ * Distinguishes "does not exist" from "could not tell". An RPC timeout that
+ * returned `false` would read as a free address, so ONLY the specific
+ * UNKNOWN_ACCOUNT answer counts as absent and anything else throws.
+ */
+export async function accountExists(rpcUrl: string, accountId: string): Promise<boolean> {
+  const r = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "near-vault-mcp",
+      method: "query",
+      params: { request_type: "view_account", finality: "final", account_id: accountId },
+    }),
+  });
+  if (!r.ok) throw new Error(`RPC ${r.status} checking whether ${accountId} exists`);
+  const j = (await r.json()) as {
+    result?: unknown;
+    error?: { cause?: { name?: string }; message?: string };
+  };
+  if (j.result) return true;
+  const name = j.error?.cause?.name;
+  if (name === "UNKNOWN_ACCOUNT") return false;
+  throw new Error(
+    `could not determine whether ${accountId} exists: ${name ?? j.error?.message ?? "unknown error"}`,
+  );
+}
+
 /** One access key as NEAR reports it. */
 export interface AccessKeyInfo {
   public_key: string;

@@ -427,3 +427,38 @@ fn derive_prefix_collides_between_a_dot_and_a_hyphen() {
          update the comment and reconsider whether `label` is still needed"
     );
 }
+
+// ─── get_config ──────────────────────────────────────────────────────────────
+
+/// A CLIENT CANNOT COMPUTE THE DEPOSIT WITHOUT READING `required_deposit`.
+///
+/// The factory exposed `vault_id_for` — so the derivation has exactly one
+/// implementation and no client has to copy it — but nothing for the other
+/// half of the question. A caller that knows WHERE its vault goes still has to
+/// guess WHAT to attach, and the floor is `required_deposit + bytes * 1e19`.
+/// Guessing low is not a clean failure: CreateAccount succeeds and the vault
+/// lands below its own storage requirement, which bricks it on the next write.
+///
+/// Every field here is already public on chain — this is a convenience, not a
+/// disclosure. `paused` matters too: a client should be able to say "creation
+/// is disabled" before taking a user through a wallet signature.
+#[test]
+fn get_config_reports_everything_a_client_needs_to_build_a_create_call() {
+    let f = ready();
+    let c = f.get_config();
+
+    assert_eq!(c.owner, fowner());
+    assert_eq!(c.network, "mainnet");
+    assert_eq!(c.required_deposit, required());
+    assert!(!c.paused);
+    assert_eq!(c.code_hash, hash(), "the base58 form round-trips");
+}
+
+/// The kill switch has to be VISIBLE, not just effective.
+#[test]
+fn get_config_reflects_the_kill_switch() {
+    let mut f = ready();
+    testing_env!(fctx(fowner(), NearToken::from_yoctonear(1)).build());
+    f.set_paused(true);
+    assert!(f.get_config().paused);
+}
