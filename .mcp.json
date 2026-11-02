@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "float-near": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:\\Users\\BASHIR\\Documents\\near-vault\\packages\\mcp\\dist\\server.js"
+      ],
+      "env": {
+        "NEAR_VAULT_CONTRACT": "work12-testnet.fac.floatv4.testnet",
+        "NEAR_VAULT_NETWORK": "testnet",
+        "NEAR_VAULT_RPC_URL": "https://test.rpc.fastnear.com",
+        "NEAR_VAULT_TOKEN_DECIMALS": "6",
+        "NEAR_VAULT_FACTORY": "fac.floatv4.testnet",
+        "NEAR_VAULT_APP_URL": "http://127.0.0.1:8787",
+        "NEAR_VAULT_TOKEN": "usdc.fakes.testnet"
+      }
+    }
+  }
+}

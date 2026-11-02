@@ -1,28 +1,34 @@
 #!/usr/bin/env node
 /**
- * Print the exact `claude mcp add-json` command, with the path verified.
+ * Emit the MCP server config, verified rather than guessed.
  *
- * WHY A SCRIPT AND NOT A COMMAND IN A MESSAGE.
+ * FOUR ATTEMPTS FAILED BEFORE THIS, and the reasons are all Windows-shell
+ * specific rather than anything wrong with the server:
  *
- * Two separate things went wrong trying to hand this over by hand:
+ *   claude mcp add ... -- node <path>
+ *     -> "missing required argument 'commandOrUrl'". PowerShell's `claude.ps1`
+ *        wrapper does not forward the `--` separator.
  *
- *   1. `claude mcp add ... -- node <path>` FAILS in PowerShell with
- *      "missing required argument 'commandOrUrl'". PowerShell consumes the
- *      `--` separator, so commander never sees the command. `add-json` takes
- *      the whole server definition as one JSON argument and needs no
- *      separator, which sidesteps it entirely.
+ *   claude mcp add-json <name> '{...}'
+ *     -> "Invalid configuration: : Invalid input". PowerShell strips the outer
+ *        quotes and interprets backslash sequences in the Windows path BEFORE
+ *        the CLI parses the JSON, so malformed JSON arrives. Adding
+ *        `"type":"stdio"` changed nothing, because the shape was never the
+ *        problem.
  *
- *   2. Generating that JSON through `node -e` inside a shell mangled every
- *      backslash in the Windows path — it printed
- *      `C:UsersBASHIRDocuments\near-vault...`, a path that does not exist, in
- *      a command that would have registered a server which could never start.
+ *   claude mcp add --% ...
+ *     -> "unknown option '--%'". The stop-parsing token only applies to native
+ *        executables; `claude` here is a PowerShell SCRIPT, so `--%` was passed
+ *        through as a literal argument.
  *
- * So the path is built with `path.resolve` from this file's own location, and
- * asserted to EXIST before anything is printed. A command that cannot work is
- * not printed at all.
+ * So this writes a `.mcp.json` BODY to a plain text file for the user to copy,
+ * which avoids every shell-quoting layer. Confirmed against the Claude Code
+ * docs: `.mcp.json` takes `mcpServers.<name>.{type,command,args,env}`, and
+ * RELATIVE PATHS ARE NOT SUPPORTED in `args` — they are handed straight to the
+ * OS process launcher — so the path is absolute and asserted to exist.
  */
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, join } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const SERVER = resolve(ROOT, "packages", "mcp", "dist", "server.js");
@@ -33,8 +39,8 @@ if (!existsSync(SERVER)) {
   process.exit(1);
 }
 
-const VAULT = process.env.VAULT ?? "work12-testnet.fac.floatv4.testnet";
 const NETWORK = process.env.NETWORK ?? "testnet";
+const VAULT = process.env.VAULT ?? "work12-testnet.fac.floatv4.testnet";
 const FACTORY = process.env.FACTORY ?? "fac.floatv4.testnet";
 const RPC =
   process.env.RPC ??
@@ -52,22 +58,35 @@ const env = {
 };
 if (TOKEN) env.NEAR_VAULT_TOKEN = TOKEN;
 
-// No agent key. `vault_pay` refuses without one, which is correct until a
-// virtual agent is actually bound — and a key does not belong in a shell
-// command that lands in terminal history either way.
-const json = JSON.stringify({ command: "node", args: [SERVER], env });
+// No agent key: `vault_pay` correctly refuses until a virtual agent is bound,
+// and a private key does not belong in a committed file regardless.
+const body = {
+  mcpServers: {
+    "float-near": {
+      type: "stdio",
+      command: "node",
+      args: [SERVER],
+      env,
+    },
+  },
+};
 
-// PowerShell single-quoting is literal, so the one character that would break
-// it is a single quote. Check rather than assume.
-if (json.includes("'")) {
-  console.error("FATAL: the JSON contains a single quote; PowerShell quoting would break.");
-  process.exit(1);
-}
-JSON.parse(json); // must round-trip
+const text = `${JSON.stringify(body, null, 2)}\n`;
+JSON.parse(text); // must round-trip
+
+mkdirSync(join(ROOT, ".demo"), { recursive: true });
+const out = join(ROOT, ".demo", "mcp-json-to-save.txt");
+writeFileSync(out, text, "utf8");
 
 console.log(`\n  server   ${SERVER}`);
 console.log(`  vault    ${VAULT}`);
-console.log(`  network  ${NETWORK}\n`);
-console.log(`Run this in PowerShell:\n`);
-console.log(`claude mcp add-json float-near --scope user '${json}'`);
-console.log(`\nThen start a NEW Claude session and type /mcp\n`);
+console.log(`  network  ${NETWORK}`);
+console.log(`\n  Written to: ${out}\n`);
+console.log(`Save this as  .mcp.json  in the repo root:\n`);
+console.log(text);
+console.log(`PowerShell one-liner to do that:\n`);
+console.log(`  Copy-Item .demo\\mcp-json-to-save.txt .mcp.json`);
+console.log(`\nThen start a NEW Claude session. It will ask you to approve the`);
+console.log(`project MCP server; say yes, then /mcp shows float-near.\n`);
+console.log(`Alternative, if you would rather it be USER scope (every project):`);
+console.log(`  put the same "mcpServers" block into  ${process.env.USERPROFILE ?? "~"}\\.claude.json\n`);
