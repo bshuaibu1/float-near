@@ -58,8 +58,34 @@ const env = {
 };
 if (TOKEN) env.NEAR_VAULT_TOKEN = TOKEN;
 
-// No agent key: `vault_pay` correctly refuses until a virtual agent is bound,
-// and a private key does not belong in a committed file regardless.
+// THE AGENT KEY, if this vault has one bound.
+//
+// Without it `vault_pay` refuses, which is correct but means the server can
+// read and plan and never spend. With it, paying works from inside the client.
+//
+// Safe to write here because BOTH ends are gitignored: `.demo/` (line 21) and
+// `.mcp.json` itself (added after discovering it was tracked). It is never
+// PRINTED — the console output below redacts it. This repo carries a scar from
+// a CLI that echoed a private key into a terminal and a chat transcript.
+const KEYS = join(ROOT, ".float", "agent-keys.json");
+let agent = null;
+if (existsSync(KEYS)) {
+  const raw = JSON.parse(readFileSync(KEYS, "utf8"));
+  const list = Array.isArray(raw) ? raw : (raw.agents ?? raw.keys ?? []);
+  const hit = (Array.isArray(list) ? list : []).find(
+    (a) => a?.vault === VAULT || a?.vaultId === VAULT || a?.contractId === VAULT,
+  );
+  const secret = hit?.secret ?? hit?.privateKey ?? hit?.private_key ?? hit?.secretKey;
+  if (typeof secret === "string" && secret.startsWith("ed25519:")) {
+    // The agent id is the VAULT. That is what "virtual agent" means: there is
+    // no separate account, and the contract resolves the node from the signing
+    // key via `signer_account_pk()`.
+    env.NEAR_VAULT_AGENT_ID = VAULT;
+    env.NEAR_VAULT_AGENT_KEY = secret;
+    agent = hit?.publicKey ?? hit?.public_key ?? "(public key not recorded)";
+  }
+}
+
 const body = {
   mcpServers: {
     "float-near": {
@@ -74,6 +100,14 @@ const body = {
 const text = `${JSON.stringify(body, null, 2)}\n`;
 JSON.parse(text); // must round-trip
 
+// Redacted copy for the console. Printing the real one would put a private key
+// in the terminal scrollback and in any transcript of this session.
+const shown = JSON.parse(text);
+if (shown.mcpServers["float-near"].env.NEAR_VAULT_AGENT_KEY) {
+  shown.mcpServers["float-near"].env.NEAR_VAULT_AGENT_KEY = "<redacted — written to the file>";
+}
+const shownText = `${JSON.stringify(shown, null, 2)}\n`;
+
 mkdirSync(join(ROOT, ".demo"), { recursive: true });
 const out = join(ROOT, ".demo", "mcp-json-to-save.txt");
 writeFileSync(out, text, "utf8");
@@ -81,9 +115,10 @@ writeFileSync(out, text, "utf8");
 console.log(`\n  server   ${SERVER}`);
 console.log(`  vault    ${VAULT}`);
 console.log(`  network  ${NETWORK}`);
+console.log(`  agent    ${agent ?? "none bound — vault_pay will refuse, reads and plans still work"}`);
 console.log(`\n  Written to: ${out}\n`);
 console.log(`Save this as  .mcp.json  in the repo root:\n`);
-console.log(text);
+console.log(shownText);
 console.log(`PowerShell one-liner to do that:\n`);
 console.log(`  Copy-Item .demo\\mcp-json-to-save.txt .mcp.json`);
 console.log(`\nThen start a NEW Claude session. It will ask you to approve the`);
