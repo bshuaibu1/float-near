@@ -156,6 +156,11 @@ if (!env.vault || !env.token) {
 const cfg: AdapterConfig = {
   token: env.token,
   decimals: env.decimals,
+  // VIRTUAL AGENTS LIVE HERE. Their keys are NEP-611 gas keys on the vault
+  // itself rather than on a sub-account, so enumerating them needs the vault
+  // id. Without it `getAgentKeys` degrades to account-bound agents only —
+  // which, now that sub-accounts are retired, is an empty list.
+  vault: env.vault,
   blockedRing: [],
   maxBlocked: 50,
 };

@@ -11,10 +11,23 @@ const border = { border: "1px solid #EAEAEA" };
  *
  * The Solana-era page listed a FLOAT_KEY API secret per agent, with a reveal
  * button, a copy-secret flow, and a "run npx @usefloat/cli install" empty
- * state. None of it applies: an agent here is a NEAR sub-account whose
- * authority is a FUNCTION-CALL ACCESS KEY on chain. The public half is public,
- * and the private half must never reach a browser — so there is deliberately
- * nothing to reveal.
+ * state. None of it applies: an agent's authority here is an ACCESS KEY on
+ * chain. The public half is public, and the private half must never reach a
+ * browser — so there is deliberately nothing to reveal.
+ *
+ * TWO KINDS, and this page listed only the first for a while:
+ *
+ *   ACCOUNT   `bind_agent` binds an existing account; its keys live there.
+ *   VIRTUAL   `bind_virtual_agent` binds a public key to a node, and the key
+ *             is a NEP-611 GAS KEY on the vault itself — no sub-account at
+ *             all. This is the only kind new vaults create, because the old
+ *             `create_agent_account` funded sub-accounts that nobody could
+ *             ever empty (10.7752 NEAR is stranded across 18 of them).
+ *
+ * Because the adapter filtered on `node.account`, which a virtual agent
+ * deliberately leaves null, this page rendered an EMPTY LIST for a correctly
+ * configured vault — reading as "nothing is authorised here", the exact
+ * inversion of the truth.
  *
  * Every field below is read from the chain via /v1/agent-keys, which calls
  * `view_access_key_list`. That matters: "restricted to request_payment" is this
@@ -33,8 +46,12 @@ type AgentKey = {
     receiverId: string | null;
     methodNames: string[];
     allowanceYocto: string | null;
+    /** NEP-611 gas keys only. For these the BALANCE is the spending cap. */
+    gasBalanceYocto: string | null;
   }[];
   error?: string;
+  /** True for a virtual agent: a gas key on the VAULT, not a sub-account. */
+  virtual?: boolean;
 };
 
 type VaultInfo = { vaultId: string; explorerBase: string; network: string };
@@ -199,7 +216,7 @@ export default function AgentKeysPage() {
                                   className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
                                   style={{ background: "#EDF3EC", color: "#346538" }}
                                 >
-                                  Function-call key
+                                  {k.gasBalanceYocto !== null ? "Gas key" : "Function-call key"}
                                 </span>
                               ) : (
                                 <span
@@ -210,7 +227,18 @@ export default function AgentKeysPage() {
                                   Full access
                                 </span>
                               )}
-                              {k.restricted && (
+                              {/* A GAS KEY HAS NO ALLOWANCE, and rendering its
+                                  null one read "gas allowance unlimited" —
+                                  describing a key whose spend is strictly
+                                  bounded by its balance as unbounded. For
+                                  NEP-611 the balance IS the cap, so that is
+                                  what gets shown. */}
+                              {k.restricted && k.gasBalanceYocto !== null && (
+                                <span className="text-[11px]" style={{ color: "#787774" }}>
+                                  gas balance {yoctoToNear(k.gasBalanceYocto)} — its spending cap
+                                </span>
+                              )}
+                              {k.restricted && k.gasBalanceYocto === null && (
                                 <span className="text-[11px]" style={{ color: "#787774" }}>
                                   gas allowance {yoctoToNear(k.allowanceYocto)}
                                 </span>

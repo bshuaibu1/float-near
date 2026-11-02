@@ -137,6 +137,24 @@ export interface AccessKeyInfo {
             receiver_id: string;
             method_names: string[];
           };
+        }
+      // NEP-611. A DISTINCT variant, and this type omitted it while gas keys
+      // were already in use — so anything reading `permission` was told a gas
+      // key could not appear, when every virtual agent is one. Code that
+      // checked `"FunctionCall" in p` then reported a key restricted to a
+      // single method on a single contract as UNRESTRICTED.
+      //
+      // `allowance` is null here by design: for a gas key the BALANCE is the
+      // cap, and it sits at the TOP LEVEL of the variant rather than under
+      // `gas_key_info` where near-api-js's own typings suggest.
+      | {
+          GasKeyFunctionCall: {
+            allowance: string | null;
+            balance: string;
+            receiver_id: string;
+            method_names: string[];
+            num_nonces?: number;
+          };
         };
   };
 }

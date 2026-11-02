@@ -36,6 +36,12 @@ export interface AdapterConfig {
   token: string;
   decimals: number;
   /**
+   * The vault account. Needed to enumerate VIRTUAL agents, whose keys live on
+   * the vault itself. Optional so a caller that only wants account-bound
+   * agents still works rather than being forced to supply it.
+   */
+  vault?: string;
+  /**
    * Base deliveries, keyed by request id, as the relayer recorded them.
    *
    * OFF-CHAIN ON PURPOSE. The NEAR budget already moved when the vault signed;
@@ -255,12 +261,20 @@ export interface AgentKeyView {
   frozen: boolean;
   keys: {
     publicKey: string;
-    /** True only if the key really is a function-call key. */
+    /** True if the key names specific methods — a function-call OR gas key. */
     restricted: boolean;
     receiverId: string | null;
     methodNames: string[];
     allowanceYocto: string | null;
+    /** NEP-611 gas keys only. For these the balance IS the spending cap. */
+    gasBalanceYocto: string | null;
   }[];
+  /**
+   * True for a VIRTUAL agent: a gas key on the vault rather than a bound
+   * account. `accountId` is then the vault itself, which is what "virtual"
+   * means — there is no separate account.
+   */
+  virtual?: boolean;
   /** Set when the key list could not be read, so the UI can say so. */
   error?: string;
 }
@@ -271,7 +285,20 @@ export type KeyFn = (accountId: string) => Promise<
     access_key: {
       permission:
         | "FullAccess"
-        | { FunctionCall: { allowance: string | null; receiver_id: string; method_names: string[] } };
+        | { FunctionCall: { allowance: string | null; receiver_id: string; method_names: string[] } }
+        // NEP-611. A DISTINCT variant, not a FunctionCall with extra fields —
+        // reading `perm.FunctionCall` finds nothing here and reports a
+        // restricted key as unrestricted, the most misleading thing this page
+        // could say. `allowance` is null by design: the BALANCE is the cap.
+        | {
+            GasKeyFunctionCall: {
+              allowance: string | null;
+              balance: string;
+              receiver_id: string;
+              method_names: string[];
+              num_nonces?: number;
+            };
+          };
     };
   }[]
 >;
@@ -286,46 +313,167 @@ export type KeyFn = (accountId: string) => Promise<
  * trying to rule out. `restricted` here is computed from the permission NEAR
  * reports, and a FullAccess key makes it false.
  */
+/** One access key, flattened, whichever permission variant NEAR reported. */
+function describeKey(k: Awaited<ReturnType<KeyFn>>[number]): AgentKeyView["keys"][number] {
+  const p = k.access_key.permission;
+  const obj = typeof p === "object" ? p : null;
+  // BOTH variants. A gas key is a `GasKeyFunctionCall`, NOT a `FunctionCall`
+  // with extra fields, so a check for the latter alone finds nothing on it and
+  // falls through to `restricted: false` — reporting a key that can call one
+  // method on one contract as if it could do anything.
+  const fc = obj && "FunctionCall" in obj ? obj.FunctionCall : null;
+  const gk = obj && "GasKeyFunctionCall" in obj ? obj.GasKeyFunctionCall : null;
+  const named = fc ?? gk;
+  return {
+    publicKey: k.public_key,
+    restricted: named !== null,
+    receiverId: named?.receiver_id ?? null,
+    methodNames: named?.method_names ?? [],
+    allowanceYocto: named?.allowance ?? null,
+    gasBalanceYocto: gk?.balance ?? null,
+  };
+}
+
+/**
+ * Every agent that may spend, with its keys read FROM THE CHAIN.
+ *
+ * The restriction is the product's central security claim, so the page that
+ * states it must not state it from a constant. A hardcoded "restricted to
+ * request_payment" would keep rendering happily if someone added a full-access
+ * key to an agent — exactly the regression a reader of that page is trying to
+ * rule out. `restricted` is computed from the permission NEAR reports.
+ *
+ * TWO RAILS, and this used to see only one:
+ *
+ *   ACCOUNT  `bind_agent` sets `node.account`, and the keys live on that
+ *            account. Kept: it binds an account that already exists and whose
+ *            owner already controls it, so it strands nothing.
+ *
+ *   VIRTUAL  `bind_virtual_agent` maps a public key to a node and leaves
+ *            `node.account` as None — deliberately, because that field means
+ *            "a real sub-account is bound here" and a virtual agent is the
+ *            absence of one. The key is a NEP-611 gas key ON THE VAULT.
+ *
+ * This filtered on `n.account` alone. Once sub-accounts were retired that is
+ * null on every node of every new vault, so the page rendered an EMPTY LIST
+ * for a correctly configured vault — which reads as "nothing is authorised
+ * here", the exact inversion the `error` field exists to prevent elsewhere.
+ *
+ * There is no view that lists bound keys, only `get_virtual_agent_node(pk)`.
+ * So the enumeration runs the other way: take the vault's own access keys and
+ * ask the contract which of them are bound. That also means the owner's
+ * full-access key — which the factory now installs — is correctly excluded,
+ * because it is not bound to any node.
+ */
 export async function getAgentKeys(
   view: ViewFn,
   keys: KeyFn,
-  _cfg: AdapterConfig,
+  cfg: AdapterConfig,
 ): Promise<AgentKeyView[]> {
   const tree = await view<VaultNode[]>("get_tree", {});
-  const bound = tree.filter((n) => n.account);
+  const byId = new Map(tree.map((n) => [n.id, n]));
 
-  return Promise.all(
-    bound.map(async (n): Promise<AgentKeyView> => {
-      const base = {
-        accountId: n.account as string,
-        nodeId: n.id,
-        label: n.label,
-        frozen: n.frozen,
-      };
+  const accountRows = await Promise.all(
+    tree
+      .filter((n) => n.account)
+      .map(async (n): Promise<AgentKeyView> => {
+        const base = { accountId: n.account as string, nodeId: n.id, label: n.label, frozen: n.frozen };
+        try {
+          return { ...base, keys: (await keys(n.account as string)).map(describeKey) };
+        } catch (e) {
+          // An unreadable key list is reported, never silently rendered as "no
+          // keys" — that would read as "nothing is authorised here", the
+          // opposite of unknown.
+          return { ...base, keys: [], error: e instanceof Error ? e.message : String(e) };
+        }
+      }),
+  );
+
+  // Without a vault id there is nothing to enumerate. Degrade to account-only
+  // rather than guessing an account name.
+  if (!cfg.vault) return accountRows;
+
+  let onVault: Awaited<ReturnType<KeyFn>>;
+  try {
+    onVault = await keys(cfg.vault);
+  } catch (e) {
+    return [
+      ...accountRows,
+      {
+        accountId: cfg.vault,
+        nodeId: -1,
+        label: "virtual agents",
+        frozen: false,
+        keys: [],
+        virtual: true,
+        error: e instanceof Error ? e.message : String(e),
+      },
+    ];
+  }
+
+  // Ask the contract which keys are bound. Concurrent: independent lookups.
+  const bindings = await Promise.all(
+    onVault.map(async (k) => {
       try {
-        const list = await keys(n.account as string);
         return {
-          ...base,
-          keys: list.map((k) => {
-            const p = k.access_key.permission;
-            const fc = typeof p === "object" && "FunctionCall" in p ? p.FunctionCall : null;
-            return {
-              publicKey: k.public_key,
-              restricted: fc !== null,
-              receiverId: fc?.receiver_id ?? null,
-              methodNames: fc?.method_names ?? [],
-              allowanceYocto: fc?.allowance ?? null,
-            };
-          }),
+          key: k,
+          nodeId: await view<number | null>("get_virtual_agent_node", { public_key: k.public_key }),
+          error: null as string | null,
         };
       } catch (e) {
-        // An unreadable key list is reported, never silently rendered as "no
-        // keys" — that would read as "nothing is authorised here", the
-        // opposite of unknown.
-        return { ...base, keys: [], error: e instanceof Error ? e.message : String(e) };
+        return { key: k, nodeId: null, error: e instanceof Error ? e.message : String(e) };
       }
     }),
   );
+
+  // A FAILED LOOKUP IS NOT "NOT AN AGENT". This first used
+  // `.catch(() => null)`, collapsing an RPC error into the same value as a
+  // genuine "not bound" — so a rate-limited chain renders "no virtual agents"
+  // for a vault that has them. That is the exact absent-versus-unreadable
+  // inversion the `error` field above exists to prevent, reintroduced while
+  // fixing the same class of bug. Surface it instead.
+  const unreadable = bindings.filter((b) => b.error !== null);
+  const lookupError = unreadable.length
+    ? `${unreadable.length} of ${bindings.length} key bindings could not be read: ${unreadable[0]!.error}`
+    : null;
+
+  // Group by node: MANY-TO-ONE is the point of virtual agents — several keys
+  // may share one node, so a swarm draws on a shared budget instead of
+  // consuming one of the 64 MAX_NODES per member.
+  const byNode = new Map<number, Awaited<ReturnType<KeyFn>>>();
+  for (const b of bindings) {
+    if (b.nodeId === null || b.nodeId === undefined) continue;
+    const list = byNode.get(b.nodeId) ?? [];
+    list.push(b.key);
+    byNode.set(b.nodeId, list);
+  }
+
+  const virtualRows: AgentKeyView[] = [...byNode.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([nodeId, list]) => ({
+      accountId: cfg.vault as string,
+      nodeId,
+      label: byId.get(nodeId)?.label ?? `node ${nodeId}`,
+      frozen: byId.get(nodeId)?.frozen ?? false,
+      keys: list.map(describeKey),
+      virtual: true,
+    }));
+
+  // If some bindings were unreadable, say so as its own row rather than
+  // letting a short list imply a complete one.
+  if (lookupError) {
+    virtualRows.push({
+      accountId: cfg.vault,
+      nodeId: -1,
+      label: "virtual agents",
+      frozen: false,
+      keys: [],
+      virtual: true,
+      error: lookupError,
+    });
+  }
+
+  return [...accountRows, ...virtualRows];
 }
 
 export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {

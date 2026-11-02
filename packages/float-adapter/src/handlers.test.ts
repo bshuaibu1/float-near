@@ -358,6 +358,9 @@ describe("getAgentKeys", () => {
       receiverId: "v.testnet",
       methodNames: ["request_payment"],
       allowanceYocto: "500000000000000000000000",
+      // null here, not absent: this is a plain function-call key, and only a
+      // NEP-611 gas key carries a balance.
+      gasBalanceYocto: null,
     });
   });
 
@@ -472,5 +475,168 @@ describe("refusals recovered from chain", () => {
       {},
     );
     expect(merged).toHaveLength(0);
+  });
+});
+
+describe("getAgentKeys finds VIRTUAL agents", () => {
+  /**
+   * Sub-accounts are retired, so `n.account` is null on every node of every
+   * vault created from now on — and this function filtered on exactly that.
+   * The result was an agent-keys page that rendered an empty list for a
+   * correctly configured vault, which reads as "nothing is authorised here":
+   * the opposite of the truth, and the same failure the `error` field exists
+   * to prevent for unreadable key lists.
+   *
+   * A virtual agent is a gas key ON THE VAULT bound with `bind_virtual_agent`.
+   * The contract leaves `node.account` as None deliberately — that field means
+   * "a real sub-account is bound here" and a virtual agent is the absence of
+   * one — so the only way to enumerate them is the vault's own access keys,
+   * each asked `get_virtual_agent_node`.
+   */
+  const VAULT = "v.testnet";
+  const GAS_PK = "ed25519:gas";
+  const OWNER_PK = "ed25519:owner";
+
+  const viewFor =
+    (bound: Record<string, number | null>): ViewFn =>
+    async <T>(method: string, args?: unknown) => {
+      if (method === "get_tree") return TREE as T;
+      if (method === "get_virtual_agent_node") {
+        const pk = (args as { public_key: string }).public_key;
+        return (bound[pk] ?? null) as T;
+      }
+      throw new Error(`unexpected view ${method}`);
+    };
+
+  // Dispatch on the account id. A stub that returns the same keys for every
+  // account is not a stand-in for the chain — it made the account-bound node
+  // in the shared TREE fixture appear to hold the vault's keys, and a test
+  // then failed for a reason that had nothing to do with the code.
+  const keysFor = (vk: unknown) => async (id: string) => (id === VAULT ? (vk as never) : ([] as never));
+
+  const vaultKeys = [
+    // A gas key. NOTE the variant: GasKeyFunctionCall, not FunctionCall.
+    {
+      public_key: GAS_PK,
+      access_key: {
+        permission: {
+          GasKeyFunctionCall: {
+            allowance: null,
+            balance: "119297352510720700000000",
+            receiver_id: VAULT,
+            method_names: ["request_payment"],
+            num_nonces: 1,
+          },
+        },
+      },
+    },
+    // The owner's key, which the factory installs. Not an agent.
+    { public_key: OWNER_PK, access_key: { permission: "FullAccess" as const } },
+  ];
+
+  it("lists a bound gas key as an agent on its node", async () => {
+    const rows = await getAgentKeys(
+      viewFor({ [GAS_PK]: 0 }),
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    const virt = rows.filter((r) => r.virtual);
+    expect(virt).toHaveLength(1);
+    expect(virt[0]!.nodeId).toBe(0);
+    expect(virt[0]!.accountId).toBe(VAULT);
+    expect(virt[0]!.keys.map((k) => k.publicKey)).toEqual([GAS_PK]);
+  });
+
+  /**
+   * A gas key IS restricted — it names one method on one contract. Reading
+   * `perm.FunctionCall` finds nothing on a `GasKeyFunctionCall` and would
+   * report the key as unrestricted, which is the single most misleading thing
+   * this page could say about an agent.
+   */
+  it("reports a gas key as restricted, with its method list and balance", async () => {
+    const rows = await getAgentKeys(
+      viewFor({ [GAS_PK]: 0 }),
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    const k = rows.find((r) => r.virtual)!.keys[0]!;
+    expect(k.restricted).toBe(true);
+    expect(k.methodNames).toEqual(["request_payment"]);
+    expect(k.receiverId).toBe(VAULT);
+    // For a gas key the BALANCE is the cap; allowance is null by design.
+    expect(k.allowanceYocto).toBeNull();
+    expect(k.gasBalanceYocto).toBe("119297352510720700000000");
+  });
+
+  /** The owner's full-access key is not an agent and must not be listed. */
+  it("does not treat the owner's full-access key as an agent", async () => {
+    const rows = await getAgentKeys(
+      viewFor({ [GAS_PK]: 0 }),
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    const pks = rows.flatMap((r) => r.keys.map((k) => k.publicKey));
+    expect(pks).not.toContain(OWNER_PK);
+  });
+
+  /** An unbound key on the vault is not an agent either. */
+  it("ignores a key on the vault that is not bound to a node", async () => {
+    const rows = await getAgentKeys(
+      viewFor({}), // nothing bound
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    expect(rows.filter((r) => r.virtual)).toEqual([]);
+  });
+
+  /**
+   * Both rails at once. `bind_agent` is kept — it binds an account that
+   * already exists and strands nothing — so a vault can legitimately have
+   * both, and neither may hide the other.
+   */
+  it("lists account-bound and virtual agents together", async () => {
+    const mixed: VaultNode[] = [{ ...TREE[0]! }, { ...TREE[1]! }, { ...TREE[2]!, account: "r1.v.testnet" }];
+    const view: ViewFn = async <T>(method: string, args?: unknown) => {
+      if (method === "get_tree") return mixed as T;
+      if (method === "get_virtual_agent_node") {
+        return ((args as { public_key: string }).public_key === GAS_PK ? 0 : null) as T;
+      }
+      throw new Error(`unexpected view ${method}`);
+    };
+    const rows = await getAgentKeys(
+      view,
+      async (id: string) => (id === VAULT ? (vaultKeys as never) : ([] as never)),
+      cfg({ vault: VAULT }),
+    );
+    expect(rows.filter((r) => !r.virtual).map((r) => r.accountId)).toEqual(["r1.v.testnet"]);
+    expect(rows.filter((r) => r.virtual).map((r) => r.nodeId)).toEqual([0]);
+  });
+
+  /**
+   * A FAILED BINDING LOOKUP IS NOT "NOT AN AGENT".
+   *
+   * The first version of this used `.catch(() => null)`, which gives an RPC
+   * error and a genuine "this key is not bound" the same value — so a
+   * rate-limited chain rendered "no virtual agents" for a vault that has one.
+   * Caught live: two adapters against one RPC produced HTTP 429 and the list
+   * came back empty rather than unknown. Same absent-versus-unreadable
+   * inversion the `error` field exists to prevent for key lists.
+   */
+  it("reports an unreadable binding lookup instead of rendering it as no agents", async () => {
+    const view: ViewFn = async <T>(method: string) => {
+      if (method === "get_tree") return TREE as T;
+      throw new Error("RPC https://test.rpc.fastnear.com returned HTTP 429");
+    };
+    const rows = await getAgentKeys(view, keysFor(vaultKeys), cfg({ vault: VAULT }));
+    const virt = rows.filter((r) => r.virtual);
+    expect(virt).toHaveLength(1);
+    expect(virt[0]!.error).toContain("429");
+    expect(virt[0]!.keys).toEqual([]);
+  });
+
+  /** With no vault configured it must not invent one or crash. */
+  it("degrades to account-only when the vault id is unknown", async () => {
+    const rows = await getAgentKeys(viewFor({ [GAS_PK]: 0 }), async () => [] as never, cfg());
+    expect(rows.every((r) => !r.virtual)).toBe(true);
   });
 });
