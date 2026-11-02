@@ -239,6 +239,41 @@ export function emptyStore(vault: string): BlockedStore {
   return { vault, scannedFrom: null, scannedTo: null, holes: [], blocked: {} };
 }
 
+/**
+ * Decide whether a persisted log belongs to the vault being served.
+ *
+ * CAUGHT ON A LIVE DASHBOARD. The adapter was pointed at a vault with exactly
+ * ONE node, and the activity page showed six refusals attributed to nodes 5
+ * through 20, five days old, by agents named `s*.v3.floatvault-12329.testnet`
+ * — real refusals from a DIFFERENT vault, left in `.demo/blocked-log.json` by
+ * an earlier swarm test. The loader read `parsed.vault ?? env.vault` and never
+ * compared the two, so any vault's log loaded into any other vault's
+ * dashboard.
+ *
+ * Not merely cosmetic. The store also carries `scannedFrom`/`scannedTo`, so
+ * adopting a foreign log makes the follower believe it has COVERAGE of block
+ * ranges it never scanned for this vault — collapsing "we looked and found
+ * nothing" back into "we never looked here", which is the one distinction this
+ * module exists to preserve.
+ *
+ * Refusing a payment is this product's headline behaviour, so showing another
+ * vault's refusals as yours is worse than showing none.
+ *
+ * A log with NO vault recorded predates the field. That one is adopted — it is
+ * almost certainly ours, written before the field existed — but adopted under
+ * THIS vault's name, so the next load can check it.
+ */
+export function adoptBlockedStore(parsed: BlockedStore, vault: string): BlockedStore {
+  if (parsed.vault && parsed.vault !== vault) return emptyStore(vault);
+  return {
+    vault,
+    scannedFrom: parsed.scannedFrom ?? null,
+    scannedTo: parsed.scannedTo ?? null,
+    holes: Array.isArray(parsed.holes) ? parsed.holes : [],
+    blocked: parsed.blocked ?? {},
+  };
+}
+
 /** Fold a scan result into a store. Pure, so the merge rules are testable. */
 export function mergeScan(
   store: BlockedStore,

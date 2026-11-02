@@ -43,7 +43,13 @@ import {
 } from "./handlers.js";
 import type { VaultNode } from "./map.js";
 import { AgentSelectionError, loadKeyring, selectAgent } from "./keyring.js";
-import { BlockedFollower, createRpc, emptyStore, type BlockedStore } from "./blocked-scan.js";
+import {
+  adoptBlockedStore,
+  BlockedFollower,
+  createRpc,
+  emptyStore,
+  type BlockedStore,
+} from "./blocked-scan.js";
 import { parseEnvFile, applyEnvFile } from "./env-file.js";
 
 // Load FLOAT_ENV_FILE before anything reads process.env.
@@ -128,13 +134,18 @@ function loadBlockedStore(): BlockedStore {
   try {
     if (!existsSync(env.blockedLog)) return emptyStore(env.vault);
     const parsed = JSON.parse(readFileSync(env.blockedLog, "utf8"));
-    return {
-      vault: parsed.vault ?? env.vault,
-      scannedFrom: parsed.scannedFrom ?? null,
-      scannedTo: parsed.scannedTo ?? null,
-      holes: Array.isArray(parsed.holes) ? parsed.holes : [],
-      blocked: parsed.blocked ?? {},
-    };
+    // VAULT-SCOPED. `parsed.vault ?? env.vault` read the field and never
+    // compared it, so a log written for another vault loaded wholesale —
+    // observed live, six refusals from v3.floatvault-12329.testnet rendered on
+    // a one-node vault's activity page. See `adoptBlockedStore`.
+    const store = adoptBlockedStore(parsed, env.vault);
+    if (parsed.vault && parsed.vault !== env.vault) {
+      console.log(
+        `[blocked] ignoring ${env.blockedLog}: it belongs to ${parsed.vault}, not ${env.vault}. ` +
+          `Refusals for this vault are UNKNOWN, not absent — rescan with scripts/scan-blocked.mjs.`,
+      );
+    }
+    return store;
   } catch {
     // A corrupt file must not stop the server, and must not be mistaken for
     // "no refusals" — a null cursor makes the follower restart from the head
@@ -205,10 +216,18 @@ const server = createServer(async (req, res) => {
   // yields none rather than crashing — the failure direction is always to
   // show fewer refusals than happened, never to invent one.
   {
+    // VAULT-SCOPED HERE TOO. `loadBlockedStore` above was fixed first and this
+    // reader was missed, so the leak survived the fix completely: six refusals
+    // from v3.floatvault-12329.testnet still rendered on a one-node vault's
+    // activity page, and the adapter log showed no complaint because the
+    // complaint lives in the other function. Two readers of one file, one
+    // guard. Caught only by checking the live endpoint after the fix.
     const parsed = (() => {
       try {
         if (!existsSync(env.blockedLog)) return null;
-        return JSON.parse(readFileSync(env.blockedLog, "utf8"));
+        const raw = JSON.parse(readFileSync(env.blockedLog, "utf8"));
+        if (raw?.vault && raw.vault !== env.vault) return null;
+        return raw;
       } catch {
         return null;
       }

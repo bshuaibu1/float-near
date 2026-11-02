@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  adoptBlockedStore,
   BlockedFollower,
   EMPTY_TX_ROOT,
   emptyStore,
@@ -299,5 +300,81 @@ describe("rpc throttling behaviour", () => {
     await expect(rpc("nope", {})).rejects.toThrow(/400/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("adoptBlockedStore refuses another vault's log", () => {
+  /**
+   * CAUGHT ON A LIVE DASHBOARD. The adapter was pointed at
+   * floatv4-testnet.fac.floatv4.testnet — a vault with exactly ONE node — and
+   * the activity page showed six refusals attributed to nodes 5 through 20,
+   * dated five days earlier, by agents named `s*.v3.floatvault-12329.testnet`.
+   * They were real refusals from a DIFFERENT vault, left in
+   * `.demo/blocked-log.json` by an earlier swarm test.
+   *
+   * `loadBlockedStore` read `parsed.vault ?? env.vault` and never compared the
+   * two, so any vault's log loaded wholesale into any other vault's dashboard.
+   *
+   * It is not only a display bug. The store also carries `scannedFrom` and
+   * `scannedTo`, so adopting a foreign log makes the follower believe it has
+   * COVERAGE of block ranges it never scanned for this vault — turning "we
+   * looked and found nothing" and "we never looked here" back into the same
+   * thing, which is the confusion this whole module exists to remove.
+   *
+   * Refusing is the product's headline behaviour. A dashboard that shows
+   * someone else's refusals as yours is worse than one that shows none.
+   */
+  const foreign: BlockedStore = {
+    vault: "v3.floatvault-12329.testnet",
+    scannedFrom: 274988000,
+    scannedTo: 274990000,
+    holes: [],
+    blocked: {
+      "swarm-1": {
+        requestId: "swarm-1",
+        nodeId: 6,
+        reasonCode: "PARENT_DAILY_BUDGET",
+        agent: "s1.v3.floatvault-12329.testnet",
+        txHash: "BT2U18LPQfs1HwnMqn9GztFTdixRVESPBzaWupV9Zscb",
+        blockHeight: 274988232,
+        blockTimestampNs: 1793097136890744300,
+      },
+    },
+  };
+
+  it("discards a log belonging to a different vault", () => {
+    const got = adoptBlockedStore(foreign, "floatv4-testnet.fac.floatv4.testnet");
+    expect(got.vault).toBe("floatv4-testnet.fac.floatv4.testnet");
+    expect(got.blocked).toEqual({});
+  });
+
+  /**
+   * And it must not inherit the cursor. Keeping `scannedTo` from a foreign log
+   * would claim coverage this vault has never had.
+   */
+  it("does not inherit the foreign scan cursor", () => {
+    const got = adoptBlockedStore(foreign, "floatv4-testnet.fac.floatv4.testnet");
+    expect(got.scannedFrom).toBeNull();
+    expect(got.scannedTo).toBeNull();
+    expect(got.holes).toEqual([]);
+  });
+
+  it("keeps a log that belongs to this vault", () => {
+    const got = adoptBlockedStore(foreign, "v3.floatvault-12329.testnet");
+    expect(Object.keys(got.blocked)).toEqual(["swarm-1"]);
+    expect(got.scannedTo).toBe(274990000);
+  });
+
+  /**
+   * A log with no vault recorded predates the field. Adopting it is the
+   * lesser evil — it is almost certainly this vault's, written before the
+   * field existed — but it must be ADOPTED UNDER THIS VAULT'S NAME rather
+   * than left nameless, so the next load can check it.
+   */
+  it("adopts a log with no vault recorded, under this vault's name", () => {
+    const legacy = { ...foreign, vault: undefined } as unknown as BlockedStore;
+    const got = adoptBlockedStore(legacy, "floatv4-testnet.fac.floatv4.testnet");
+    expect(got.vault).toBe("floatv4-testnet.fac.floatv4.testnet");
+    expect(Object.keys(got.blocked)).toEqual(["swarm-1"]);
   });
 });
