@@ -287,11 +287,51 @@ export function mergeScan(
     store.blocked[r.requestId] = r;
     added++;
   }
+  // THE GAP BETWEEN DISJOINT SCANS IS A HOLE, and nothing but this merge can
+  // see it. A single `scanRange` reports the blocks IT could not read; it has
+  // no idea another range was scanned 54,000 blocks away.
+  //
+  // Without this, min/max over the two ranges claims the whole envelope as
+  // covered. Observed live: 1,500 blocks scanned, then 160 blocks scanned
+  // 54,300 later, and the store reported `scannedFrom 275882255, scannedTo
+  // 275938214, holes: []` — 55,960 blocks claimed, 1,660 actually read. The
+  // dashboard caveat written to prevent precisely this confusion would then
+  // have rendered the fabrication as fact.
+  const newHoles: Hole[] = [];
+  if (store.scannedFrom !== null && store.scannedTo !== null) {
+    // Scanning forward, away from the existing range.
+    if (from > store.scannedTo + 1) newHoles.push({ from: store.scannedTo + 1, to: from - 1 });
+    // Scanning backward, leaving the gap above the new range.
+    if (to < store.scannedFrom - 1) newHoles.push({ from: to + 1, to: store.scannedFrom - 1 });
+  }
+
   store.scannedFrom = store.scannedFrom === null ? from : Math.min(store.scannedFrom, from);
   store.scannedTo = Math.max(store.scannedTo ?? 0, to);
-  if (res.holes.length) {
-    store.holes = coalesce([...store.holes, ...res.holes.map((h) => ({ from: h, to: h }))]);
+
+  // CLEAR FIRST, THEN ADD. Order matters and getting it wrong is silent.
+  //
+  // Scanning a span that was previously a hole must REMOVE it, or a backfill
+  // that genuinely read those blocks leaves coverage understated forever.
+  // But this subtraction has to run BEFORE this scan's own holes are added —
+  // a scanner hole is by definition INSIDE the range just scanned, so doing it
+  // the other way round deletes the holes this very call just reported. The
+  // pre-existing "carries holes forward" test caught exactly that.
+  if (store.holes.length) {
+    store.holes = coalesce(
+      store.holes.flatMap((h) => {
+        if (to < h.from || from > h.to) return [h]; // untouched by this scan
+        const left = h.from < from ? [{ from: h.from, to: Math.min(h.to, from - 1) }] : [];
+        const right = h.to > to ? [{ from: Math.max(h.from, to + 1), to: h.to }] : [];
+        return [...left, ...right];
+      }),
+    );
   }
+
+  const scannerHoles = res.holes.map((h) => ({ from: h, to: h }));
+  if (newHoles.length || scannerHoles.length) {
+    store.holes = coalesce([...store.holes, ...newHoles, ...scannerHoles]);
+  }
+
   return { store, added };
 }
 

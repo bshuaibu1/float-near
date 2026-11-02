@@ -10,6 +10,7 @@ import {
   coalesce,
   createRpc,
   type BlockedStore,
+  type ScanResult,
   type RpcFn,
 } from "./blocked-scan.js";
 
@@ -376,5 +377,80 @@ describe("adoptBlockedStore refuses another vault's log", () => {
     const got = adoptBlockedStore(legacy, "floatv4-testnet.fac.floatv4.testnet");
     expect(got.vault).toBe("floatv4-testnet.fac.floatv4.testnet");
     expect(Object.keys(got.blocked)).toEqual(["swarm-1"]);
+  });
+});
+
+describe("mergeScan records the gap between DISJOINT scans", () => {
+  /**
+   * CAUGHT LIVE, and it is the worst failure this module could have.
+   *
+   * Blocks 275882255..275883754 were scanned, then — 54,300 blocks later —
+   * 275938055..275938214. `mergeScan` took the min/max envelope of the two and
+   * recorded `scannedFrom: 275882255, scannedTo: 275938214, holes: []`.
+   *
+   * The store then claimed 55,960 blocks read when 1,660 had been. The
+   * dashboard caveat built to prevent exactly this confusion would have
+   * rendered the fabrication as fact: "Refusals have been read from blocks
+   * 275882255-275938214 (55,960 blocks)."
+   *
+   * Scanner-reported holes were handled; the gap BETWEEN two scan ranges was
+   * not, because nothing in a single `scanRange` call can observe it. Only the
+   * merge can.
+   */
+  const res = (): ScanResult => ({ records: [], holes: [], blocksSeen: 0, chunksFetched: 0, chunksSkipped: 0 });
+
+  it("records the gap when a later scan does not abut the earlier one", () => {
+    let s = emptyStore("v.testnet");
+    s = mergeScan(s, 1000, 1999, res()).store;
+    s = mergeScan(s, 5000, 5999, res()).store;
+    expect(s.scannedFrom).toBe(1000);
+    expect(s.scannedTo).toBe(5999);
+    const unread = s.holes.reduce((n, h) => n + (h.to - h.from + 1), 0);
+    expect(unread).toBe(3000); // 2000..4999
+    expect(s.holes).toContainEqual({ from: 2000, to: 4999 });
+  });
+
+  /** The honest total has to survive the merge. */
+  it("keeps claimed-minus-unread equal to what was really read", () => {
+    let s = emptyStore("v.testnet");
+    s = mergeScan(s, 1000, 1999, res()).store; // 1000 blocks
+    s = mergeScan(s, 5000, 5999, res()).store; // 1000 blocks
+    const claimed = s.scannedTo! - s.scannedFrom! + 1;
+    const unread = s.holes.reduce((n, h) => n + (h.to - h.from + 1), 0);
+    expect(claimed - unread).toBe(2000);
+  });
+
+  it("adds no hole when the new range abuts the old one", () => {
+    let s = emptyStore("v.testnet");
+    s = mergeScan(s, 1000, 1999, res()).store;
+    s = mergeScan(s, 2000, 2999, res()).store;
+    expect(s.holes).toEqual([]);
+  });
+
+  it("adds no hole when the ranges overlap", () => {
+    let s = emptyStore("v.testnet");
+    s = mergeScan(s, 1000, 1999, res()).store;
+    s = mergeScan(s, 1500, 2499, res()).store;
+    expect(s.holes).toEqual([]);
+  });
+
+  /** Scanning BACKWARDS leaves the gap above the new range. */
+  it("records the gap when the new range is below the old one", () => {
+    let s = emptyStore("v.testnet");
+    s = mergeScan(s, 5000, 5999, res()).store;
+    s = mergeScan(s, 1000, 1999, res()).store;
+    expect(s.scannedFrom).toBe(1000);
+    expect(s.scannedTo).toBe(5999);
+    expect(s.holes).toContainEqual({ from: 2000, to: 4999 });
+  });
+
+  /** Filling a gap must REMOVE it, or coverage understates forever. */
+  it("clears a hole once the missing range is scanned", () => {
+    let s = emptyStore("v.testnet");
+    s = mergeScan(s, 1000, 1999, res()).store;
+    s = mergeScan(s, 3000, 3999, res()).store;
+    expect(s.holes.reduce((n, h) => n + (h.to - h.from + 1), 0)).toBe(1000);
+    s = mergeScan(s, 2000, 2999, res()).store;
+    expect(s.holes.reduce((n, h) => n + (h.to - h.from + 1), 0)).toBe(0);
   });
 });
