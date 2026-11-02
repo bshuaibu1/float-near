@@ -229,3 +229,65 @@ fn every_method_calling_assert_owner_is_payable() {
     );
     assert_eq!(offenders, Vec::<String>::new(), "these call assert_owner but are not #[payable]");
 }
+
+/// Fake contract bytes. Only the LENGTH matters here — the factory never
+/// executes this, it forwards it to a DeployContract action.
+fn code(bytes: usize) -> near_sdk::json_types::Base64VecU8 {
+    near_sdk::json_types::Base64VecU8(vec![0u8; bytes])
+}
+
+/// THE DEPOSIT MUST COVER THE CODE'S OWN STORAGE, and only the caller's
+/// argument knows how big that is.
+///
+/// `create_vault` has a FIXED floor because a global reference costs a flat 214
+/// bytes whatever the contract's size. Deploying the code puts the whole
+/// artifact on the new account, so the floor has to scale with it: 294 KB is
+/// 2.94 NEAR of storage stake on its own.
+///
+/// Get this wrong and `CreateAccount` succeeds while the account lands below
+/// its own storage requirement — `LackBalanceForState` on the next write, which
+/// is a bricked vault rather than a failed call.
+#[test]
+#[should_panic(expected = "DEPOSIT_TOO_SMALL")]
+fn create_vault_with_code_refuses_a_deposit_that_ignores_the_code_size() {
+    let mut f = ready();
+    // Exactly the fixed requirement — enough for the GLOBAL path, nowhere near
+    // enough once 100 KB of code has to be stored.
+    testing_env!(fctx(alice(), required()).build());
+    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients());
+}
+
+/// Code storage plus the fixed floor is enough.
+#[test]
+fn create_vault_with_code_accepts_code_storage_plus_the_floor() {
+    let mut f = ready();
+    let bytes = 100_000u128;
+    let needed = NearToken::from_yoctonear(bytes * 10u128.pow(19)).saturating_add(required());
+    testing_env!(fctx(alice(), needed).build());
+    // Passing is the assertion: no panic means the boundary is inclusive.
+    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients());
+}
+
+/// EMPTY CODE WOULD CREATE A FUNDED ACCOUNT WITH NO CONTRACT.
+///
+/// `DeployContract` with zero bytes succeeds, and `new` would then fail
+/// MethodNotFound — so the batch reverts and the caller is refunded. Correct,
+/// but it burns a round trip and reads like a contract bug. Refuse it up front.
+#[test]
+#[should_panic(expected = "NO_CODE")]
+fn create_vault_with_code_refuses_empty_code() {
+    let mut f = ready();
+    testing_env!(fctx(alice(), NearToken::from_near(1)).build());
+    let _ = f.create_vault_with_code(code(0), None, root_limits(), root_recipients());
+}
+
+/// The kill switch covers BOTH creation paths, or it is not a kill switch.
+#[test]
+#[should_panic(expected = "PAUSED")]
+fn create_vault_with_code_honours_the_kill_switch() {
+    let mut f = ready();
+    testing_env!(fctx(fowner(), NearToken::from_yoctonear(1)).build());
+    f.set_paused(true);
+    testing_env!(fctx(alice(), NearToken::from_near(2)).build());
+    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients());
+}

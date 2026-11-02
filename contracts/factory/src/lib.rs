@@ -11,7 +11,7 @@
 //!
 //! See `docs/DESIGN-browser-signing-flow.md`.
 
-use near_sdk::json_types::Base58CryptoHash;
+use near_sdk::json_types::{Base58CryptoHash, Base64VecU8};
 use near_sdk::{env, near, AccountId, CryptoHash, Gas, NearToken, Promise};
 
 /// Enough for the vault's `new`, which writes the root node and config.
@@ -49,6 +49,27 @@ pub fn vault_id(owner: &str, factory: &str) -> Option<AccountId> {
     // rejected the 75-character id. The guard was dead code and its test was
     // describing a hole rather than closing one, so it is gone.
     format!("{}.{}", derive_prefix(owner), factory).parse().ok()
+}
+
+/// The `new` arguments, built once so both creation paths produce an identical
+/// vault. The root limits and recipients are forwarded verbatim from the
+/// caller: a root with no limits holds no budget, and a root with no recipients
+/// refuses every payment NO_RECIPIENTS_SET.
+fn new_args(
+    owner: &AccountId,
+    network: &str,
+    root_limits: near_sdk::serde_json::Value,
+    root_recipients: near_sdk::serde_json::Value,
+) -> Vec<u8> {
+    near_sdk::serde_json::json!({
+        "owner": owner,
+        "network": network,
+        "strict_allocation": false,
+        "root_limits": root_limits,
+        "root_recipients": root_recipients,
+    })
+    .to_string()
+    .into_bytes()
 }
 
 /// NO REGISTRY, DELIBERATELY. An `owner -> vault` map was scaffolded here and
@@ -98,7 +119,92 @@ impl Factory {
         }
     }
 
-    /// Create a vault for the CALLER, in one batch.
+    /// Create a vault whose code is PASSED IN rather than referenced globally.
+    ///
+    /// WHY THIS EXISTS. A wallet refuses a `DeployContract` ACTION requested by
+    /// a dApp — measured in Meteor 2026-11-01, Approve greyed out, no override,
+    /// and the policy is blanket even when the target is a new sub-account. It
+    /// has no such policy about an ordinary method call. So the browser sends
+    /// the contract as an ARGUMENT, and the deploy happens in here where no
+    /// wallet policy reaches.
+    ///
+    /// Costs computed from the protocol fee table before building this: 3.0
+    /// TGas to deliver 401,380 B of base64 args, ~31 for the batch, ~74 total
+    /// against 300 attachable. Size is 25.5% of `max_transaction_size`.
+    ///
+    /// The trade against `create_vault`: each vault stores its own copy of the
+    /// code, ~3.0 NEAR of stake, instead of a 214-byte reference. That is the
+    /// price of not needing a published global contract, and it is refundable.
+    #[payable]
+    pub fn create_vault_with_code(
+        &mut self,
+        code: Base64VecU8,
+        label: Option<String>,
+        root_limits: near_sdk::serde_json::Value,
+        root_recipients: near_sdk::serde_json::Value,
+    ) -> Promise {
+        let bytes = code.0.len();
+        if bytes == 0 {
+            // DeployContract with zero bytes succeeds, and `new` then fails
+            // MethodNotFound — the batch reverts and the caller is refunded.
+            // Correct, but it burns a round trip and reads like a contract bug.
+            env::panic_str("NO_CODE: the contract code argument is empty");
+        }
+        // THE FLOOR SCALES WITH THE CODE, and only the argument knows its size.
+        // `create_vault`'s floor is fixed because a global reference costs a
+        // flat 214 bytes whatever the contract's size; here the whole artifact
+        // lands on the new account. Underfund it and CreateAccount succeeds
+        // while the account sits below its own storage requirement —
+        // LackBalanceForState on the next write, a bricked vault rather than a
+        // failed call.
+        let need = self
+            .required_deposit
+            .saturating_add(NearToken::from_yoctonear(bytes as u128 * 10u128.pow(19)));
+        let (owner, vault) = self.begin(&label, need);
+        let deposit = env::attached_deposit();
+        Promise::new(vault.clone())
+            .create_account()
+            .transfer(deposit)
+            .deploy_contract(code.0)
+            .function_call(
+                "new".to_string(),
+                new_args(&owner, &self.network, root_limits, root_recipients),
+                NearToken::from_yoctonear(0),
+                GAS_FOR_VAULT_NEW,
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(GAS_FOR_REFUND)
+                    .on_vault_created(owner, vault, deposit),
+            )
+    }
+
+    /// The checks both creation paths share, and the vault id they agree on.
+    ///
+    /// `need` differs between them — fixed for a global reference, scaled by
+    /// the code size when the code is deployed — so it is a parameter rather
+    /// than read from state. Everything else is identical, and duplicating it
+    /// is how one path quietly loses the kill switch.
+    fn begin(&self, label: &Option<String>, need: NearToken) -> (AccountId, AccountId) {
+        if self.paused {
+            env::panic_str("PAUSED: vault creation is disabled");
+        }
+        if env::attached_deposit() < need {
+            env::panic_str("DEPOSIT_TOO_SMALL: attach at least the required deposit");
+        }
+        let owner = env::predecessor_account_id();
+        let factory = env::current_account_id();
+        let vault = match label {
+            Some(l) => format!("{}.{}", l, factory).parse::<AccountId>().ok(),
+            None => vault_id(owner.as_str(), factory.as_str()),
+        };
+        match vault {
+            Some(v) => (owner, v),
+            None => env::panic_str("BAD_VAULT_ID: that owner has no legal derived vault id"),
+        }
+    }
+
+    /// Create a vault for the CALLER, referencing a published global contract.
     ///
     /// The owner is `predecessor_account_id()` and is never a parameter. Taking
     /// it as an argument would let anyone create a vault owned by someone else
