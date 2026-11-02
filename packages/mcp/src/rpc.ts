@@ -190,7 +190,7 @@ export function requireAgentKey(env: { agentId?: string; agentKey?: string }): A
     throw new Error(
       "Paying requires NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY, and neither is set. " +
         "Reads and payload planning work without them; only paying needs them. " +
-        "The key must be the restricted one issued by create_agent_account — never a " +
+        "The key must be a RESTRICTED one, from a VIRTUAL AGENT — never a " +
         "full-access key.",
     );
   }
@@ -201,8 +201,8 @@ export function requireAgentKey(env: { agentId?: string; agentKey?: string }): A
   }
   if (!env.agentKey) {
     throw new Error(
-      "NEAR_VAULT_AGENT_KEY is not set. This must be the restricted key issued by " +
-        "create_agent_account — it can call only request_payment on the vault, cannot " +
+      "NEAR_VAULT_AGENT_KEY is not set. This must be a VIRTUAL AGENT's key, bound " +
+        "with bind_virtual_agent and installed as a NEP-611 gas key on the vault — it can call only request_payment on the vault, cannot " +
         "call other contracts, and cannot attach a deposit. Never put a full-access key here.",
     );
   }

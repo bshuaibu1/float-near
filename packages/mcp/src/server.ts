@@ -41,7 +41,8 @@ import { fromBaseUnits, toBaseUnits } from "./amounts.js";
 import {
   DEFAULT_GAS_TGAS,
   planAddNode,
-  planCreateAgentAccount,
+  planBindVirtualAgent,
+  planUnbindVirtualAgent,
   planFreezeNode,
   planPurgeSettled,
   planSetCooldown,
@@ -370,18 +371,21 @@ server.tool(
 );
 
 server.tool(
-  "vault_plan_create_agent",
-  "Build an UNSIGNED payload to create an agent sub-account with ONE key restricted to request_payment on this vault. Generate the keypair yourself and pass only the public half. Not signed by this server.",
+  "vault_plan_bind_agent",
+  "Build an UNSIGNED payload binding a signing key to a node, so that key may spend from it. Generate the keypair yourself and pass only the public half. Many keys may share one node. Not signed by this server.",
   {
     nodeId: z.number().int().min(0),
-    subLabel: z.string(),
     publicKey: z.string().describe("ed25519:..."),
-    keyAllowanceNear: z.string().default("2").describe("gas allowance in NEAR; floor is 0.5"),
   },
-  async ({ nodeId, subLabel, publicKey, keyAllowanceNear }) =>
-    renderPlan(
-      planCreateAgentAccount(requireVault(), nodeId, subLabel, publicKey, keyAllowanceNear),
-    ),
+  async ({ nodeId, publicKey }) =>
+    renderPlan(planBindVirtualAgent(requireVault(), nodeId, publicKey)),
+);
+
+server.tool(
+  "vault_plan_unbind_agent",
+  "Build an UNSIGNED payload revoking a signing key's authority to spend. Does NOT return any gas left in that key's NEP-611 gas key — withdraw from the gas key separately. Not signed by this server.",
+  { publicKey: z.string().describe("ed25519:...") },
+  async ({ publicKey }) => renderPlan(planUnbindVirtualAgent(requireVault(), publicKey)),
 );
 
 server.tool(

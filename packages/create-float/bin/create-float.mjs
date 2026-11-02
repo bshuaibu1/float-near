@@ -106,9 +106,11 @@ const fmtDeliver = (n) => n.toFixed(2);
 
 /**
  * Per-agent cost, mirroring the contract's own floors:
- *   MIN_AGENT_KEY_ALLOWANCE = 0.5 NEAR   (gas allowance on the restricted key)
- *   AGENT_ACCOUNT_STORAGE   = 0.05 NEAR  (the sub-account's storage stake)
- * create_agent_account rejects anything below their sum, so these are not
+ * Agent sub-accounts are RETIRED. MIN_AGENT_KEY_ALLOWANCE (0.5) and
+ * AGENT_ACCOUNT_STORAGE (0.05) were documented here; both went with
+ * `create_agent_account`, because the accounts it funded could never be
+ * emptied by anyone. An agent is now VIRTUAL: a key bound to a node plus a
+ * recoverable NEP-611 gas key, ~0.12 all in. These are not
  * tuning knobs — they are the contract's minimum, restated.
  */
 /** Mainnet USDC on NEAR, and the 1Click asset id for USDC on Base. */
@@ -413,7 +415,19 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
     // and no sub-account, added when the owner asks for it. Validated on
     // mainnet 2026-11-01. It is not wired into this wizard yet, which is
     // exactly what this message has to admit.
-    if (agentOpt && agentOpt !== "0" && candidateAgents.length === 0) {
+    // `create_agent_account` NO LONGER EXISTS ON THE CONTRACT, so this refuses
+    // for ANY non-zero --agents, not just when the tree has nothing tagged.
+    // The old condition required `candidateAgents.length === 0`, which meant a
+    // CUSTOM tree with agent-tagged nodes sailed past it and called a method
+    // the vault does not export — a failed transaction after the user had
+    // already paid for the vault.
+    //
+    // It was removed because the accounts it created could never be emptied:
+    // their only key was a function-call key, which cannot sign
+    // `DeleteAccount`, and NEAR requires `actor_id == account_id` so no parent
+    // could either. 10.7752 NEAR is stranded that way across 18 testnet
+    // agents, plus 0.54434 on mainnet.
+    if (agentOpt && agentOpt !== "0") {
       console.log(`
     ${C.r("--agents has nothing to attach to.")}
 
@@ -782,21 +796,13 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
         skip(`${agentId} exists — leaving its key alone`);
         continue;
       }
-      const kp = KeyPair.fromRandom("ed25519");
-      await ownerAcct.callFunction({
-        contractId: vault,
-        methodName: "create_agent_account",
-        args: {
-          node_id: byLabel.get(a.label),
-          sub_label: a.label,
-          public_key: kp.getPublicKey().toString(),
-          key_allowance: AGENT_KEY_ALLOWANCE.toString(),
-        },
-        gas: 100n * 10n ** 12n,
-        deposit: AGENT_COST,
-      });
-      created.push({ nodeId: byLabel.get(a.label), agentId, secret: kp.toString() });
-      ok(`${agentId} — restricted key, may only call request_payment`);
+      // UNREACHABLE: the guard above exits for any non-zero --agents. Kept as
+      // a tombstone rather than silently deleted, because the loop around it
+      // still computes agent ids and costs that other code reads.
+      throw new Error(
+        "create_agent_account was removed from the vault — use `npx float-agent` " +
+          "to bind a virtual agent instead.",
+      );
     }
 
     // ---- 8. The quote signer, for the cross-chain rail.

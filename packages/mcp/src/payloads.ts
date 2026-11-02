@@ -14,11 +14,31 @@
 
 import { toBaseUnits, fromBaseUnits } from "./amounts.js";
 
+
+/** A node id must be a non-negative integer; there is no node -1. */
+function assertNodeId(nodeId: number): void {
+  if (!Number.isInteger(nodeId) || nodeId < 0) {
+    throw new Error(`node id must be a non-negative integer, got ${nodeId}`);
+  }
+}
+
+/**
+ * Shape-check a public key before it reaches a wallet.
+ *
+ * Deliberately not a full base58 decode — the contract does that and rejects
+ * a malformed key. This catches the empty string and the obvious typo locally,
+ * where it costs nothing instead of a wallet round-trip.
+ */
+function assertPublicKey(publicKey: string): void {
+  if (!/^(ed25519|secp256k1):[1-9A-HJ-NP-Za-km-z]{32,}$/.test(publicKey)) {
+    throw new Error(
+      `not a public key: ${JSON.stringify(publicKey)}. ` +
+        `Expected "ed25519:<base58>" or "secp256k1:<base58>".`,
+    );
+  }
+}
+
 export const ONE_YOCTO = "1";
-/** Mirrors `AGENT_ACCOUNT_STORAGE` in the contract: 0.05 NEAR. */
-export const AGENT_ACCOUNT_STORAGE_YOCTO = (5n * 10n ** 22n).toString();
-/** Mirrors `MIN_AGENT_KEY_ALLOWANCE` in the contract: 0.5 NEAR. */
-export const MIN_AGENT_KEY_ALLOWANCE_YOCTO = (5n * 10n ** 23n).toString();
 
 /**
  * Gas attached to a payment, for every route.
@@ -37,7 +57,6 @@ export const DEFAULT_GAS_TGAS = 100;
 export const MAX_TOKENS = 4;
 export const MAX_RECIPIENTS = 32;
 export const MAX_LABEL_LEN = 48;
-export const MAX_SUB_LABEL_LEN = 32;
 export const MAX_COOLDOWN_SEC = 7 * 24 * 60 * 60;
 export const MAX_PURGE_LIMIT = 100;
 
@@ -97,7 +116,6 @@ function describeLimits(limits: HumanTokenLimit[]): string {
     .join("; ");
 }
 
-const SUB_LABEL = new RegExp(`^[a-z0-9_-]{1,${MAX_SUB_LABEL_LEN}}$`);
 
 function assertRecipients(recipients: string[] | null): void {
   if (recipients === null) return;
@@ -181,59 +199,63 @@ export function planBindAgent(vault: string, nodeId: number, accountId: string):
     summary: `Let ${accountId} spend from node ${nodeId}`,
     warnings: [
       `${accountId} is an EXISTING account whose keys you do not control. ` +
-        `Prefer create_agent_account, which issues a key restricted to request_payment.`,
+        `It can call request_payment with the full authority of node ${nodeId}.`,
+      `Prefer a VIRTUAL agent (bind_virtual_agent): it binds one key you generate ` +
+        `rather than a whole account, costs ~168 bytes, and strands nothing.`,
     ],
   };
 }
 
-export function planCreateAgentAccount(
+export function planBindVirtualAgent(
   vault: string,
   nodeId: number,
-  subLabel: string,
   publicKey: string,
-  keyAllowanceNear: string,
 ): OwnerPayload {
-  if (!SUB_LABEL.test(subLabel)) {
-    throw new Error(
-      `invalid sub_label ${JSON.stringify(subLabel)}: 1..=32 chars of [a-z0-9_-]. ` +
-        `A dot in particular is refused — the account id is DERIVED as ` +
-        `<label>.${vault} so the new account cannot be aimed outside this vault's subtree.`,
-    );
-  }
-  if (!publicKey.startsWith("ed25519:") && !publicKey.startsWith("secp256k1:")) {
-    throw new Error("publicKey must be in NEAR form, e.g. ed25519:...");
-  }
-  const allowance = toBaseUnits(keyAllowanceNear, NEAR_DECIMALS);
-  if (allowance < BigInt(MIN_AGENT_KEY_ALLOWANCE_YOCTO)) {
-    throw new Error(
-      `key allowance ${keyAllowanceNear} NEAR is below the usable floor of ` +
-        `${fromBaseUnits(BigInt(MIN_AGENT_KEY_ALLOWANCE_YOCTO), NEAR_DECIMALS)} NEAR. ` +
-        `NEAR reserves the FULL prepaid gas of each call against the key up front and ` +
-        `refunds the remainder, so an allowance sized to expected burn produces a key ` +
-        `that cannot transact at all.`,
-    );
-  }
-  const deposit = allowance + BigInt(AGENT_ACCOUNT_STORAGE_YOCTO);
-  const derived = `${subLabel}.${vault}`;
+  assertNodeId(nodeId);
+  assertPublicKey(publicKey);
   return {
     receiverId: vault,
-    methodName: "create_agent_account",
-    args: {
-      node_id: nodeId,
-      sub_label: subLabel,
-      public_key: publicKey,
-      key_allowance: allowance.toString(),
-    },
+    methodName: "bind_virtual_agent",
+    args: { node_id: nodeId, public_key: publicKey },
     gasTgas: DEFAULT_GAS_TGAS,
-    depositYocto: deposit.toString(),
-    summary:
-      `Create agent account ${derived}, bind it to node ${nodeId}, and give it ONE key ` +
-      `that can call only request_payment on ${vault} — it cannot call other methods, ` +
-      `cannot call other contracts, and cannot attach a deposit. ` +
-      `Funding ${fromBaseUnits(deposit, NEAR_DECIMALS)} NEAR ` +
-      `(${keyAllowanceNear} gas allowance + ` +
-      `${fromBaseUnits(BigInt(AGENT_ACCOUNT_STORAGE_YOCTO), NEAR_DECIMALS)} account storage).`,
-    warnings: [],
+    // ONE YOCTO, not a funding amount. `bind_virtual_agent` calls
+    // `assert_owner()` -> `assert_one_yocto()`. Nothing is funded here, which
+    // is the whole point of moving off sub-accounts.
+    depositYocto: ONE_YOCTO,
+    summary: `Let the key ${publicKey.slice(0, 22)}… spend from node ${nodeId}`,
+    warnings: [
+      `A node may hold more than one key — binding another does not replace this one.`,
+      `This grants spending authority only. The key still needs gas: install it as ` +
+        `a NEP-611 gas key on the vault and fund it. That balance is recoverable.`,
+    ],
+  };
+}
+
+/**
+ * Revoke a virtual agent's authority.
+ *
+ * Frees the 82-byte `pubkey_to_node` entry. The 86-byte `pubkey_to_nonce`
+ * entry is RETAINED deliberately and never reclaimed — confirmed live, where
+ * next_nonce stayed at 2 instead of resetting to 1. Dropping it would let
+ * unbind-then-rebind reset the nonce and reopen the replay window, so about
+ * half the binding's storage is intentionally unrecoverable.
+ */
+export function planUnbindVirtualAgent(vault: string, publicKey: string): OwnerPayload {
+  assertPublicKey(publicKey);
+  return {
+    receiverId: vault,
+    methodName: "unbind_virtual_agent",
+    args: { public_key: publicKey },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    summary: `Revoke the key ${publicKey.slice(0, 22)}…`,
+    warnings: [
+      `The replay nonce for this key is kept forever, on purpose: resetting it ` +
+        `would let an unbind/rebind replay old signed payloads. About half the ` +
+        `binding's storage is therefore not reclaimed.`,
+      `Gas still sitting in this key's NEP-611 gas key is NOT returned by ` +
+        `unbinding. Withdraw from the gas key first, or it stays there.`,
+    ],
   };
 }
 
@@ -341,7 +363,8 @@ export const OWNER_PLANNERS = {
   add_node: { methodName: "add_node", fn: planAddNode },
   set_node_caps: { methodName: "set_node_caps", fn: planSetNodeCaps },
   bind_agent: { methodName: "bind_agent", fn: planBindAgent },
-  create_agent_account: { methodName: "create_agent_account", fn: planCreateAgentAccount },
+  bind_virtual_agent: { methodName: "bind_virtual_agent", fn: planBindVirtualAgent },
+  unbind_virtual_agent: { methodName: "unbind_virtual_agent", fn: planUnbindVirtualAgent },
   set_recipients: { methodName: "set_recipients", fn: planSetRecipients },
   set_cooldown: { methodName: "set_cooldown", fn: planSetCooldown },
   freeze_node: { methodName: "freeze_node", fn: planFreezeNode },

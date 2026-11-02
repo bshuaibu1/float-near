@@ -20,13 +20,18 @@
 /**
  * Bytes of the vault contract the factory deploys.
  *
+ * 301,033 until `create_agent_account` was removed, which took 7,305 bytes
+ * with it — about 0.073 NEAR off every vault's storage deposit. The pin
+ * caught the drift the moment the contract shrank, which is the entire
+ * reason it exists.
+ *
  * Mirrors `packages/create-float/res/vault.wasm`, and `create.pins.test.ts`
  * reads that file and fails if the two disagree — so a contract rebuild cannot
  * silently leave this quoting a deposit that is too small. Too small is not a
  * clean failure: CreateAccount succeeds and the vault sits below its own
  * storage requirement, bricking on the first write.
  */
-export const CONTRACT_BYTES = 301033;
+export const CONTRACT_BYTES = 293728;
 
 /** NEAR charges 1e19 yoctoNEAR per byte of storage. */
 export const STORAGE_COST_PER_BYTE = 10n ** 19n;

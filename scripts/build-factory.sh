@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build the factory wasm, and FAIL if the build did nothing.
+# Build a contract wasm, and FAIL if the build did nothing.
+#
+# Usage: scripts/build-factory.sh [crate]   (default: factory; `vault` also valid)
 #
 # WHY THIS IS NOT JUST `cargo near build`.
 #
@@ -31,7 +33,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CRATE=factory
+CRATE="${1:-factory}"
 FINAL="target/near/$CRATE/$CRATE.wasm"
 INTERMEDIATE="target/wasm32-unknown-unknown/release/$CRATE.wasm"
 

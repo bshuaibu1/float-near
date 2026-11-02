@@ -17,7 +17,7 @@ mod tests;
 use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{
-    assert_one_yocto, env, ext_contract, near, AccountId, Allowance, BorshStorageKey, Gas,
+    assert_one_yocto, env, ext_contract, near, AccountId, BorshStorageKey, Gas,
     NearToken, PanicOnDefault, Promise, PromiseOrValue, PublicKey,
 };
 
@@ -94,23 +94,19 @@ const MAX_PROMISE_RESULT_LEN: usize = 256;
 
 pub const PRODUCTION_DAY_NS: u64 = 86_400 * NS_PER_SEC;
 
-/// Floor for the agent account's own storage staking, on top of whatever gas
-/// allowance the owner grants its key.
-pub const AGENT_ACCOUNT_STORAGE: NearToken = NearToken::from_millinear(50);
-/// Lower bound on a usable key allowance.
+/// The ONLY method an agent key may call.
 ///
-/// MEASURED, not guessed: an earlier version hardcoded 0.05 NEAR and the key
-/// was dead on arrival — `NotEnoughBalance { balance: 0.2 NEAR, cost: 1.0009
-/// NEAR }`. NEAR reserves the FULL prepaid gas against the signer up front and
-/// refunds the unused part afterwards, so a 300 Tgas call needs ~1 NEAR of
-/// headroom even though it burns a small fraction of that. An allowance sized
-/// to expected burn rather than to prepaid gas produces a key that cannot
+/// Still exactly right after sub-accounts were retired — it is now the method
+/// a virtual agent's NEP-611 GAS KEY is pinned to, rather than the method a
+/// sub-account's key was pinned to. Same boundary, attached to the vault
+/// instead of to an account nobody could empty.
+///
+/// The sizing lesson from the deleted `MIN_AGENT_KEY_ALLOWANCE` still applies
+/// to funding a gas key: NEAR reserves the FULL prepaid gas up front and
+/// refunds the remainder, so a key must hold the RESERVATION (~0.031 at 50
+/// TGas), not the expected burn (~0.0002). Fund it to the burn and it cannot
 /// transact at all.
-pub const MIN_AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_millinear(500);
-/// The ONLY method an agent key may call. Anything added here widens the
-/// agent's authority, so it is a single const rather than a parameter.
 pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
-pub const GAS_FOR_CREATE_CALLBACK: Gas = Gas::from_tgas(10);
 
 /// Upper bound on a single purge sweep, so one call cannot exhaust gas
 /// part-way and leave an unpredictable amount of work done.
@@ -122,7 +118,6 @@ pub const MAX_PURGE_LIMIT: u32 = 100;
 /// purpose: an owner who could pass zero could sweep a live reservation whose
 /// callback is about to land.
 pub const MIN_SWEEP_AGE_NS: u64 = 3_600 * NS_PER_SEC;
-pub const MAX_SUB_LABEL_LEN: usize = 32;
 pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 
 /// The `ft_transfer` entry point of a NEP-141 token contract.
@@ -824,100 +819,32 @@ impl Vault {
         self.do_bind(node_id, account_id);
     }
 
-    /// Creates `<sub_label>.<vault>` and gives it ONE function-call access key
-    /// pinned to this vault and to `request_payment` alone, then binds it to
-    /// `node_id` once the account actually exists.
-    ///
-    /// The authority this grants is the whole security story, so it is worth
-    /// stating exactly what the resulting key can and cannot do:
-    ///
-    /// - `receiver_id` is this vault, so the key cannot call ANY other
-    ///   contract — including the token itself. That matters: a key that could
-    ///   call `ft_transfer` directly would hold the vault's own transfer
-    ///   authority and every budget check would be moot.
-    /// - `method_names` is exactly `["request_payment"]`, so it cannot reach
-    ///   owner methods.
-    /// - a NEAR function-call key cannot attach a deposit at all, so it cannot
-    ///   move NEAR directly. Every movement of value is contract logic.
-    ///
-    /// Owner-gated by requiring a deposit rather than by `assert_one_yocto`:
-    /// the deposit funds the new account, and requiring one is just as
-    /// effective at excluding a function-call key, which cannot attach any.
-    #[payable]
-    pub fn create_agent_account(
-        &mut self,
-        node_id: NodeId,
-        sub_label: String,
-        public_key: PublicKey,
-        key_allowance: NearToken,
-    ) -> Promise {
-        if env::predecessor_account_id() != self.owner {
-            fail(ReasonCode::NotOwner, "owner only");
-        }
-        if key_allowance < MIN_AGENT_KEY_ALLOWANCE {
-            fail(
-                ReasonCode::InvalidConfig,
-                "key_allowance below the usable floor (see MIN_AGENT_KEY_ALLOWANCE)",
-            );
-        }
-        let required = key_allowance.saturating_add(AGENT_ACCOUNT_STORAGE);
-        let deposit = env::attached_deposit();
-        if deposit < required {
-            fail(
-                ReasonCode::InvalidConfig,
-                "deposit must cover key_allowance plus account storage",
-            );
-        }
-        if sub_label.is_empty()
-            || sub_label.len() > MAX_SUB_LABEL_LEN
-            || !sub_label
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
-        {
-            fail(ReasonCode::InvalidConfig, "sub_label must be 1..=32 chars of [a-z0-9-_]");
-        }
-
-        let vault_id = env::current_account_id();
-        let sub_id = format!("{sub_label}.{vault_id}");
-        if sub_id.len() > MAX_ACCOUNT_ID_LEN {
-            fail(ReasonCode::InvalidConfig, "resulting account id is too long");
-        }
-        let sub: AccountId = sub_id
-            .parse()
-            .unwrap_or_else(|_| fail(ReasonCode::InvalidConfig, "invalid account id"));
-
-        // Validate the binding BEFORE creating anything, so a rejected bind
-        // cannot leave an orphaned funded account behind.
-        self.assert_bindable(node_id, &sub);
-
-        Promise::new(sub.clone())
-            .create_account()
-            .transfer(deposit)
-            .add_access_key_allowance(
-                public_key,
-                Allowance::limited(key_allowance)
-                    .unwrap_or_else(|| fail(ReasonCode::InvalidConfig, "zero key allowance")),
-                vault_id,
-                AGENT_ALLOWED_METHOD.to_string(),
-            )
-            .then(
-                Self::ext(env::current_account_id())
-                    .with_static_gas(GAS_FOR_CREATE_CALLBACK)
-                    .on_agent_created(node_id, sub),
-            )
-    }
-
-    /// Binds only if the account was really created. Binding optimistically
-    /// would leave a node pointing at an account that does not exist.
-    #[private]
-    pub fn on_agent_created(&mut self, node_id: NodeId, account_id: AccountId) -> bool {
-        let created = env::promise_results_count() == 1
-            && env::promise_result_checked(0, MAX_PROMISE_RESULT_LEN).is_ok();
-        if created {
-            self.do_bind(node_id, account_id);
-        }
-        created
-    }
+    // `create_agent_account` AND `on_agent_created` WERE REMOVED HERE.
+    //
+    // They created `<sub_label>.<vault>` with 0.55 NEAR attached and gave it a
+    // single FUNCTION-CALL access key scoped to `request_payment`. Such a key
+    // cannot sign `DeleteAccount`, NEAR requires `actor_id == account_id` for
+    // key and account actions so a parent cannot act for a child, and no
+    // full-access key for an agent account was ever created anywhere. The
+    // result was that every agent ever made stranded its funding permanently.
+    //
+    // Measured, not estimated: 10.7752 NEAR across the 18 agents under
+    // `v3.floatvault-12329.testnet`, and another 0.54434 in
+    // `r1.float.test015.near` on mainnet. All of it unrecoverable, by anyone,
+    // forever. `docs/DEFERRED-agent-key-recovery.md` scoped a fix — add a
+    // full-access key during creation, forward-only — and deferred it.
+    //
+    // This goes further than that fix: the path is gone. Agents are now
+    // VIRTUAL — `bind_virtual_agent` maps a public key to a node for ~168
+    // bytes of vault state (~0.0017 NEAR), and the key's gas comes from a
+    // NEP-611 gas key on the vault, whose balance IS recoverable via
+    // `WithdrawFromGasKey`. Nothing is created, so nothing can be stranded.
+    //
+    // `bind_agent` above is deliberately KEPT. It binds an account that
+    // already exists and that its owner already controls, so it strands
+    // nothing; removing it would also mean dropping `Node.account` and
+    // `account_to_node`, which is a borsh layout change requiring a migration
+    // of live vaults.
 
     #[payable]
     pub fn set_recipients(&mut self, node_id: NodeId, recipients: Option<Vec<AccountId>>) {

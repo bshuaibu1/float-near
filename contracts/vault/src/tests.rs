@@ -615,93 +615,21 @@ fn purge_settled_with_a_zero_limit_removes_nothing() {
 }
 
 // =====================================================================
-// create_agent_account validation
+// create_agent_account is GONE, and so are its seven validation tests.
 //
-// The happy path needs a real account to exist, so it is proven behaviourally
-// in the sandbox tier. These pin the rejections, which are cheap panics.
+// They pinned the sub_label charset, the allowance floor, the deposit floor
+// and the already-bound case — all guarding a method that funded an account
+// nobody could ever empty. Deleting the tests along with the method is the
+// point: a test for a removed feature is not coverage, it is debris that
+// makes the suite look larger than its real reach.
+//
+// The `a_public_key()` and `funded()` helpers went with them; both were used
+// only by those seven tests.
+//
+// What replaces the feature is `bind_virtual_agent` — a public key mapped to
+// a node for ~168 bytes, with gas supplied by a recoverable NEP-611 gas key
+// on the vault. Its tests are with the other virtual-agent cases.
 // =====================================================================
-
-fn a_public_key() -> near_sdk::PublicKey {
-    "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp".parse().unwrap()
-}
-
-fn funded(allowance: NearToken) -> NearToken {
-    allowance.saturating_add(AGENT_ACCOUNT_STORAGE)
-}
-
-#[test]
-#[should_panic(expected = "NOT_OWNER")]
-fn create_agent_account_rejects_a_non_owner() {
-    let t = tree();
-    let mut v = t.v;
-    let a = NearToken::from_near(2);
-    testing_env!(ctx(stranger(), funded(a), 0).build());
-    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
-}
-
-/// One yoctoNEAR under the floor. The floor exists because a smaller allowance
-/// cannot cover prepaid gas, producing a key that is dead on arrival.
-#[test]
-#[should_panic(expected = "INVALID_CONFIG")]
-fn create_agent_account_rejects_an_allowance_below_the_usable_floor() {
-    let t = tree();
-    let mut v = t.v;
-    let a = MIN_AGENT_KEY_ALLOWANCE.saturating_sub(NearToken::from_yoctonear(1));
-    testing_env!(ctx(owner(), funded(MIN_AGENT_KEY_ALLOWANCE), 0).build());
-    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
-}
-
-#[test]
-fn create_agent_account_accepts_exactly_the_floor() {
-    let t = tree();
-    let mut v = t.v;
-    let a = MIN_AGENT_KEY_ALLOWANCE;
-    testing_env!(ctx(owner(), funded(a), 0).build());
-    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
-}
-
-#[test]
-#[should_panic(expected = "INVALID_CONFIG")]
-fn create_agent_account_rejects_a_deposit_that_does_not_cover_storage() {
-    let t = tree();
-    let mut v = t.v;
-    let a = NearToken::from_near(2);
-    testing_env!(ctx(owner(), funded(a).saturating_sub(NearToken::from_yoctonear(1)), 0).build());
-    let _ = v.create_agent_account(t.ops, "x".into(), a_public_key(), a);
-}
-
-#[test]
-#[should_panic(expected = "INVALID_CONFIG")]
-fn create_agent_account_rejects_an_uppercase_sub_label() {
-    let t = tree();
-    let mut v = t.v;
-    let a = NearToken::from_near(2);
-    testing_env!(ctx(owner(), funded(a), 0).build());
-    let _ = v.create_agent_account(t.ops, "Agent".into(), a_public_key(), a);
-}
-
-/// A dot would let the caller aim the new account outside this vault's
-/// subtree, which is the whole reason the id is derived rather than accepted.
-#[test]
-#[should_panic(expected = "INVALID_CONFIG")]
-fn create_agent_account_rejects_a_dotted_sub_label() {
-    let t = tree();
-    let mut v = t.v;
-    let a = NearToken::from_near(2);
-    testing_env!(ctx(owner(), funded(a), 0).build());
-    let _ = v.create_agent_account(t.ops, "a.b".into(), a_public_key(), a);
-}
-
-#[test]
-#[should_panic(expected = "INVALID_CONFIG")]
-fn create_agent_account_rejects_a_node_that_already_has_an_account() {
-    let t = tree();
-    let mut v = t.v;
-    let a = NearToken::from_near(2);
-    testing_env!(ctx(owner(), funded(a), 0).build());
-    // n_r1 is already bound to r1() by the fixture.
-    let _ = v.create_agent_account(t.n_r1, "dup".into(), a_public_key(), a);
-}
 
 // =====================================================================
 // Cross-language drift guard
@@ -742,7 +670,6 @@ fn contract_constants_match_the_shared_file() {
     assert_eq!(MAX_TOKENS as u64, num("MAX_TOKENS"));
     assert_eq!(MAX_RECIPIENTS as u64, num("MAX_RECIPIENTS"));
     assert_eq!(MAX_LABEL_LEN as u64, num("MAX_LABEL_LEN"));
-    assert_eq!(MAX_SUB_LABEL_LEN as u64, num("MAX_SUB_LABEL_LEN"));
     assert_eq!(MAX_REQUEST_ID_LEN as u64, num("MAX_REQUEST_ID_LEN"));
     assert_eq!(MAX_MEMO_LEN as u64, num("MAX_MEMO_LEN"));
     assert_eq!(MAX_COOLDOWN_SEC as u64, num("MAX_COOLDOWN_SEC"));
@@ -751,17 +678,15 @@ fn contract_constants_match_the_shared_file() {
     assert_eq!(MIN_GAS_FOR_DISPATCH.as_tgas(), num("MIN_GAS_FOR_DISPATCH_TGAS"));
     assert_eq!(PRODUCTION_DAY_NS, num("PRODUCTION_DAY_NS"));
 
-    // Token amounts as decimal strings: a JSON number cannot hold a
-    // yoctoNEAR value, and rounding one into an f64 is exactly the silent
-    // drift this guard exists to prevent.
-    assert_eq!(
-        AGENT_ACCOUNT_STORAGE.as_yoctonear().to_string(),
-        text("AGENT_ACCOUNT_STORAGE_YOCTO")
-    );
-    assert_eq!(
-        MIN_AGENT_KEY_ALLOWANCE.as_yoctonear().to_string(),
-        text("MIN_AGENT_KEY_ALLOWANCE_YOCTO")
-    );
+    // AGENT_ACCOUNT_STORAGE, MIN_AGENT_KEY_ALLOWANCE and MAX_SUB_LABEL_LEN
+    // were pinned here and are gone. They only ever sized
+    // `create_agent_account`, which was removed because the accounts it
+    // funded could never be emptied by anyone.
+    //
+    // AGENT_ALLOWED_METHOD outlives them: it is still the exact method a
+    // virtual agent's NEP-611 gas key is restricted to, so it is still the
+    // real security boundary — now enforced on a key attached to the VAULT
+    // rather than to a sub-account.
     assert_eq!(AGENT_ALLOWED_METHOD, text("AGENT_ALLOWED_METHOD"));
 }
 

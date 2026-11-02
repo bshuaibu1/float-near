@@ -1,12 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   ONE_YOCTO,
-  AGENT_ACCOUNT_STORAGE_YOCTO,
-  MIN_AGENT_KEY_ALLOWANCE_YOCTO,
   OWNER_PLANNERS,
   planSetNodeCaps,
   planAddNode,
-  planCreateAgentAccount,
   planFreezeNode,
   planPurgeSettled,
   planSetPaused,
@@ -107,40 +104,25 @@ describe("summaries", () => {
   });
 });
 
-describe("create_agent_account", () => {
-  it("funds the deposit as allowance + account storage", () => {
-    const p = planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", "2");
-    expect(p.depositYocto).toBe(
-      (2n * 10n ** 24n + BigInt(AGENT_ACCOUNT_STORAGE_YOCTO)).toString(),
-    );
-  });
+// The `create_agent_account` describe block lived here — FIVE tests pinning
+// the deposit arithmetic, the allowance floor, the sub_label charset and the
+// derived account id.
+//
+// All five guarded a method that funded an account nobody could ever empty:
+// its only key was a function-call key, which cannot sign `DeleteAccount`,
+// and NEAR requires `actor_id == account_id` so no parent could do it either.
+// 10.7752 NEAR is stranded that way across 18 testnet agents, plus 0.54434 on
+// mainnet. The method is gone, so its tests went with it.
+//
+// Worth recording how they behaved once the function was deleted: FOUR went
+// red, and the fifth — `rejects a sub_label the contract would reject` —
+// stayed GREEN. It asserted `.toThrow()`, and calling a function that no
+// longer exists throws, so it passed against a feature that had ceased to
+// exist. A test whose assertion is satisfied by the absence of the thing it
+// tests is not evidence of anything.
+//
+// `virtual-agent.test.ts` covers what replaced it.
 
-  it("rejects an allowance below the floor CLIENT-SIDE, before anything is signed", () => {
-    // The contract rejects it too, but failing here costs no gas and no
-    // wallet round-trip, and the error can explain why the floor exists.
-    expect(() => planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", "0.01")).toThrow(
-      /allowance/i,
-    );
-  });
-
-  it("accepts exactly the floor", () => {
-    const floorNear = (BigInt(MIN_AGENT_KEY_ALLOWANCE_YOCTO) / 10n ** 22n).toString();
-    expect(() =>
-      planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", `0.${floorNear.padStart(2, "0")}`),
-    ).not.toThrow();
-  });
-
-  it("rejects a sub_label the contract would reject, before signing", () => {
-    for (const bad of ["", "Agent", "a.b", "a".repeat(33), "a b", "a!"]) {
-      expect(() => planCreateAgentAccount(VAULT, 2, bad, "ed25519:aaa", "2")).toThrow();
-    }
-  });
-
-  it("shows the derived account id so the human can check it", () => {
-    const p = planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", "2");
-    expect(p.summary).toContain(`a0.${VAULT}`);
-  });
-});
 
 describe("the planner surface", () => {
   // The test clock lets the owner shrink the budget window to 100ms. It is
@@ -158,7 +140,8 @@ describe("the planner surface", () => {
       "add_node",
       "set_node_caps",
       "bind_agent",
-      "create_agent_account",
+      "bind_virtual_agent",
+      "unbind_virtual_agent",
       "set_recipients",
       "set_cooldown",
       "freeze_node",

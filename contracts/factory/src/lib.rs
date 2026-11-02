@@ -196,6 +196,8 @@ impl Factory {
             .create_account()
             .transfer(deposit)
             .deploy_contract(code.0)
+            // THE VAULT NEEDS A SIGNER OF ITS OWN. See `create_vault`.
+            .add_full_access_key(env::signer_account_pk())
             .function_call(
                 "new".to_string(),
                 new_args(&owner, &self.network, root_limits, root_recipients),
@@ -307,6 +309,30 @@ impl Factory {
             .create_account()
             .transfer(deposit)
             .use_global_contract(self.code_hash)
+            // THE VAULT NEEDS A SIGNER OF ITS OWN, or its gas keys become a
+            // trap. Agents are gas keys ON THE VAULT now that sub-accounts are
+            // retired, and while near-sdk can ADD and FUND a gas key from
+            // inside the contract, there is NO withdraw host function at any
+            // near-sys version (0.2.14, 0.3.0, 0.4.0 all expose exactly three
+            // gas-key actions, none of which takes money out).
+            // `WithdrawFromGasKey` exists in the protocol but only as an
+            // ACCOUNT-SIGNED action — so a vault with zero keys could fund gas
+            // keys and never reclaim them. That is the `create_agent_account`
+            // stranding bug relocated, which is precisely what retiring
+            // sub-accounts was meant to end.
+            //
+            // `signer_account_pk()` rather than a parameter: a parameter could
+            // be set to anybody's key, while the signer's key provably
+            // authorised this very call. It is also provably FULL-ACCESS,
+            // because this method takes a deposit and NEAR forbids
+            // function-call keys from attaching one.
+            //
+            // The capability delta is close to zero. The owner already has an
+            // uncapped `withdraw` and can rewrite every cap in the tree, so a
+            // key that can also redeploy grants them little they could not
+            // already do — and a stolen owner key could drain the vault
+            // through `withdraw` regardless.
+            .add_full_access_key(env::signer_account_pk())
             .function_call(
                 "new".to_string(),
                 // ROOT LIMITS AND RECIPIENTS ARE PASSED HERE, not added later.

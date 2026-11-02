@@ -2,7 +2,8 @@
  * The ONLY place in this server that touches a key.
  *
  * It signs exactly one method — `request_payment` — with the restricted key
- * issued by `create_agent_account`. That key is cryptographically incapable of
+ * of a VIRTUAL AGENT, installed as a NEP-611 gas key on the vault and bound
+ * with `bind_virtual_agent`. That key is cryptographically incapable of
  * doing anything else: its `receiver_id` is the vault, its `method_names` is
  * `["request_payment"]`, and a NEAR function-call key cannot attach a deposit
  * at all. So the worst a compromised copy of this server can do is make

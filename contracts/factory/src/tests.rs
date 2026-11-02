@@ -1,6 +1,7 @@
 use super::*;
 use near_sdk::json_types::Base58CryptoHash;
 use near_sdk::test_utils::VMContextBuilder;
+use near_sdk::mock::MockAction;
 use near_sdk::{testing_env, NearToken};
 
 /// The REAL global-contract code hash measured on mainnet, not a placeholder.
@@ -461,4 +462,94 @@ fn get_config_reflects_the_kill_switch() {
     testing_env!(fctx(fowner(), NearToken::from_yoctonear(1)).build());
     f.set_paused(true);
     assert!(f.get_config().paused);
+}
+
+// ─── the vault needs a signer, or its gas keys strand ────────────────────────
+
+fn a_pk() -> near_sdk::PublicKey {
+    "ed25519:DHyH8bhSiKXvQkPMgJ3wkAo1hDuZEaBqAHhPiRnrLbNP".parse().unwrap()
+}
+
+/// THE VAULT MUST END UP WITH A FULL-ACCESS KEY, or its gas keys are a trap.
+///
+/// A factory-created vault had ZERO access keys, which read as a virtue —
+/// nothing to steal. It is not, once agents are gas keys on the vault:
+///
+///   near-sdk can ADD a gas key and FUND it (`promise_batch_action_
+///   add_gas_key_with_function_call`, `..._transfer_to_gas_key`) but there is
+///   NO withdraw host function at ANY near-sys version — 0.2.14, 0.3.0, 0.4.0
+///   all expose exactly three gas-key actions and none of them takes money
+///   out. `WithdrawFromGasKey` exists in the protocol but only as an
+///   ACCOUNT-SIGNED action.
+///
+/// So on a keyless vault nothing can ever reclaim a gas key's balance. That is
+/// the same stranding bug `create_agent_account` had, moved to a new place,
+/// and it is exactly what retiring sub-accounts was meant to eliminate.
+///
+/// The key is `signer_account_pk()`, NOT a parameter. A parameter could be set
+/// to anyone's key; the signer's key is provably the one that authorised this
+/// call. And it is provably FULL-ACCESS: this method takes a deposit, and NEAR
+/// forbids function-call access keys from attaching one, so the transaction
+/// cannot have been signed by a restricted key.
+#[test]
+fn create_vault_with_code_installs_the_signers_key_as_a_full_access_key() {
+    let mut f = ready();
+    let mut b = fctx(alice(), NearToken::from_near(2));
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients());
+
+    let receipts = near_sdk::test_utils::get_created_receipts();
+    let batch = receipts
+        .iter()
+        .find(|r| r.actions.iter().any(|a| matches!(a, MockAction::CreateAccount { .. })))
+        .expect("no receipt contains CreateAccount");
+
+    let added: Vec<_> = batch
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            MockAction::AddKeyWithFullAccess { public_key, .. } => Some(public_key.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(added.len(), 1, "expected exactly one full-access key on the new vault");
+    // Compared as strings: the mock reports `near_crypto::PublicKey` while the
+    // contract deals in near-sdk's `PublicKey`. Distinct types, same base58
+    // form, and the base58 form is what has to match.
+    assert_eq!(
+        added[0].to_string(),
+        a_pk().to_string(),
+        "the key installed must be the one that SIGNED",
+    );
+}
+
+/// The same guarantee on the global path, which is the one that ships.
+///
+/// Asserted separately rather than trusting that the two paths agree: they
+/// already drifted once, when `create_vault` carried its own copy of the pause
+/// check, deposit check and label handling instead of calling `begin`.
+#[test]
+fn create_vault_installs_the_signers_key_as_a_full_access_key() {
+    let mut f = ready();
+    let mut b = fctx(alice(), NearToken::from_near(2));
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let _ = f.create_vault(None, root_limits(), root_recipients());
+
+    let receipts = near_sdk::test_utils::get_created_receipts();
+    let batch = receipts
+        .iter()
+        .find(|r| r.actions.iter().any(|a| matches!(a, MockAction::CreateAccount { .. })))
+        .expect("no receipt contains CreateAccount");
+
+    let n = batch
+        .actions
+        .iter()
+        .filter(|a| matches!(a, MockAction::AddKeyWithFullAccess { .. }))
+        .count();
+    assert_eq!(n, 1, "the global path must install the owner's key too");
 }

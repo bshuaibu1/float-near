@@ -1,6 +1,6 @@
 {
-  "artifactSha256": "428186d2ebc175b259e50fef2beae23f7f305b2af7f790d08c009ec7fe9e5553",
-  "sourcesDigest": "c3338b6c70e47c05892a402009dfe83a387010886f7effd775f0394708fc0ba7",
+  "artifactSha256": "bd53debaac85231e30530331e9a9e0447143d6fea223bf0d355b02c8a03a254a",
+  "sourcesDigest": "4d53dfc674ba16764e6f2e74ccb474dc49fe129ad906a56ddb7f2753ed9adc83",
   "sources": [
     "lib.rs",
     "types.rs"

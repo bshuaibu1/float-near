@@ -14,7 +14,7 @@
  * cannot exercise a hierarchy at all; it can only ever spend one leaf.
  *
  * On holding several keys at once: each is the restricted key from
- * `create_agent_account`, which can call only `request_payment` on its own
+ * a virtual agent's NEP-611 gas key, which can call only `request_payment` on its own
  * vault, cannot call other contracts, and cannot attach a deposit. The vault
  * enforces every cap regardless of who holds the key, so the blast radius of
  * the whole keyring is bounded by the tree's own limits. That is the same
