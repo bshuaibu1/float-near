@@ -362,6 +362,38 @@ export default function Activity() {
   // so a testnet vault cannot link to a mainnet explorer.
   const [explorerBase, setExplorerBase] = useState<string>("");
   const [vaultId, setVaultId] = useState<string>("");
+
+  /**
+   * WHAT THE REFUSAL HISTORY ACTUALLY COVERS.
+   *
+   * A refusal is never stored in contract state — the contract emits a NEP-297
+   * event and keeps nothing, deliberately, so an agent cannot inflate the
+   * vault's storage bill by spamming rejects. That makes the single most
+   * important thing this product does invisible unless something read the
+   * blocks.
+   *
+   * So "0 blocked" on this page is ambiguous by default: it means either "none
+   * happened" or "nobody looked", and those are opposite facts. The adapter
+   * has always computed the distinction and exposed it as `blockedCoverage`;
+   * nothing rendered it, so this page implied completeness it never had. The
+   * sentence is built adapter-side and tested there, not composed here.
+   */
+  const [coverage, setCoverage] = useState<{
+    scanned: boolean;
+    unreadBlocks: number;
+    text: string;
+  } | null>(null);
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/v1/dashboard`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { blockedCoverageNote?: typeof coverage } | null) => {
+        // A failed read leaves it null, which renders the "not scanned"
+        // warning rather than silently nothing — the safe direction is always
+        // to understate coverage.
+        setCoverage(d?.blockedCoverageNote ?? null);
+      })
+      .catch(() => setCoverage(null));
+  }, []);
   useEffect(() => {
     fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
@@ -498,6 +530,25 @@ export default function Activity() {
             </p>
           )}
         </div>
+
+        {/* THE COVERAGE CAVEAT.
+            Rendered whatever the blocked count is, because it qualifies BOTH
+            readings: a zero that was never looked for, and a non-zero that is
+            only part of the story. Amber when nothing has been scanned or
+            blocks are unread, grey when the range is clean — the colour
+            tracks whether a reader should doubt the number above. */}
+        {coverage && (
+          <div
+            className="mb-4 rounded-lg px-3.5 py-2.5 text-[12px] leading-5"
+            style={
+              !coverage.scanned || coverage.unreadBlocks > 0
+                ? { background: "#FFF8E6", border: "1px solid #F0E0B0", color: "#7A5B14" }
+                : { background: "#FBFBFA", border: "1px solid #EAEAEA", color: "#787774" }
+            }
+          >
+            {coverage.text}
+          </div>
+        )}
 
         {/* Filter bar */}
         <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">

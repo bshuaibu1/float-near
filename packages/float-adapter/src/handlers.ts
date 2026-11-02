@@ -313,6 +313,69 @@ export type KeyFn = (accountId: string) => Promise<
  * trying to rule out. `restricted` here is computed from the permission NEAR
  * reports, and a FullAccess key makes it false.
  */
+/** What `coverageNote` returns, so a UI renders a fact rather than composing one. */
+export interface CoverageNote {
+  /** False when no scan has ever run. NOT the same as "no refusals". */
+  scanned: boolean;
+  /** Blocks inside the claimed range that were never actually read. */
+  unreadBlocks: number;
+  /** A sentence safe to render verbatim. */
+  text: string;
+}
+
+/**
+ * State what the refusal history actually covers, in words.
+ *
+ * `blockedCoverage` has been on /v1/dashboard for a while, computed behind a
+ * comment reading "A UI that shows 0 blocked without this cannot distinguish
+ * an honest zero from an unscanned range" — and no page rendered it. So the
+ * activity page showed four payments and zero refusals with nothing saying
+ * that 95% of the vault's blocks had never been read.
+ *
+ * The sentence is built HERE, not in JSX, because this module owns the
+ * distinction and has the tests. A formatter duplicated in a component is one
+ * that drifts, and the direction it drifts is always toward claiming more
+ * coverage than exists.
+ *
+ * Deliberately NOT expressed as a percentage. That would need the vault's
+ * creation height and the chain head, neither of which this handler has, and
+ * an invented denominator is exactly the plausible-wrong-number this file
+ * warns about. The range and the block count are facts; a ratio would not be.
+ */
+export function coverageNote(
+  scan: AdapterConfig["blockedScan"] | null | undefined,
+): CoverageNote {
+  if (!scan) {
+    return {
+      scanned: false,
+      unreadBlocks: 0,
+      text:
+        "Refusal history has not been scanned for this vault, so refusals are " +
+        "UNKNOWN rather than absent. A refusal is never stored on chain — only " +
+        "emitted as an event — so nothing can show them until " +
+        "scripts/scan-blocked.mjs has read the blocks.",
+    };
+  }
+
+  const unreadBlocks = (scan.holes ?? []).reduce((n, h) => n + (h.to - h.from + 1), 0);
+  const span = scan.to - scan.from + 1;
+  const n = (x: number) => x.toLocaleString("en-US");
+
+  // HEIGHTS ARE NOT FORMATTED. A block height is an identifier, not a
+  // quantity: "275,882,255" cannot be pasted into an explorer or an RPC call,
+  // and a reader checking the claim is exactly who this sentence is for. The
+  // COUNT is a quantity, so it keeps its separators.
+  let text =
+    `Refusals have been read from blocks ${scan.from}–${scan.to} ` +
+    `(${n(span)} blocks). Outside that range they are UNKNOWN, not absent.`;
+  if (unreadBlocks > 0) {
+    text +=
+      ` ${n(unreadBlocks)} block${unreadBlocks === 1 ? "" : "s"} inside that range ` +
+      `could not be read and remain unread.`;
+  }
+  return { scanned: true, unreadBlocks, text };
+}
+
 /** One access key, flattened, whichever permission variant NEAR reported. */
 function describeKey(k: Awaited<ReturnType<KeyFn>>[number]): AgentKeyView["keys"][number] {
   const p = k.access_key.permission;
@@ -514,6 +577,10 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
     // What the refusal history actually covers. A UI that shows "0 blocked"
     // without this cannot distinguish an honest zero from an unscanned range.
     blockedCoverage: cfg.blockedScan,
+    // The same fact as a sentence. Shipped alongside the raw range because the
+    // raw range sat here unrendered for weeks — a component had to compose the
+    // caveat itself, and none did. Giving it ready-made removes the excuse.
+    blockedCoverageNote: coverageNote(cfg.blockedScan),
     transactionStats: {
       total: onchain.length + cfg.blockedRing.length + Object.keys(cfg.chainBlocked ?? {}).length,
       // The Base rail's terminal states count as approved. "success" alone was

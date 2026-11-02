@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  coverageNote,
   explorerBaseFor,
   getAgentKeys,
   getVaultInfo,
@@ -638,5 +639,71 @@ describe("getAgentKeys finds VIRTUAL agents", () => {
   it("degrades to account-only when the vault id is unknown", async () => {
     const rows = await getAgentKeys(viewFor({ [GAS_PK]: 0 }), async () => [] as never, cfg());
     expect(rows.every((r) => !r.virtual)).toBe(true);
+  });
+});
+
+describe("coverageNote states what the refusal history actually covers", () => {
+  /**
+   * `blockedCoverage` was already on /v1/dashboard, computed behind a comment
+   * reading "A UI that shows 0 blocked without this cannot distinguish an
+   * honest zero from an unscanned range" — and NO page rendered it. So the
+   * activity page showed four payments and zero refusals with nothing saying
+   * that 95% of the vault's blocks had never been read.
+   *
+   * The sentence is built HERE rather than in the page because this module
+   * owns the distinction, has the tests, and is the thing that knows a hole
+   * from an honest zero. A formatter duplicated in JSX is one that drifts, and
+   * the direction it drifts is always toward claiming more coverage than
+   * exists.
+   */
+  it("says refusals are UNKNOWN when nothing has been scanned", () => {
+    for (const c of [null, undefined]) {
+      const note = coverageNote(c);
+      expect(note.scanned).toBe(false);
+      expect(note.text).toMatch(/not been scanned|unknown/i);
+      // The word that must never appear: it would turn "we did not look" into
+      // "nothing happened".
+      expect(note.text).not.toMatch(/\bnone\b|\bno refusals\b/i);
+    }
+  });
+
+  it("reports the scanned range and block count", () => {
+    const note = coverageNote({ from: 275882255, to: 275883754, holes: [] });
+    expect(note.scanned).toBe(true);
+    expect(note.text).toContain("275882255");
+    expect(note.text).toContain("275883754");
+    expect(note.text).toContain("1,500");
+  });
+
+  /** Outside the range is unknown, and the sentence has to say so. */
+  it("says refusals outside the range are unknown", () => {
+    const note = coverageNote({ from: 100, to: 200, holes: [] });
+    expect(note.text).toMatch(/outside/i);
+    expect(note.text).toMatch(/unknown/i);
+  });
+
+  /**
+   * A hole is the case this whole subsystem exists for: blocks INSIDE the
+   * claimed range that were never actually read. Reporting the range without
+   * them overstates coverage.
+   */
+  it("counts unread blocks inside the range", () => {
+    const note = coverageNote({
+      from: 1000,
+      to: 2000,
+      holes: [
+        { from: 1100, to: 1109 },
+        { from: 1500, to: 1500 },
+      ],
+    });
+    expect(note.unreadBlocks).toBe(11);
+    expect(note.text).toMatch(/11 block/);
+    expect(note.text).toMatch(/unread|not read/i);
+  });
+
+  it("does not mention holes when there are none", () => {
+    const note = coverageNote({ from: 1, to: 10, holes: [] });
+    expect(note.unreadBlocks).toBe(0);
+    expect(note.text).not.toMatch(/unread/i);
   });
 });
