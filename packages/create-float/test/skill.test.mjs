@@ -33,7 +33,16 @@ test("SKILL.md exists — it is the entry point an agent is given", () => {
 });
 
 test("every REASON CODE named in SKILL.md is one the contract can emit", () => {
-  const named = new Set([...read(SKILL).matchAll(/`([A-Z_]{4,})`/g)].map((m) => m[1]));
+  // CONFIGURATION NAMES ARE NOT REASON CODES. The pattern below matches any
+  // backticked ALL_CAPS token, which is right for `RECIPIENT_NOT_ALLOWED` and
+  // wrong for `NEAR_VAULT_CONTRACT` — an env var the skill has to name when it
+  // tells an agent how to connect to an existing vault. Excluded by PREFIX
+  // rather than by listing individual names, so a new env var does not fail a
+  // test about contract behaviour.
+  const isConfigName = (n) => /^(NEAR_VAULT_|FLOAT_|BLOCKED_)/.test(n);
+  const named = new Set(
+    [...read(SKILL).matchAll(/`([A-Z_]{4,})`/g)].map((m) => m[1]).filter((n) => !isConfigName(n)),
+  );
   const real = new Set([...read(TYPES).matchAll(/"([A-Z_]{4,})"/g)].map((m) => m[1]));
   assert.ok(named.size >= 10, `expected the skill to document the codes; found ${named.size}`);
   const bogus = [...named].filter((n) => !real.has(n));

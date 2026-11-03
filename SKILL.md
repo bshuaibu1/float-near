@@ -193,16 +193,65 @@ Useful flags: `--dry-run` (plan and cost, sends nothing), `--yes`
 **Run `--dry-run` first and show the human the cost.** Every step spends real
 NEAR and several are irreversible.
 
-### What the human must do first — you cannot do these
+## The user has no vault yet
 
-1. have a NEAR account whose key is in `~/.near-credentials`
-2. hold **3.5 NEAR** in it for a vault plus one agent (**3.3** for a bare
-   vault, plus ~0.12 per agent). Mostly a **refundable** storage stake for the
-   contract, not a fee — but the wizard checks the balance before it starts and
-   refuses if it is short, so a round "3" is not enough.
-3. hold some of the token the agents will spend
+**Use `vault_create` and send them a link. Do not ask for a private key.**
 
-If any is missing, stop and say which. Do not improvise around it.
+```
+vault_create({ owner: "alice.near" })
+ -> vault:    alice-near.<factory>
+    deposit:  3.03728 NEAR + 0.20000 gas reservation
+    url:      https://app.usefloat.xyz/?owner=alice.near&factory=...
+```
+
+You do the work — deriving the address from the factory's own view, reading the
+real deposit, checking the name is not already taken — and the human does one
+thing: opens the link and approves it in their own wallet. Nothing that can
+hurt them touches disk.
+
+**Why this and not the CLI.** `create-float` needs a FULL-ACCESS key in
+`~/.near-credentials`, because a `DeployContract` action cannot be signed by a
+function-call key. A full-access key can drain the account, delete it, or
+replace the vault's code. Asking for one in order to set up spending limits
+contradicts the entire product — "a budget an agent cannot talk its way out of"
+is not credible from an agent that just asked for unrestricted access. The
+browser path needs no key at all: the user signs ONE ordinary function call,
+and a function-call key cannot deploy, cannot transfer and cannot add keys.
+
+**Never offer to run the CLI on someone else's behalf.** The CLI is for an
+operator on their own machine, with their own key, where no new trust is being
+extended. That is a different situation from a user you are onboarding, and the
+difference is not cosmetic.
+
+**The operator path, for your own machine only.** `create-float` needs a NEAR
+account whose full-access key is already in `~/.near-credentials`, and the
+account must hold **3.5 NEAR** for a vault plus one agent (**3.3** for a bare
+vault, plus ~0.12 per agent) along with some of the token the agents will
+spend. Mostly a refundable storage stake rather than a fee, but the wizard
+checks the balance up front and refuses if it is short — so a round "3" is not
+enough. If any of that is missing, stop and say which. Do not improvise around
+it.
+
+### What to tell them, in the same message as the link
+
+1. what the link does — creates a vault they own, which they approve in their
+   wallet
+2. that they need to HOLD **3.24 NEAR** at signing time: a 3.04 deposit plus a
+   0.20 gas reservation. The reservation is returned seconds later and only
+   ~0.004 is actually spent, but a wallet checks the balance against the full
+   amount and refuses below it. Quote the total, not the net — quoting the net
+   is what makes a wallet reject a transaction the user was told they could
+   afford.
+3. that almost all of it is a **refundable storage stake** held by their own
+   vault, not a fee
+4. that nothing can spend from it until they add an agent and give it a budget
+
+If `vault_create` reports no factory for the network, say so and stop. There is
+deliberately no built-in mainnet default: guessing one wrong would send a real
+3.24 NEAR deposit to an account nobody verified.
+
+If it reports the vault already exists, that IS their vault — connect to it
+with `NEAR_VAULT_CONTRACT`, do not create a second one.
 
 ## Asking a human for something
 

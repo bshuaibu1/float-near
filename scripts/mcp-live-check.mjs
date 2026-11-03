@@ -16,7 +16,12 @@ const ROOT = resolve(import.meta.dirname, "..");
 const VAULT = process.env.VAULT ?? "work12-testnet.fac.floatv4.testnet";
 const FACTORY = process.env.FACTORY ?? "fac.floatv4.testnet";
 const OWNER = process.env.OWNER ?? "work12.testnet";
-const NEW_OWNER = process.env.NEW_OWNER ?? "floatv4.testnet";
+// An owner that genuinely has NO vault. This said `floatv4.testnet`, which
+// acquired one partway through the session — so the check started failing
+// because the FIXTURE went stale, not the tool: vault_create correctly refused
+// to plan a second vault for an owner who already had one. A test whose
+// premise the system has since invalidated reports a bug that is not there.
+const NEW_OWNER = process.env.NEW_OWNER ?? "alice.testnet";
 
 const p = spawn("node", [resolve(ROOT, "packages", "mcp", "dist", "server.js")], {
   stdio: ["pipe", "pipe", "pipe"],
