@@ -78,6 +78,15 @@ export const FACTORY_BY_NETWORK: Record<string, string | undefined> = {
 
 export interface CreatePlanInput {
   owner: string;
+  /**
+   * False when the caller does not know the user's NEAR account.
+   *
+   * An agent onboarding a stranger has no account id to pass, and demanding
+   * one assumes the user knows it, types it correctly, and has one at all.
+   * The page derives everything from the CONNECTED wallet anyway, so an
+   * owner-less link is not degraded — it asks the wallet instead of the human.
+   */
+  ownerKnown?: boolean;
   /** From the factory's `vault_id_for`. `null` means no legal derived id. */
   vaultId: string | null;
   factory: string;
@@ -91,8 +100,9 @@ export interface CreatePlanInput {
 }
 
 export interface CreatePlan {
-  owner: string;
-  vault: string;
+  owner: string | null;
+  /** Null when the owner is unknown — the wallet decides it at signing time. */
+  vault: string | null;
   factory: string;
   network: string;
   depositYocto: string;
@@ -122,7 +132,14 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
         `This is the operator's kill switch; try again later.`,
     );
   }
-  if (!i.vaultId) {
+  // UNKNOWN OWNER IS A VALID CASE, not a missing argument. Everything below
+  // that depends on the owner is skipped rather than guessed: no derived
+  // address, no existence check, and no `owner` on the url — the page refuses
+  // when that parameter disagrees with the connected wallet, so a blank or
+  // invented one would turn every link into a refusal.
+  const known = i.ownerKnown !== false && !!i.owner;
+
+  if (known && !i.vaultId) {
     throw new Error(
       `${i.owner} has no legal vault id under ${i.factory}. ` +
         `An implicit account (a 64-character hex id) cannot have one: the derived ` +
@@ -130,7 +147,7 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
         `64-character limit. Use a named account.`,
     );
   }
-  if (i.exists) {
+  if (known && i.exists) {
     throw new Error(
       `${i.vaultId} already exists. That is this owner's vault — connect to it ` +
         `with NEAR_VAULT_CONTRACT=${i.vaultId} rather than creating another.`,
@@ -141,13 +158,22 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
   const total = deposit + GAS_RESERVATION_YOCTO;
 
   const url = new URL(i.appUrl);
-  url.searchParams.set("owner", i.owner);
+  if (known) url.searchParams.set("owner", i.owner);
   url.searchParams.set("factory", i.factory);
   url.searchParams.set("network", i.network);
 
+  const unknownOwnerWarnings = known
+    ? []
+    : [
+        `The vault address is not known yet — it is derived from whichever wallet ` +
+          `you connect, and the page will show it before you approve anything.`,
+        `Nothing has checked whether you already have a vault. If you do, the page ` +
+          `will say so rather than creating a second one.`,
+      ];
+
   return {
-    owner: i.owner,
-    vault: i.vaultId,
+    owner: known ? i.owner : null,
+    vault: known ? i.vaultId : null,
     factory: i.factory,
     network: i.network,
     depositYocto: deposit.toString(),
@@ -158,6 +184,7 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
     totalRequiredNear: yoctoToNear(total),
     url: url.toString(),
     warnings: [
+      ...unknownOwnerWarnings,
       `Almost all of the ${yoctoToNear(deposit)} NEAR is a refundable storage ` +
         `deposit held by your vault, not a fee.`,
       `You must HOLD ${yoctoToNear(total)} NEAR at signing time: the deposit plus a ` +

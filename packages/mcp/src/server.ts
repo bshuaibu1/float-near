@@ -191,7 +191,12 @@ server.tool(
   "vault_create",
   "For a user who has NO vault yet. Works out where their vault will live, exactly what it costs to create, and returns a URL they approve in their own wallet. Needs no key and no existing vault — this is the only tool that works before NEAR_VAULT_CONTRACT is set. This server never signs it.",
   {
-    owner: z.string().describe("the account that will own the vault, e.g. alice.near"),
+    owner: z
+      .string()
+      .optional()
+      .describe(
+        "the account that will own the vault, e.g. alice.near. OMIT IT if you do not know the user's NEAR account — the link then derives everything from whichever wallet they connect, which is the normal case when onboarding someone new.",
+      ),
     network: z.enum(["mainnet", "testnet"]).optional(),
     factory: z
       .string()
@@ -213,16 +218,17 @@ server.tool(
     }
     const rpc = cfg.rpcUrl;
 
-    const [config, vaultId] = await Promise.all([
-      viewFunction<{ required_deposit: string; paused: boolean; network: string }>(
-        rpc,
-        fac,
-        "get_config",
-        {},
-      ),
-      // The FACTORY's own derivation, never a copy of it.
-      viewFunction<string | null>(rpc, fac, "vault_id_for", { owner }),
-    ]);
+    // Only ask the factory to derive an id when there IS an owner. With none,
+    // the address is decided by whichever wallet signs, and inventing one here
+    // would print a plausible address next to a real deposit figure.
+    const config = await viewFunction<{
+      required_deposit: string;
+      paused: boolean;
+      network: string;
+    }>(rpc, fac, "get_config", {});
+    const vaultId = owner
+      ? await viewFunction<string | null>(rpc, fac, "vault_id_for", { owner })
+      : null;
 
     const extra: string[] = [];
     if (config.network !== net) {
@@ -232,11 +238,12 @@ server.tool(
       );
     }
 
-    const exists = vaultId ? await accountExists(rpc, vaultId) : false;
+    const exists = owner && vaultId ? await accountExists(rpc, vaultId) : false;
 
     try {
       const plan = buildCreatePlan({
-        owner,
+        owner: owner ?? "",
+        ownerKnown: !!owner,
         vaultId,
         factory: fac,
         network: net,

@@ -319,6 +319,36 @@
         const who = accountId();
         if (!who) return show("connect");
 
+        // THE LINK'S ?owner= MUST MATCH THE CONNECTED WALLET.
+        //
+        // This page derives everything from the CONNECTED account and ignored
+        // the parameter entirely — so a link prepared by an agent for
+        // alice.testnet, opened by someone connected as bob.testnet, silently
+        // created bob's vault instead. The user approves a correct-looking
+        // transaction for the wrong account, and nothing anywhere says so.
+        //
+        // That matters most in exactly the flow this page is for: an assistant
+        // computes a plan, quotes a figure, and sends a link. The plan is about
+        // one account; the signature happens in whatever wallet is open.
+        //
+        // Refuse rather than warn. There is no safe way to continue, because
+        // the deposit is non-trivial and the vault id is derived from the
+        // signer — continuing would create something the user was never shown.
+        const wanted = q.get("owner");
+        if (wanted && wanted !== who) {
+          $("err-text").textContent =
+            `This link was prepared for ${wanted}, but your wallet is connected as ${who}.
+
+` +
+            `Creating a vault now would make it for ${who} — not the account the ` +
+            `plan was quoted for.
+
+` +
+            `Either connect ${wanted}, or ask for a new link for ${who}.`;
+          show("error");
+          return;
+        }
+
         // THE FACTORY CREATES THE VAULT, not this page.
         //
         // A wallet refuses a DeployContract ACTION from a dApp — measured in

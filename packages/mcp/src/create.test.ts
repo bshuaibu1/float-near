@@ -104,3 +104,74 @@ describe("FACTORY_BY_NETWORK", () => {
     expect(FACTORY_BY_NETWORK.mainnet ?? null).toBeNull();
   });
 });
+
+describe("buildCreatePlan without a known owner", () => {
+  /**
+   * AN AGENT MEETING A NEW USER DOES NOT KNOW THEIR NEAR ACCOUNT.
+   *
+   * The tool required `owner`, so the only way to produce a link was to ask
+   * for an account id first — which assumes the user knows it, can type it
+   * correctly, and has one at all. For someone being onboarded that is three
+   * assumptions before anything useful happens.
+   *
+   * The page already derives everything from the CONNECTED wallet, so a link
+   * with no owner is not a degraded link: it is the one that asks the wallet
+   * instead of asking the human. What it cannot do is name the vault address
+   * or check whether one already exists, and it must say so rather than
+   * printing a plausible blank.
+   */
+  const anon = { ...base, owner: null as unknown as string, vaultId: null };
+
+  it("still produces a usable link", () => {
+    const p = buildCreatePlan({ ...anon, ownerKnown: false });
+    expect(p.url).toContain("factory=float.near");
+    expect(p.url).toContain("network=mainnet");
+  });
+
+  /**
+   * NO ?owner= WHEN WE DO NOT KNOW ONE. The page refuses when the parameter
+   * disagrees with the connected wallet, so emitting a guessed or blank owner
+   * would turn every link into a refusal.
+   */
+  it("omits the owner parameter entirely", () => {
+    const p = buildCreatePlan({ ...anon, ownerKnown: false });
+    expect(new URL(p.url).searchParams.has("owner")).toBe(false);
+  });
+
+  /** The deposit does not depend on who the owner is — it is the code size. */
+  it("still quotes the real deposit and the reservation", () => {
+    const p = buildCreatePlan({ ...anon, ownerKnown: false });
+    const expected = 10n ** 23n + BigInt(CONTRACT_BYTES) * 10n ** 19n;
+    expect(p.depositYocto).toBe(expected.toString());
+    expect(BigInt(p.totalRequiredYocto) - BigInt(p.depositYocto)).toBe(
+      200n * 10n ** 12n * 10n ** 9n,
+    );
+  });
+
+  /**
+   * It must NOT invent a vault address. Deriving one needs the owner, and a
+   * blank or guessed id rendered next to a real deposit figure reads as fact.
+   */
+  it("says the address is not known yet instead of inventing one", () => {
+    const p = buildCreatePlan({ ...anon, ownerKnown: false });
+    expect(p.vault).toBeNull();
+    expect(p.warnings.join(" ")).toMatch(/wallet you connect|not known|decided when/i);
+  });
+
+  /**
+   * And it cannot have checked for an existing vault, so it must not imply it
+   * did — a user with a vault already would otherwise be walked into a failed
+   * transaction.
+   */
+  it("warns that an existing vault could not be checked for", () => {
+    const p = buildCreatePlan({ ...anon, ownerKnown: false });
+    expect(p.warnings.join(" ")).toMatch(/already have|existing/i);
+  });
+
+  /** With an owner, nothing changes: the precise path still names the vault. */
+  it("still names the vault when the owner IS known", () => {
+    const p = buildCreatePlan(base);
+    expect(p.vault).toBe("alice-near.float.near");
+    expect(new URL(p.url).searchParams.get("owner")).toBe("alice.near");
+  });
+});
