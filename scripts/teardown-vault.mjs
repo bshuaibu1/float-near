@@ -34,7 +34,11 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { Account, KeyPair, KeyPairSigner, JsonRpcProvider } from "near-api-js";
+// `PublicKey` is used by the gas-key withdrawal. It was missing on the first
+// pass, which would have thrown ReferenceError at precisely the step that
+// rescues money — and `node --check` cannot catch it, because that is a SYNTAX
+// check and never resolves identifiers.
+import { Account, KeyPair, KeyPairSigner, JsonRpcProvider, PublicKey } from "near-api-js";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const NETWORK = process.env.NETWORK ?? "testnet";
@@ -144,27 +148,69 @@ for (const k of gasKeys) {
   if (bal === 0n) continue;
   console.log(`  [2] withdrawing ${near(bal)} from gas key ${k.public_key.slice(0, 22)}…`);
   try {
-    await vault.withdrawFromGasKey(KeyPair.fromString(`ed25519:${"1".repeat(1)}`) && k.public_key, bal);
+    // A PublicKey INSTANCE, matching scripts/spike-gas-key.mjs — the only place
+    // this call has been run against a live chain.
+    //
+    // The first version of this line was a half-finished expression:
+    //   KeyPair.fromString(`ed25519:${"1".repeat(1)}`) && k.public_key
+    // which builds a keypair from the literal string "ed25519:1" and fails with
+    // `"secretKey" expected Uint8Array of length 32, got length=1`. It reached
+    // a live run because the fix for it was blocked by the permission layer and
+    // I reported it as applied without re-reading the file.
+    await vault.withdrawFromGasKey(PublicKey.fromString(k.public_key), bal);
+    console.log(`      withdrawn`);
   } catch (e) {
-    // near-api-js wants a PublicKey instance in some versions and a string in
-    // others; report rather than swallow, because a silent skip here leaves
-    // the balance behind and the delete will not recover it.
-    console.log(`      withdrawFromGasKey failed: ${String(e.message).slice(0, 120)}`);
+    // EXIT, never continue. The delete does not sweep a gas key's balance, so
+    // carrying on would take this money to the grave with the account and
+    // print nothing about it.
+    console.log(`      FAILED: ${String(e.message).slice(0, 160)}`);
+    console.log(`      ${near(bal)} would be LOST on delete. Stopping.`);
+    process.exit(1);
   }
 }
 if (!gasKeys.length) console.log(`  [2] no gas keys`);
 
 // ---- 3. token registration --------------------------------------------------
+// NOT EVERY TOKEN IMPLEMENTS NEP-145 THE SAME WAY, and this assumed one did.
+// Circle's mainnet USDC exports `storage_unregister()`; this repo's mock-ft
+// exports `unregister(account_id)` instead. Calling the wrong one costs a
+// failed transaction and, here, aborted a teardown midway — after the tokens
+// had already moved.
+//
+// So: ask the deployed bytes which method exists rather than assuming, and
+// treat the whole step as OPTIONAL. The refund is ~0.00125; abandoning a
+// teardown over it would strand far more than it reclaims.
 const reg = await view(TOKEN, "storage_balance_of", { account_id: VAULT }).catch(() => null);
 if (reg) {
-  console.log(`  [3] unregistering from ${TOKEN}…`);
-  await vault.callFunction({
-    contractId: TOKEN,
-    methodName: "storage_unregister",
-    args: {},
-    gas: 30n * 10n ** 12n,
-    deposit: 1n,
-  });
+  const tokenCode = Buffer.from(
+    (await p.viewContractCode({ contractId: TOKEN, blockQuery: { finality: "final" } })).code_base64,
+    "base64",
+  ).toString("latin1");
+  const attempts = [];
+  if (tokenCode.includes("storage_unregister")) attempts.push(["storage_unregister", {}]);
+  if (tokenCode.includes("unregister")) attempts.push(["unregister", { account_id: VAULT }]);
+
+  let done = false;
+  for (const [methodName, args] of attempts) {
+    try {
+      console.log(`  [3] ${methodName} on ${TOKEN}…`);
+      await vault.callFunction({
+        contractId: TOKEN,
+        methodName,
+        args,
+        gas: 30n * 10n ** 12n,
+        deposit: 1n,
+      });
+      console.log(`      unregistered`);
+      done = true;
+      break;
+    } catch (e) {
+      console.log(`      ${methodName} failed: ${String(e.message).slice(0, 100)}`);
+    }
+  }
+  if (!done) {
+    console.log(`  [3] could not unregister — continuing. ~0.00125 stays with the token.`);
+  }
 } else {
   console.log(`  [3] not registered on the token`);
 }
