@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
+import { CANVAS, CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
@@ -13,7 +13,7 @@ import {
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
 import { usd, usdc, percent } from "@/lib/money";
-import { agentHue, agentSeed } from "@/lib/agent-hue";
+import { agentHue, agentSeed, nodeIndexOf } from "@/lib/agent-hue";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 // Includes the Base rail's two terminal states. "signed" means the vault
@@ -172,6 +172,28 @@ export default function Overview() {
   const txApproved     = txStats?.approved ?? activity.filter(r => APPROVED.includes(r.status?.toLowerCase())).length;
   const txBlocked      = txStats?.blocked ?? activity.filter(r => r.status?.toLowerCase() === "blocked").length;
   const txFailed       = txStats?.failed ?? activity.filter(r => r.status?.toLowerCase() === "failed").length;
+
+  /**
+   * ROOT IS NOT AN AGENT, and a panel headed "by agent" must not list it.
+   *
+   * /agents already draws this line and says why: rendering root as the first
+   * row of an agent table "made it look like a peer that happened to be listed
+   * first". This page did exactly that, so the two screens disagreed about
+   * what root is.
+   *
+   * It is not true of the data either. Root has `account: null` and nothing
+   * is bound to it - checked on the live vault, where the only agent key
+   * resolves to node 1. Nothing can spend from root. It is the CEILING every
+   * agent is checked against, which is a different kind of thing from a
+   * spender and belongs above the list rather than inside it.
+   *
+   * By NODE ID, not by depth or label: node 0 is root by construction.
+   */
+  const root       = agents.find((a) => nodeIndexOf(a.agentId) === 0) ?? null;
+  const fleet      = agents.filter((a) => nodeIndexOf(a.agentId) !== 0);
+  const rootPct    = Math.min(root?.dailyBudgetUsedPercent ?? 0, 100);
+  const rootCap    = parseFloat(root?.policy?.dailyBudget ?? "0");
+  const rootSpent  = parseFloat(root?.dailySpent ?? "0");
 
   const dailyBuckets   = computeDailySpend(activity);
   const maxSpend       = Math.max(...dailyBuckets.map(b => b.spend), 0.0001);
@@ -391,6 +413,42 @@ export default function Overview() {
             code that populates `walletAddress` or `walletBalance` — they were
             rendering "···" and "— USDC" forever, which reads as a number
             that has not loaded yet rather than one that is never coming. */}
+        {/*
+          THE SENTENCE IS THE POINT.
+
+          "Root" is a tree word, not a money word, and nothing on this page
+          explained it. Someone reading a row labelled "root" beside one
+          labelled "marketing" reasonably concludes they are two agents,
+          then cannot work out why one of them has no key and never spends.
+
+          So the band says what the RELATIONSHIP is, in the one place the
+          numbers appear: a single shared limit, every agent draws from it,
+          and exhausting it stops an agent whose own budget is untouched.
+          That last clause is the behaviour people hit and do not expect.
+        */}
+        {root && (
+          <div className="px-6 py-4" style={{ borderBottom: `1px solid ${LINE}`, background: CANVAS }}>
+            <div className="flex items-baseline justify-between gap-4 mb-1">
+              <p className="text-[12px] font-semibold text-ink">Shared daily limit</p>
+              <p className="text-[12px] font-mono tabular-nums text-ink">
+                {usd(rootSpent)} <span className="text-muted">of {usdc(rootCap)} USDC</span>
+              </p>
+            </div>
+            <p className="text-[11.5px] leading-5 max-w-xl text-muted">
+              Every agent below spends inside this. A payment is refused when it runs
+              out, even if the agent&apos;s own budget is untouched.
+            </p>
+            <div className="flex items-center gap-2 mt-2.5">
+              <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: utilTrack(rootPct) }}>
+                <div className="h-full rounded-full transition-all duration-500"
+                     style={{ width: `${rootPct}%`, background: utilColor(rootPct) }}/>
+              </div>
+              <span className="text-[11px] font-medium w-8 text-right shrink-0" style={{ color: utilColor(rootPct) }}>
+                {percent(rootPct, { decimals: 0 })}
+              </span>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-[1fr_7rem_10rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted border-b border-line">
           <span>Agent</span><span className="text-right">Spent today</span><span className="text-center">Daily budget</span>
         </div>
@@ -402,7 +460,13 @@ export default function Overview() {
           <div className="px-6 py-10 text-[13px] text-muted">No agents linked to this account yet.</div>
         ) : (
           <div>
-            {agents.map((a) => {
+            {fleet.length === 0 && (
+              <div className="px-6 py-8 text-[13px] text-muted">
+                No agents yet. The shared limit above is the whole vault&apos;s budget
+                until you add one.
+              </div>
+            )}
+            {fleet.map((a) => {
               const spentToday = parseFloat(a.dailySpent || "0");
               const pct    = Math.min(a.dailyBudgetUsedPercent ?? 0, 100);
               const col    = utilColor(pct);
