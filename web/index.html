@@ -1116,15 +1116,24 @@
         const btn = $("btn-create");
         if (free < total) {
           btn.disabled = true;
+          /**
+           * THE BUTTON IS THE WHOLE MESSAGE.
+           *
+           * This used to append a second line — "Top up <account> at
+           * near-faucet.io and reload." — underneath. Two problems with it.
+           *
+           * It restated the button. "Not enough NEAR — 0.159 of 3.348"
+           * already names what the account holds and what is required; a
+           * sentence below repeating that in words is noise on the one screen
+           * where someone is reading carefully.
+           *
+           * And it APPENDED with no guard: `createElement` + `appendChild` on
+           * every run, so a second affordability check left two paragraphs and
+           * a third left three. Seen duplicated in a real screenshot. An
+           * append inside a function that can run more than once is a leak
+           * whether or not anyone notices the text.
+           */
           btn.textContent = `Not enough NEAR — ${near(free)} of ${near(total)}`;
-          const p = document.createElement("p");
-          p.className = "note";
-          p.style.cssText = "text-align:left;margin:12px 0 0";
-          p.textContent =
-            NETWORK === "testnet"
-              ? `Top up ${who} at near-faucet.io and reload.`
-              : `Send at least ${near(total - free)} more NEAR to ${who} and reload.`;
-          btn.parentElement.appendChild(p);
         } else {
           btn.disabled = false;
           btn.textContent = "Create vault";
