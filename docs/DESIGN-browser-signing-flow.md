@@ -1,5 +1,11 @@
 # Browser signing flow for NEAR Float
 
+> **On the scripts named below.** They were instruments, and they have been
+> pruned from `scripts/` now that their answers are recorded here. The
+> measurements stand; the tools are in git history. See `scripts/README.md`
+> for how to read one back.
+
+
 ## AND THE WAY ROUND IT: pass the wasm as a call ARGUMENT
 
 Computed from the protocol's own cost table, both chains, 2026-11-01. The

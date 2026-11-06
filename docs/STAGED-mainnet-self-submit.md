@@ -1,5 +1,11 @@
 # STAGED: validate the virtual-agent gas-key path on MAINNET
 
+> **On the scripts named below.** They were instruments, and they have been
+> pruned from `scripts/` now that their answers are recorded here. The
+> measurements stand; the tools are in git history. See `scripts/README.md`
+> for how to read one back.
+
+
 ## ROUND 3 — DONE, 7/7 against `5UcToT1F…`. And the residual is EXPLAINED.
 
 ```

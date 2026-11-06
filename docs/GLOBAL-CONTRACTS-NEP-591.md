@@ -238,7 +238,7 @@ only**. See `docs/SELF-SUBMIT-PATH.md`.
    verified by matching the CLI's own report for tiny byte for byte before
    trusting it on padded.
 
-`scripts/measure-global-contract.sh` is the experiment, ready to run. It is
+The experiment that settled this (since removed; see `scripts/README.md`) was
 **differential on purpose**, because the V2 claim is not "referencing is cheap"
 but "referencing does not scale with code size":
 

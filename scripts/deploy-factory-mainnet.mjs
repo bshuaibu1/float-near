@@ -127,7 +127,7 @@ console.log(`    ${near(FUND).padStart(9)}  total, moved from ${PARENT}`);
 console.log();
 console.log(`  each vault created through it will then cost its owner`);
 console.log(`    ${near(BigInt(vaultBytes) * 10n ** 19n + REQUIRED_DEPOSIT)} deposit + 0.20000 gas reservation`);
-console.log(`  (the global contract would take that to ~0.11 — see scripts/onboarding-ux-compare.mjs)`);
+console.log(`  (the global contract would take that to ~0.11)`);
 
 if (parentFree !== null && parentFree < FUND + 5n * 10n ** 22n) {
   console.error(`\n  FATAL: ${PARENT} holds ${near(parentFree)}, needs ~${near(FUND + 5n * 10n ** 22n)}.`);

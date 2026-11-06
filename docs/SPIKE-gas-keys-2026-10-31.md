@@ -1,5 +1,11 @@
 # Spike: NEP-611 gas keys remove the agent sub-account
 
+> **On the scripts named below.** They were instruments, and they have been
+> pruned from `scripts/` now that their answers are recorded here. The
+> measurements stand; the tools are in git history. See `scripts/README.md`
+> for how to read one back.
+
+
 Status: **answered, and CONFIRMED ON MAINNET 2026-10-31.**
 Testnet (protocol 88) with `scripts/spike-gas-key.mjs` against the 1,081-byte
 `no_std` probe from `SPIKE-self-fc-key-2026-10-31.md`; mainnet (protocol 86) with

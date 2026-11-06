@@ -1,5 +1,11 @@
 # The self-submit path: an agent keyed on the vault
 
+> **On the scripts named below.** They were instruments, and they have been
+> pruned from `scripts/` now that their answers are recorded here. The
+> measurements stand; the tools are in git history. See `scripts/README.md`
+> for how to read one back.
+
+
 **Status: implemented, unit-tested, VALIDATED ON A REAL NODE (testnet), sandbox
 suite still unrun, not on mainnet.**
 

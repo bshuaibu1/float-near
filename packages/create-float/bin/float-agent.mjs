@@ -22,7 +22,7 @@
  * float.test015.near self-submitted a request_payment that SETTLED, moved real
  * USDC, burned 0.000925 of its OWN balance, and the vault's balance moved by
  * exactly its storage growth — zero gas. The sequence below is that same
- * sequence; see scripts/validate-self-submit-testnet.mjs.
+ * sequence; see docs/SELF-SUBMIT-PATH.md.
  *
  * Usage:
  *   npx -p @floatonnear/create-float float-agent --vault <v> --owner <o> [--node 0]

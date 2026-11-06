@@ -148,7 +148,7 @@ for (const k of gasKeys) {
   if (bal === 0n) continue;
   console.log(`  [2] withdrawing ${near(bal)} from gas key ${k.public_key.slice(0, 22)}…`);
   try {
-    // A PublicKey INSTANCE, matching scripts/spike-gas-key.mjs — the only place
+    // A PublicKey INSTANCE, not a string — the only place in this codebase
     // this call has been run against a live chain.
     //
     // The first version of this line was a half-finished expression:

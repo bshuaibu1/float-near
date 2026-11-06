@@ -60,6 +60,16 @@ const steps = [
     cwd: ".",
     mustMatch: /no literal U\+00A0/,
   },
+  {
+    // Added after pruning 81 scripts. A comment or a runbook line pointing at
+    // a deleted file does not crash anything - it quietly lies, which is
+    // worse, because it reads as working. This fails the build instead.
+    name: "script references resolve",
+    cmd: "node scripts/check-script-refs.mjs",
+    cwd: ".",
+    mustMatch: /no dangling script references/,
+    mustNotMatch: /MISSING/,
+  },
 ];
 
 // Mutation suites are discovered, not listed, so a deleted one cannot linger

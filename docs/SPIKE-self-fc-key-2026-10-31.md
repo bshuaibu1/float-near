@@ -1,5 +1,11 @@
 # Spike: can an agent hold a function-call key on the VAULT itself?
 
+> **On the scripts named below.** They were instruments, and they have been
+> pruned from `scripts/` now that their answers are recorded here. The
+> measurements stand; the tools are in git history. See `scripts/README.md`
+> for how to read one back.
+
+
 Status: **answered, yes — with one sizing constraint nobody predicted.**
 Measured on testnet 2026-10-31. Instruments: `scripts/spike-self-fc-key.mjs`,
 `scripts/spike-allowance-rate.mjs`, `scripts/spike-min-allowance.mjs`,
