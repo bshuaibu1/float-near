@@ -411,18 +411,59 @@ describe("the completed-action panel", () => {
    */
   it("does not hardcode 'Vault created' into the done panel", () => {
     const src = html();
-    const panel = src.match(/<div id="done"[\s\S]*?<\/div>\s*<\/div>/);
-    expect(panel, "done panel not found").not.toBeNull();
+    const start = src.indexOf('<div id="done"');
+    expect(start, "done panel not found").toBeGreaterThan(-1);
+    // COMMENTS STRIPPED. The panel carries a comment explaining why the
+    // string was removed, and the first version of this test matched its own
+    // documentation - the same false positive as a grep for pure black
+    // finding the note about not using pure black.
+    const panel = src.slice(start, start + 1600).replace(/<!--[\s\S]*?-->/g, "");
+    // Positive control: this really is the block with the title element, so a
+    // miss below means the string is gone, not that the slice drifted.
+    expect(panel, "sliced the wrong block").toContain('id="d-title"');
     expect(
-      /<strong[^>]*>\s*Vault created\./.test(panel![0]),
-      "the done panel still hardcodes 'Vault created.' for every action",
+      /Vault created/.test(panel),
+      "the done panel still hardcodes 'Vault created' for every action",
     ).toBe(false);
   });
 
-  it("sets the done title for BOTH flows, rather than assuming one", () => {
+  /**
+   * Asserts the BEHAVIOUR, not the punctuation. An earlier version pinned
+   * `"Vault created."` with a full stop and broke the moment the string
+   * became a heading rather than a log line - a test failing on a design
+   * decision it has no opinion about.
+   *
+   * What matters is that the two flows set DIFFERENT outcomes: one says a
+   * vault was created, the other must not.
+   */
+  it("gives each flow its own outcome, rather than assuming one", () => {
     const src = html();
-    expect(src).toMatch(/\$\("d-title"\)\.textContent\s*=\s*"Vault created\."/);
-    expect(src).toMatch(/\$\("d-title"\)\.textContent\s*=\s*ACTION\.summary/);
+    const titles = [...src.matchAll(/\$\("d-title"\)\.textContent\s*=\s*([^;]+);/g)].map((m) =>
+      m[1].trim(),
+    );
+    expect(titles.length, "both flows should set the done title").toBeGreaterThanOrEqual(2);
+    expect(titles.some((t) => /Vault created/.test(t)), "the create flow sets its own").toBe(true);
+    expect(
+      titles.filter((t) => /Vault created/.test(t)).length,
+      "only ONE flow may claim a vault was created",
+    ).toBe(1);
+  });
+
+  /**
+   * The 294 KB note is TRUE of a vault creation and nonsense for an owner
+   * action, which sends about a hundred bytes. Both flows showed the same
+   * panel, so every freeze told the owner it carried the whole contract.
+   */
+  it("does not claim every transaction carries the contract", () => {
+    const src = html();
+    const start = src.indexOf('<div id="signing"');
+    const panel = src.slice(start, start + 700);
+    expect(panel, "sliced the wrong block").toContain('id="s-note"');
+    expect(/294 KB/.test(panel), "the shared signing panel still hardcodes the 294 KB claim").toBe(
+      false,
+    );
+    // and each flow sets its own
+    expect(src).toMatch(/\$\("s-note"\)\.textContent[\s\S]{0,200}?294 KB/);
   });
 });
 

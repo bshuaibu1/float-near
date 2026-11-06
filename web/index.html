@@ -202,6 +202,51 @@
         padding: 2px 0 2px 12px;
         font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
       }
+
+      /**
+       * WAITING, AND SUCCESS.
+       *
+       * Both were boxes of text: waiting used `.warn`, the cream alarm style,
+       * and success used `.ok` with a sentence and a machine string crammed
+       * into one green rectangle. Neither looked like a state, they looked
+       * like paragraphs with a background.
+       *
+       * MOTION IS JUSTIFIED HERE AND NOWHERE ELSE ON THIS PAGE. A static
+       * "waiting" panel is indistinguishable from a page that has hung, and
+       * the moment after someone clicks approve is exactly when they are
+       * asking themselves whether anything happened. One pulsing dot answers
+       * that. Everything else on a signing surface stays still.
+       */
+      .state { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 8px 0 4px; }
+      .state h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 6px; }
+      .state p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; max-width: 320px; }
+
+      .pulse { width: 10px; height: 10px; border-radius: 9999px; background: var(--ink); margin-bottom: 16px; animation: pulse 1.4s ease-in-out infinite; }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.25; transform: scale(0.85); }
+        50%      { opacity: 1;    transform: scale(1); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        /* Still visible, just not moving. A user who asked for no motion
+           should not lose the only signal that the page is alive. */
+        .pulse { animation: none; opacity: 0.85; }
+      }
+
+      .tick {
+        width: 34px; height: 34px; border-radius: 9999px; margin-bottom: 14px;
+        background: var(--success-bg); color: var(--success);
+        display: flex; align-items: center; justify-content: center;
+      }
+      /* The machine detail, under the human sentence rather than beside it.
+         "Unfreeze node 1. freeze_node on work12-testnet-fleet.fac..." ran a
+         sentence and an account id together in one green box; they are
+         different kinds of fact and read better apart. */
+      .detail {
+        margin-top: 14px; width: 100%; background: var(--chip);
+        border: 1px solid var(--line); border-radius: var(--r-panel);
+        padding: 10px 12px; font-family: var(--mono); font-size: 11.5px;
+        color: var(--muted); word-break: break-all; text-align: left; line-height: 1.5;
+      }
       /* The agent key is rendered IN FULL and never truncated — an ellipsis in
          the middle is exactly where a swapped key hides. `break-all` because
          a base58 key has no break opportunities and would otherwise overflow
@@ -361,7 +406,7 @@
           </div>
           <p class="note" style="text-align: left; margin: 14px 0 6px">
             Check this public key matches the one your agent showed you. If it
-            does not match, close this page — someone has altered your link.
+            does not match, close this page. Someone has altered your link.
           </p>
           <div id="a-key"></div>
           <div class="row" style="margin-top: 14px">
@@ -388,7 +433,7 @@
             This agent can never exceed those limits, and you can revoke it at
             any time from your vault.
           </p>
-          <button id="btn-agent-ok">I have checked the key — continue</button>
+          <button id="btn-agent-ok">The key matches, continue</button>
           <button id="btn-agent-no" class="ghost" style="margin-top: 10px">
             Create the vault without an agent
           </button>
@@ -473,11 +518,19 @@
           <button id="btn-disconnect" class="ghost" style="margin-top: 10px">Use a different wallet</button>
         </div>
 
+        <!--
+          WAITING IS NOT A WARNING. This was a `.warn` box, the same cream
+          alarm style used for a destructive blast radius, to say "your wallet
+          is open". It also claimed every transaction "carries the whole
+          contract, about 294 KB" - true when creating a vault, and nonsense
+          for a freeze, which sends about a hundred bytes. Both flows showed
+          it. `#s-note` is set per flow now.
+        -->
         <div id="signing" class="hide">
-          <div class="warn">
-            <strong>Approve in your wallet.</strong><br />
-            This transaction carries the whole contract — about 294 KB — so some
-            wallets take a few seconds to display it.
+          <div class="state">
+            <div class="pulse"></div>
+            <h2>Waiting for your wallet</h2>
+            <p id="s-note">Approve the transaction in the window your wallet opened.</p>
           </div>
         </div>
 
@@ -489,12 +542,21 @@
             and is the kind of thing that makes someone go looking for a vault
             they now believe exists.
           -->
-          <div class="ok"><strong id="d-title">Done.</strong> <span id="d-vault"></span></div>
-          <p class="note" style="text-align: left" id="d-note">
-            Return to your terminal — it is watching the chain and will pick this
-            up on its own.
-          </p>
-          <a id="d-explorer" target="_blank" rel="noopener"><button class="ghost">View on explorer</button></a>
+          <div class="state">
+            <div class="tick" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2.5"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            </div>
+            <h2 id="d-title">Done</h2>
+            <p id="d-note">The change is on chain.</p>
+            <div class="detail" id="d-vault"></div>
+          </div>
+          <a id="d-explorer" target="_blank" rel="noopener" style="display:block;margin-top:18px">
+            <button class="ghost">View on explorer</button>
+          </a>
         </div>
 
         <div id="error" class="hide"><div class="err" id="err-text"></div></div>
@@ -999,7 +1061,7 @@
 
         $("p-owner").textContent = who;
         $("p-vault").textContent = vault;
-        $("p-factory").textContent = FACTORY ?? "— not configured —";
+        $("p-factory").textContent = FACTORY ?? "not configured";
         $("p-net").textContent = NETWORK;
         $("p-size").textContent = `${(wasm.length / 1024).toFixed(0)} KB`;
         $("p-daily").textContent = `${DAILY} / day, ${PERTX} / tx`;
@@ -1133,7 +1195,7 @@
            * append inside a function that can run more than once is a leak
            * whether or not anyone notices the text.
            */
-          btn.textContent = `Not enough NEAR — ${near(free)} of ${near(total)}`;
+          btn.textContent = `Needs ${near(total)} NEAR, you have ${near(free)}`;
         } else {
           btn.disabled = false;
           btn.textContent = "Create vault";
@@ -1239,6 +1301,15 @@
       }
 
       async function sendAction(dep) {
+        // An owner action is about a hundred bytes. The shared panel used to
+        // tell everyone their transaction "carries the whole contract, about
+        // 294 KB", which is true of a vault creation and nonsense here.
+        $("s-note").textContent = "Approve the transaction in the window your wallet opened.";
+        // The `.state` block carries its own heading and line from here on, so
+        // the card's subtitle would just be the previous step's instruction
+        // sitting above it: "Check these details" above "Waiting for your
+        // wallet", when checking is done.
+        $("sub").textContent = "";
         show("signing");
         try {
           const wallet = await selector.wallet();
@@ -1256,13 +1327,22 @@
               },
             ],
           });
-          // Say what was actually done. The summary is the sentence the owner
-          // already read and approved, so echoing it back is the one wording
-          // guaranteed to match their expectation.
-          $("d-title").textContent = ACTION.summary ? `${ACTION.summary}.` : "Done.";
+          /**
+           * THE OUTCOME, not the action. The <h1> above already carries the
+           * summary ("Unfreeze node 1"), set when the page rendered. Putting
+           * the summary here too printed it twice, once under the other, with
+           * a tick between them.
+           *
+           * So the heading says what happened and the <h1> says to what. The
+           * method and account go into `.detail` underneath: they used to be
+           * glued to the sentence inside one green box, reading as "Unfreeze
+           * node 1. freeze_node on work12-testnet-fleet.fac..." - a human
+           * sentence and a machine string run together.
+           */
+          $("d-title").textContent = "Done";
           $("d-vault").textContent = `${ACTION.methodName} on ${ACTION.receiverId}`;
           $("d-note").textContent =
-            "The change is on chain. Your dashboard will pick it up on its next refresh.";
+            "The change is on chain. Your dashboard will show it on its next refresh.";
           $("d-explorer").href =
             NETWORK === "mainnet"
               ? `https://explorer.near.org/accounts/${ACTION.receiverId}`
@@ -1275,6 +1355,13 @@
       }
 
       async function create(who, vault, total) {
+        // The 294 KB note belongs HERE, where it is true: this transaction
+        // carries the contract as an argument, and some wallets take a few
+        // seconds to render it. Without a word of explanation that pause
+        // reads as a hung page.
+        $("s-note").textContent =
+          "This one carries the whole contract, about 294 KB, so some wallets take a few seconds to show it.";
+        $("sub").textContent = "";
         show("signing");
         try {
           const wallet = await selector.wallet();
@@ -1353,7 +1440,8 @@
             ],
           });
           // The create flow keeps its own wording, now set rather than assumed.
-          $("d-title").textContent = "Vault created.";
+          $("d-title").textContent = "Vault created";
+          $("d-note").textContent = "It is live and owned by your wallet.";
           $("d-vault").textContent = vault;
           $("d-explorer").href =
             NETWORK === "mainnet"
