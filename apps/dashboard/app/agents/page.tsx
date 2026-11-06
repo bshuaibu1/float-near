@@ -217,6 +217,34 @@ export default function AgentsPage() {
         </p>
       </div>
 
+      {/* WHY THERE IS NO "ADD AGENT" BUTTON.
+      
+          Creating an agent is two jobs, and only one of them belongs in a
+          browser. The transaction - add_role, which registers the key and
+          funds its gas - is signed by the owner, and this page could build
+          it. The KEYPAIR cannot be: its secret has to reach whatever runs
+          the agent, and a web page can only put that secret on a screen or
+          hand it to a server. The first is how keys leak; the second is
+          custody, which is the thing this vault exists to avoid.
+
+    (add_role returns an UNSIGNED PAYLOAD, not a signing URL - vault_create
+    is the tool that returns a URL. Checked against the handler in
+    packages/mcp/src/server.ts, having first written 'a link to sign' here
+    from memory and been wrong.)
+      
+          So the tool that owns the key owns the whole flow. Saying so here
+          costs one line and stops the absence reading as an oversight. */}
+      <p className="text-[12.5px] mt-3 max-w-2xl leading-5 text-faint">
+        Agents are added with{" "}
+        <code className="rounded px-1 py-0.5 font-mono text-[11.5px] bg-chip text-muted">
+          vault_add_role
+        </code>{" "}
+        rather than from this page. It generates the agent&apos;s key on your own
+        machine, writes the secret to disk there, and returns an unsigned payload
+        for the owner to approve in their own wallet - the secret never reaches a
+        browser or a server.
+      </p>
+
       {loading ? (
         <Panel>Loading the tree...</Panel>
       ) : error ? (

@@ -83,140 +83,50 @@ describe("planOwnerAction", () => {
     }
   });
 
-  /* ADD ROLE.
+  /**
+   * OMITTING A FIELD MUST NOT TRIGGER THE DESTRUCTIVE DIRECTION.
+   *
+   * `frozen` and `paused` are optional, and both default to false. Flip
+   * either default and a request that merely forgot the field becomes a
+   * transaction that freezes an agent or stops the entire vault - and it
+   * would be signed, because the summary would read as intended.
+   * Mutation-confirmed: both inversions survived the whole suite.
+   */
+  it("defaults `frozen` to false, so a bare freeze request does not freeze", () => {
+    const p = planOwnerAction({ action: "freeze", nodeId: 1 }, ENV);
+    expect(JSON.stringify(p.args)).toContain("false");
+    expect(JSON.stringify(p.args)).not.toContain("true");
+  });
 
-     The one owner method whose deposit is NOT one yocto: `add_role` is
-     #[payable] and the attached NEAR becomes the new agent's gas-key
-     balance, which IS its spending cap - a gas key's allowance is null by
-     design. Sending one yocto would install a key that cannot make a
-     single call, because NEAR reserves `prepaid_gas * 1e9` up front.
+  it("defaults `paused` to false, so a bare pause request does not stop the vault", () => {
+    const p = planOwnerAction({ action: "pause" }, ENV);
+    expect(p.args).toEqual({ paused: false });
+  });
 
-     The adapter never generates the keypair. The caller creates it locally
-     and passes only the PUBLIC half; the secret has to land on the machine
-     that will run the agent, and an adapter that touched it would be
-     custodial. */
-  describe("addRole", () => {
-    const KEY = "ed25519:FmcccnmgVhPNgKSm64Rgp9ZmFs6ckBVqLZeMPaRRPFZu";
-    const FUNDING = String(12n * 10n ** 22n); // 0.12 NEAR
+  it("defaults `strict` to false", () => {
+    expect(planOwnerAction({ action: "allocation" }, ENV).args).toEqual({ strict: false });
+  });
 
-    it("builds add_role addressed to the vault", () => {
-      const p = planOwnerAction(
-        {
-          action: "addRole",
-          label: "marketing",
-          dailyCap: "25",
-          perTxCap: "5",
-          cooldownSec: 0,
-          recipients: null,
-          publicKey: KEY,
-          fundingYocto: FUNDING,
-        },
-        ENV,
-      );
-      expect(p.methodName).toBe("add_role");
-      expect(p.receiverId).toBe(ENV.vault);
-      expect((p.args as Record<string, unknown>).label).toBe("marketing");
-      expect((p.args as Record<string, unknown>).public_key).toBe(KEY);
-    });
-
-    it("attaches the FUNDING as the deposit, not one yocto", () => {
-      const p = planOwnerAction(
-        {
-          action: "addRole",
-          label: "news",
-          dailyCap: "10",
-          perTxCap: "2",
-          publicKey: KEY,
-          fundingYocto: FUNDING,
-        },
-        ENV,
-      );
-      expect(p.depositYocto).toBe(FUNDING);
-      expect(p.depositYocto).not.toBe("1");
-    });
-
-    it("scales the caps from HUMAN units like every other cap action", () => {
-      const p = planOwnerAction(
-        {
-          action: "addRole",
-          label: "marketing",
-          dailyCap: "25",
-          perTxCap: "5",
-          publicKey: KEY,
-          fundingYocto: FUNDING,
-        },
-        ENV,
-      );
-      const j = JSON.stringify(p.args);
-      expect(j).toContain("25000000"); // 25 USDC at 6dp
-      expect(j).not.toContain("25000000000000"); // not scaled twice
-    });
-
-    it("defaults an absent recipients list to null (INHERIT), never []", () => {
-      // `validate_recipients` panics on an empty vec.
-      const p = planOwnerAction(
-        {
-          action: "addRole",
-          label: "marketing",
-          dailyCap: "25",
-          perTxCap: "5",
-          publicKey: KEY,
-          fundingYocto: FUNDING,
-        },
-        ENV,
-      );
-      expect((p.args as Record<string, unknown>).recipients).toBeNull();
-    });
-
-    it("REFUSES funding below the gas-key minimum - a key funded under it is installed and cannot transact", () => {
-      expect(() =>
-        planOwnerAction(
-          {
-            action: "addRole",
-            label: "marketing",
-            dailyCap: "25",
-            perTxCap: "5",
-            publicKey: KEY,
-            fundingYocto: String(5n * 10n ** 22n), // 0.05, under the 0.06 floor
-          },
-          ENV,
-        ),
-      ).toThrow(/0\.06|gas key/i);
-    });
-
-    it("REFUSES a malformed public key", () => {
-      expect(() =>
-        planOwnerAction(
-          {
-            action: "addRole",
-            label: "marketing",
-            dailyCap: "25",
-            perTxCap: "5",
-            publicKey: "not-a-key",
-            fundingYocto: FUNDING,
-          },
-          ENV,
-        ),
-      ).toThrow(/public key/i);
-    });
-
-    it("REFUSES an empty or over-long label", () => {
-      for (const label of ["", "x".repeat(49)]) {
-        expect(() =>
-          planOwnerAction(
-            {
-              action: "addRole",
-              label,
-              dailyCap: "25",
-              perTxCap: "5",
-              publicKey: KEY,
-              fundingYocto: FUNDING,
-            },
-            ENV,
-          ),
-        ).toThrow(/label/i);
-      }
-    });
+  /**
+   * Every action is addressed to the VAULT.
+   *
+   * The receiver is the one argument that decides which contract runs the
+   * call, and only one test asserted it - and that test went out with
+   * addRole, leaving the gap invisible until a mutant pointed caps at
+   * another account and survived.
+   */
+  it("addresses every action to the vault", () => {
+    const reqs = [
+      { action: "caps", nodeId: 1, dailyCap: "10", perTxCap: "2" },
+      { action: "cooldown", nodeId: 1, cooldownSec: 60 },
+      { action: "recipients", nodeId: 1, recipients: ["a.testnet"] },
+      { action: "freeze", nodeId: 1, frozen: true },
+      { action: "pause", paused: true },
+      { action: "allocation", strict: true },
+    ] as const;
+    for (const r of reqs) {
+      expect(planOwnerAction(r, ENV).receiverId).toBe(ENV.vault);
+    }
   });
 
   it("REFUSES an unknown action rather than planning something arbitrary", () => {
@@ -227,29 +137,19 @@ describe("planOwnerAction", () => {
    * A VALIDATION failure is not an unknown action.
    *
    * The HTTP handler caught every throw from here and reported
-   * `unknown action: <name>`, so underfunding a gas key, mistyping a public
-   * key or using a 60-character label all told the caller the action did
-   * not exist. The one message that cannot help them.
+   * `unknown action: <name>`, so a negative cooldown, a duplicate
+   * recipient or an over-long list all told the caller the action did not
+   * exist - the one message that cannot help them.
    */
   it("distinguishes a bad ARGUMENT from an unknown ACTION", () => {
     let thrown: unknown;
     try {
-      planOwnerAction(
-        {
-          action: "addRole",
-          label: "marketing",
-          dailyCap: "25",
-          perTxCap: "5",
-          publicKey: "ed25519:FmcccnmgVhPNgKSm64Rgp9ZmFs6ckBVqLZeMPaRRPFZu",
-          fundingYocto: String(5n * 10n ** 22n),
-        },
-        ENV,
-      );
+      planOwnerAction({ action: "cooldown", nodeId: 1, cooldownSec: -5 }, ENV);
     } catch (e) {
       thrown = e;
     }
     expect(thrown).toBeInstanceOf(Error);
     expect(thrown).not.toBeInstanceOf(UnknownActionError);
-    expect(String((thrown as Error).message)).toMatch(/gas key|0.06/i);
+    expect(String((thrown as Error).message)).toMatch(/cooldown/i);
   });
 });
