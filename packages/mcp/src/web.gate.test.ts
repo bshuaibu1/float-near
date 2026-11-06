@@ -264,6 +264,51 @@ describe("owner-action mode", () => {
    * Arguments are rendered in full. A summary is the link describing itself,
    * which is exactly the claim under suspicion when a link is tampered with.
    */
+  /**
+   * THE PAGE MUST NOT SAY IT IS CREATING A VAULT WHEN IT IS NOT.
+   *
+   * The <h1> and subtitle are static markup - "Create your Float vault" and
+   * "Connect the wallet that will own it." - and the only code that ever
+   * touched them set the title to "Done" at the end. So an owner who clicked
+   * "freeze marketing" on the dashboard landed on a page offering to create a
+   * vault and asking them to connect the wallet that would OWN it.
+   *
+   * Two ways that goes wrong, and both are bad: a careful owner closes the tab
+   * because the page is describing something they did not ask for, and a
+   * careless one approves believing a 3-NEAR creation deposit is coming. The
+   * signature itself was always correct - freeze_node, one yocto - but the
+   * sentence above it was not, and the sentence is what the owner reads.
+   */
+  it("re-titles the page for an owner action instead of offering to create a vault", () => {
+    const src = html();
+    // Positive control FIRST: if the create copy has been renamed, the
+    // assertions below would pass against a page that no longer says it.
+    expect(src, "the create-flow heading is gone; this test needs rewriting").toContain(
+      "Create your Float vault",
+    );
+    const m = src.match(/RAW_ACTION[\s\S]{0,400}?\$\("title"\)\.textContent/);
+    expect(
+      m,
+      "nothing re-titles the page when the link carries ?action= - it still reads 'Create your Float vault'",
+    ).not.toBeNull();
+  });
+
+  it("tells the owner which vault they are connecting to approve against", () => {
+    const src = html();
+    // The subtitle must name the TARGET, not say "the wallet that will own it".
+    const m = src.match(/\$\("sub"\)\.textContent[\s\S]{0,200}?receiverId/);
+    expect(m, "the action-mode subtitle does not name the vault being changed").not.toBeNull();
+  });
+
+  /**
+   * And it must NOT promise a deposit. The create flow quotes ~3 NEAR; an
+   * owner action takes one yocto, and the connect screen is where someone
+   * decides whether to proceed.
+   */
+  it("says no deposit is taken, on the screen where the owner decides", () => {
+    expect(html()).toMatch(/Nothing is created and no deposit is taken/);
+  });
+
   it("shows the real arguments, not only the summary", () => {
     expect(html()).toMatch(/\$\("x-args"\)\.textContent = JSON\.stringify\(ACTION\.args/);
   });
@@ -312,5 +357,225 @@ describe("module constant ordering (temporal dead zone)", () => {
       .map((m) => m[1]);
 
     expect(late, `declared after render() but read by it: ${late.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * These EXECUTE code lifted out of the page rather than matching its text.
+ *
+ * web/index.html has no module boundary, so the usual options are a browser
+ * or a regex. A regex test passes when the words are present and says nothing
+ * about what the function does; extracting the body and running it gives a
+ * real behavioural assertion for the price of one `new Function`.
+ */
+describe("what the owner is told they are sending", () => {
+  function depositText(): (y: bigint | string) => string {
+    const src = html();
+    const m = src.match(/const depositText = \(y\) => \{[\s\S]*?\n      \};/);
+    expect(m, "depositText not found in web/index.html").not.toBeNull();
+    const near = "const near = (y) => (Number(y) / 1e24).toFixed(3);";
+    // eslint-disable-next-line no-new-func
+    return new Function(`${near}\n${m![1] ? m![0] : m![0]}\nreturn depositText;`)();
+  }
+
+  /**
+   * THE REGRESSION. An owner action attaches exactly one yocto because
+   * `assert_one_yocto` demands it, and `near(1n)` is "0.000" - so the screen
+   * where someone decides whether to sign read "you send 0.000 NEAR".
+   *
+   * Same defect the dashboard had with "$0.000": a figure that is not nothing,
+   * shown as nothing.
+   */
+  it("never shows a non-zero deposit as zero", () => {
+    const f = depositText();
+    expect(f(1n)).toBe("1 yocto");
+    expect(f(1n)).not.toMatch(/^0\.000/);
+    expect(f(1000n)).toBe("less than 0.001 NEAR");
+    expect(f(1000n)).not.toMatch(/^0\.000/);
+  });
+
+  it("says nothing is sent when nothing is", () => {
+    expect(depositText()(0n)).toBe("nothing");
+  });
+
+  it("still renders a real funding deposit in NEAR", () => {
+    expect(depositText()(3_370_000_000_000_000_000_000_000n)).toBe("3.370 NEAR");
+  });
+});
+
+describe("the completed-action panel", () => {
+  /**
+   * "Vault created." was hardcoded in the markup, so freezing an agent ended
+   * on a green panel announcing a vault had been created - which is the kind
+   * of thing that sends someone looking for a vault they now believe exists.
+   */
+  it("does not hardcode 'Vault created' into the done panel", () => {
+    const src = html();
+    const start = src.indexOf('<div id="done"');
+    expect(start, "done panel not found").toBeGreaterThan(-1);
+    // COMMENTS STRIPPED. The panel carries a comment explaining why the
+    // string was removed, and the first version of this test matched its own
+    // documentation - the same false positive as a grep for pure black
+    // finding the note about not using pure black.
+    const panel = src.slice(start, start + 1600).replace(/<!--[\s\S]*?-->/g, "");
+    // Positive control: this really is the block with the title element, so a
+    // miss below means the string is gone, not that the slice drifted.
+    expect(panel, "sliced the wrong block").toContain('id="d-title"');
+    expect(
+      /Vault created/.test(panel),
+      "the done panel still hardcodes 'Vault created' for every action",
+    ).toBe(false);
+  });
+
+  /**
+   * Asserts the BEHAVIOUR, not the punctuation. An earlier version pinned
+   * `"Vault created."` with a full stop and broke the moment the string
+   * became a heading rather than a log line - a test failing on a design
+   * decision it has no opinion about.
+   *
+   * What matters is that the two flows set DIFFERENT outcomes: one says a
+   * vault was created, the other must not.
+   */
+  it("gives each flow its own outcome, rather than assuming one", () => {
+    const src = html();
+    const titles = [...src.matchAll(/\$\("d-title"\)\.textContent\s*=\s*([^;]+);/g)].map((m) =>
+      m[1].trim(),
+    );
+    expect(titles.length, "both flows should set the done title").toBeGreaterThanOrEqual(2);
+    expect(titles.some((t) => /Vault created/.test(t)), "the create flow sets its own").toBe(true);
+    expect(
+      titles.filter((t) => /Vault created/.test(t)).length,
+      "only ONE flow may claim a vault was created",
+    ).toBe(1);
+  });
+
+  /**
+   * The 294 KB note is TRUE of a vault creation and nonsense for an owner
+   * action, which sends about a hundred bytes. Both flows showed the same
+   * panel, so every freeze told the owner it carried the whole contract.
+   */
+  it("does not claim every transaction carries the contract", () => {
+    const src = html();
+    const start = src.indexOf('<div id="signing"');
+    const panel = src.slice(start, start + 700);
+    expect(panel, "sliced the wrong block").toContain('id="s-note"');
+    expect(
+      /\d+ KB/.test(panel),
+      "the shared signing panel still hardcodes a contract size for every flow",
+    ).toBe(false);
+
+    // Each flow sets its own line, and the create one MEASURES rather than
+    // quoting: a literal drifts from the artifact the moment the wasm is
+    // rebuilt, and this page already displays a computed size on the plan
+    // screen. Two different numbers for one file is worse than none.
+    expect(src).toMatch(/\$\("s-note"\)\.textContent[\s\S]{0,300}?wasm\.length \/ 1024/);
+    expect(
+      /"This one carries the whole contract, about \d+ KB/.test(src),
+      "the size is hardcoded again",
+    ).toBe(false);
+  });
+});
+
+describe("standing advice is shown only when it applies", () => {
+  it("does not promise a recoverable deposit for a one-yocto action", () => {
+    expect(html()).toMatch(/dep > 1n/);
+  });
+
+  it("mentions a public key only when the arguments contain one", () => {
+    const src = html();
+    expect(src).toMatch(/hasPublicKey/);
+    expect(src).toMatch(/includes\("ed25519:"\)/);
+  });
+});
+
+describe("the create plan shows only what a signer can act on", () => {
+  /**
+   * `contract: 292 KB` was a row in the table of things the user is asked to
+   * check before sending 3.348 NEAR. A size in kilobytes is not a decision
+   * input: nobody declines at 292 and accepts at 280. Its two real jobs are
+   * done elsewhere now, by the refundable-deposit note and the waiting
+   * screen.
+   */
+  it("does not ask the user to check the contract's size", () => {
+    const src = html();
+    const start = src.indexOf('<div id="plan"');
+    expect(start, "plan panel not found").toBeGreaterThan(-1);
+    const panel = src.slice(start, start + 2500).replace(/<!--[\s\S]*?-->/g, "");
+    expect(panel, "sliced the wrong block").toContain('id="p-total"');
+    expect(/>contract</.test(panel), "the plan still has a contract-size row").toBe(false);
+    expect(/p-size/.test(panel), "the p-size element is still in the plan").toBe(false);
+  });
+
+  /** And nothing may write to an element that no longer exists. */
+  it("has no dangling write to the removed size element", () => {
+    expect(html()).not.toMatch(/\$\("p-size"\)/);
+  });
+});
+
+describe("a link with no factory", () => {
+  /**
+   * `create()` throws "No factory configured" when the button is pressed,
+   * because deploying straight from a browser needs a DeployContract action
+   * and wallets refuse those from a dApp. Until this guard, the page still
+   * rendered a full plan first: a derived vault id, a network, a 3.348 NEAR
+   * total and a call to action, with the absence noted as a calm table row
+   * reading "not configured". A dead end dressed as a quote.
+   *
+   * It only looked harmless because the funding check disables the button
+   * first. A funded wallet would have read the plan, pressed Create vault,
+   * and been handed a thrown error.
+   */
+  it("refuses before showing a plan, rather than at the button", () => {
+    const src = html();
+    const guard = src.match(/if \(!FACTORY\) \{[\s\S]{0,900}?show\("error"\);/);
+    expect(
+      guard,
+      "render() still builds a plan when no factory is set; the only refusal is inside create()",
+    ).not.toBeNull();
+  });
+
+  it("explains why a browser cannot do it alone", () => {
+    const src = html();
+    const guard = src.match(/if \(!FACTORY\) \{[\s\S]{0,900}?show\("error"\);/)?.[0] ?? "";
+    expect(guard).toMatch(/DeployContract/);
+    expect(guard).toMatch(/Nothing has been signed/);
+  });
+});
+
+describe("no em dashes in anything the user reads", () => {
+  /**
+   * Bashir asked for these gone. Code comments keep them; rendered strings
+   * do not. Template literals and markup text are what reach the screen.
+   */
+  it("has none in a rendered template literal", () => {
+    /**
+     * COMMENTS STRIPPED FIRST, and that is the whole difficulty.
+     *
+     * The first version scanned the raw file for /`[^`]*—[^`]*`/ and reported
+     * fourteen offenders, every one a false positive: the comments in this
+     * page quote identifiers in backticks, so a regex looking for a pair of
+     * backticks happily spans the prose BETWEEN two of them and finds the
+     * dash in the sentence. The page was clean; the test was not.
+     */
+    const code = html()
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+    const offenders = [...code.matchAll(/`[^`]*—[^`]*`/g)].map((m) =>
+      m[0].replace(/\s+/g, " ").slice(0, 70),
+    );
+    expect(offenders, `rendered strings still carry an em dash:\n${offenders.join("\n")}`).toEqual(
+      [],
+    );
+  });
+
+  /**
+   * Positive control. Without it the test above passes just as happily when
+   * the comment-stripper eats the whole file.
+   */
+  it("would notice a dash if one came back", () => {
+    const planted = 'const msg = `Needs 3.348 NEAR — you have 0.158`;';
+    expect(/`[^`]*—[^`]*`/.test(planted)).toBe(true);
   });
 });

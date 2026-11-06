@@ -21,6 +21,54 @@ const PAYLOAD = {
   summary: "Set caps on node 1",
 };
 
+describe("warnings travel with the link", () => {
+  /**
+   * THE REGRESSION. planFreezeNode attaches a blast-radius sentence, and the
+   * link dropped it - so the signing page fell through to generic copy and
+   * told the owner about recoverable deposits and a public key a freeze does
+   * not have. Irrelevant safety advice is worse than none: it trains people
+   * to skim the part that sometimes matters.
+   */
+  it("carries a warning through the link", () => {
+    const url = signLink(
+      {
+        receiverId: "v.testnet",
+        methodName: "freeze_node",
+        args: { node_id: 1, frozen: true },
+        warnings: ["This blocks payments from node 1 AND every node in its subtree."],
+      },
+      "testnet",
+    );
+    const back = readSignLink(url);
+    expect(back.action?.warnings).toEqual([
+      "This blocks payments from node 1 AND every node in its subtree.",
+    ]);
+  });
+
+  it("omits the key entirely when there is nothing to warn about", () => {
+    const url = signLink(
+      { receiverId: "v.testnet", methodName: "freeze_node", args: { node_id: 1, frozen: false }, warnings: [] },
+      "testnet",
+    );
+    expect(readSignLink(url).action).not.toHaveProperty("warnings");
+  });
+
+  it("stays well inside a copy-pasteable length", () => {
+    const url = signLink(
+      {
+        receiverId: "work12-testnet-fleet.fac.floatv4.testnet",
+        methodName: "freeze_node",
+        args: { node_id: 1, frozen: true },
+        summary: "Freeze node 1",
+        warnings: ["This blocks payments from node 1 AND every node in its subtree."],
+      },
+      "testnet",
+    );
+    // measured 389; the ceiling the omission was protecting was ~2000
+    expect(url.length).toBeLessThan(600);
+  });
+});
+
 describe("round trip", () => {
   it("decodes back to exactly what went in", () => {
     const { action } = readSignLink(signLink(PAYLOAD, "testnet"));

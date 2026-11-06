@@ -41,6 +41,19 @@ const TYPES = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
+  /**
+   * Geist, self-hosted.
+   *
+   * The dashboard renders in Geist; this page rendered in the system stack.
+   * So the screen where someone is asked to SIGN looked like a different
+   * product from the one they arrived from, and visual discontinuity is what
+   * people are trained to read as phishing.
+   *
+   * From web/fonts rather than a CDN, deliberately: this page loads no
+   * external resource at all, and a signing surface is the last place to
+   * start. 200 KB of woff2 is a fair price for that.
+   */
+  ".woff2": "font/woff2",
 };
 
 // The contract is NOT copied into web/ — it is read from the package that

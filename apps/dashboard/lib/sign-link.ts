@@ -20,6 +20,15 @@ export type OwnerPayload = {
   gasTgas?: number;
   depositYocto?: string;
   summary?: string;
+  /**
+   * What the owner needs to know before approving, from the payload builder.
+   *
+   * The type omitted this, so the adapter could return it and nothing in the
+   * dashboard could see it. `planFreezeNode`'s "blocks payments from node N
+   * AND every node in its subtree" was being produced and silently discarded
+   * at the type boundary.
+   */
+  warnings?: string[];
 };
 
 /** Where the owner signs. The create page serves the `?action=` flow. */
@@ -73,9 +82,26 @@ export function fromBase64Url(b64url: string): string {
 /**
  * A signing link for one prepared payload.
  *
- * The `cli` string and the warnings array the adapter also returns are left
- * behind deliberately: a link long enough to be truncated in a copy-paste
- * fails for a reason the user cannot see.
+ * The `cli` string is left behind: it is a convenience, and nothing is lost
+ * by omitting it from a URL.
+ *
+ * WARNINGS USED TO BE DROPPED TOO, and that was wrong.
+ *
+ * The reasoning was sound in shape - a link long enough to be truncated in a
+ * copy-paste fails for a reason the user cannot see - but it cost the one
+ * sentence that matters most. `planFreezeNode` attaches "This blocks payments
+ * from node N AND every node in its subtree"; the link dropped it, so the
+ * signing page fell through to its generic copy and told the owner about
+ * recoverable deposits and checking a public key that a freeze does not have.
+ * The blast radius of a destructive action was replaced by advice that did
+ * not apply.
+ *
+ * Measured before changing it, rather than traded on instinct: carrying the
+ * warnings costs 105 characters on a freeze link (284 -> 389). The longest
+ * realistic payload, `set_recipients` with 32 long account names, is already
+ * 2,012 characters WITHOUT them - past any legacy ceiling either way. So the
+ * limit the omission was protecting is not reachable by adding them, and is
+ * already breached by the case that would breach it.
  */
 export function signLink(payload: OwnerPayload, network: string): string {
   const slim = {
@@ -85,6 +111,8 @@ export function signLink(payload: OwnerPayload, network: string): string {
     gasTgas: payload.gasTgas ?? DEFAULT_GAS_TGAS,
     depositYocto: payload.depositYocto ?? ONE_YOCTO,
     summary: payload.summary ?? `${payload.methodName} on ${payload.receiverId}`,
+    // Omitted entirely when empty, so an unfreeze link does not carry `[]`.
+    ...(payload.warnings?.length ? { warnings: payload.warnings } : {}),
   };
   return `${SIGN_BASE}/?network=${encodeURIComponent(network)}&action=${toBase64Url(
     JSON.stringify(slim),
