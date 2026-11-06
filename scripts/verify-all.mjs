@@ -61,14 +61,27 @@ const steps = [
     mustMatch: /no literal U\+00A0/,
   },
   {
-    // Added after pruning 81 scripts. A comment or a runbook line pointing at
-    // a deleted file does not crash anything - it quietly lies, which is
-    // worse, because it reads as working. This fails the build instead.
-    name: "script references resolve",
+    // The checker's OWN rules, pinned. Its git-ref half has almost no live
+    // subject in this repo - nearly every ref here is a placeholder or
+    // exempted - so the scan below can pass while the regexes are broken.
+    // This runs first so a broken matcher is reported as a broken matcher,
+    // not as a clean repo.
+    name: "ref-checker self-test",
+    cmd: "node scripts/check-script-refs.mjs --self-test",
+    cwd: ".",
+    mustMatch: /all \d+ self-tests passed/,
+    mustNotMatch: /FAIL/,
+  },
+  {
+    // Added after pruning 81 scripts, extended after deleting a merged
+    // branch that a VPS runbook still named. A comment or a runbook line
+    // pointing at a deleted file or ref does not crash anything - it quietly
+    // lies, which is worse, because it reads as working.
+    name: "script and ref references resolve",
     cmd: "node scripts/check-script-refs.mjs",
     cwd: ".",
     mustMatch: /no dangling script references/,
-    mustNotMatch: /MISSING/,
+    mustNotMatch: /MISSING|UNRESOLVABLE/,
   },
 ];
 

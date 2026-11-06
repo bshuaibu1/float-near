@@ -28,6 +28,22 @@ pattern, because a check that cannot run prints nothing and exits 0, which is
 indistinguishable from success. It discovers `mutate-*.mjs` from disk rather
 than listing them, so a deleted suite cannot linger as a silent pass.
 
+`check-script-refs.mjs` makes a dangling pointer fail the build. It checks two
+kinds: `scripts/<name>` paths must be files, and git refs named in commands
+(`git pull origin <ref>`, `BRANCH=<ref>`) must resolve. The second was added after
+deleting a merged branch that `docs/DEPLOY-VPS.md` still used as its worked
+example of the `BRANCH` override — copy-pasteable, and working only because
+the branch existed.
+
+Write examples with a placeholder (`BRANCH=<git-ref>`); the checker ignores
+those by design, so the non-rotting form is also the one that passes. If a doc
+must name a ref that is genuinely gone, add it to `HISTORICAL_REFS` with a
+reason rather than loosening the rule.
+
+It carries a `--self-test` (also in the gate) because its git-ref half has
+almost no live subject here — nearly every ref in this repo is a placeholder
+or exempted, so the scan can pass while the regexes are broken.
+
 **Build.** `build-wasm.sh`, `build-factory.sh` (fails loudly if the build did
 nothing — `cargo near build` will print "✓ successfully built" and the stale
 file's checksum in 0s), `wsl-sandbox.sh` (the only way to run the integration
