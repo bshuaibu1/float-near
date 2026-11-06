@@ -324,7 +324,7 @@ export function TopNav() {
                 className="flex items-center gap-2 rounded-md px-3 py-1.5 text-[12px] font-medium transition-all duration-150 active:scale-[0.97]"
                 style={{
                   border: `1px solid ${LINE}`,
-                  background: "#fff",
+                  background: CARD,
                   color: INK,
                 }}
                 aria-expanded={accountMenuOpen}
@@ -495,7 +495,7 @@ function NearIcon() {
   return (
     <span
       className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[8px] font-bold"
-      style={{ background: INK, color: "#fff" }}
+      style={{ background: INK, color: CARD }}
       aria-hidden
     >
       N

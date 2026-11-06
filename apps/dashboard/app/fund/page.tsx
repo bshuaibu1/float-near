@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useVisiblePolling } from "@/lib/use-chain-watch";
 import { QRCodeSVG } from "qrcode.react";
 import { Check, Copy, ExternalLink } from "lucide-react";
-import { INK, LINE, MUTED } from "@/lib/colors";
+import { CARD, INK, LINE, MUTED } from "@/lib/colors";
 import { usdc } from "@/lib/money";
 
 const API_BASE_URL =
@@ -114,7 +114,7 @@ export default function FundPage() {
             distinct from the root daily budget below it — see the note. */}
         <div
           className="flex flex-col gap-3 rounded-[18px] px-5 py-4 md:flex-row md:items-center md:justify-between"
-          style={{ border: `1px solid ${LINE}`, background: "#fff" }}
+          style={{ border: `1px solid ${LINE}`, background: CARD }}
         >
           <div>
             <p
@@ -286,7 +286,7 @@ export default function FundPage() {
           </h2>
           <div
             className="rounded-[18px] px-5 py-4"
-            style={{ border: `1px solid ${LINE}`, background: "#fff" }}
+            style={{ border: `1px solid ${LINE}`, background: CARD }}
           >
             <p className="text-[13px] leading-6 text-muted">
               Incoming transfers are not indexed here — the vault records payments it makes, not
@@ -347,7 +347,7 @@ function Card({
   return (
     <section
       className="rounded-[20px] p-6"
-      style={{ border: `1px solid ${LINE}`, background: "#fff" }}
+      style={{ border: `1px solid ${LINE}`, background: CARD }}
     >
       <div className="mb-5 space-y-1">
         <h2 className="text-[18px] font-semibold tracking-[-0.03em] text-ink">
@@ -379,7 +379,7 @@ function EmptyPageState({ title, message }: { title: string; message: string }) 
         </div>
         <div
           className="rounded-[18px] px-5 py-10 text-center text-[13px]"
-          style={{ border: `1px solid ${LINE}`, background: "#fff", color: MUTED }}
+          style={{ border: `1px solid ${LINE}`, background: CARD, color: MUTED }}
         >
           {message}
         </div>

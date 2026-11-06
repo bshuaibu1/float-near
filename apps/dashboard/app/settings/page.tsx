@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DANGER, DANGER_BG, INK, LINE, SUCCESS, SUCCESS_BG } from "@/lib/colors";
+import { CARD, DANGER, DANGER_BG, INK, LINE, SUCCESS, SUCCESS_BG } from "@/lib/colors";
 import { ExternalLink } from "lucide-react";
 import { signLink, type OwnerPayload } from "@/lib/sign-link";
 import { useWallet } from "@/components/wallet-provider";
@@ -173,7 +173,7 @@ export default function Settings() {
                       onClick={() => void preparePause()}
                       disabled={killing || (!walletAddress && !ownerSessionAvailable)}
                       className="text-[12px] font-medium px-3 py-1.5 rounded-md transition-all duration-150 active:scale-[0.97] disabled:opacity-40"
-                      style={{ background: DANGER, color: "#fff", border: `1px solid ${DANGER}` }}
+                      style={{ background: DANGER, color: CARD, border: `1px solid ${DANGER}` }}
                     >
                       {killing ? "Preparing…" : "Prepare pause"}
                     </button>
