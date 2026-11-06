@@ -101,6 +101,19 @@ export interface ApiAgent {
    * padding into prose. A consumer that wants indentation can multiply.
    */
   depth: number;
+  /**
+   * This node's parent id, or null at the root.
+   *
+   * WITHOUT IT THE DASHBOARD CANNOT CHECK THE CONTRACT'S OWN RULE. Under
+   * strict allocation `set_node_caps` refuses a cap below the sum already
+   * allocated to that node's children, at EVERY depth, not just root
+   * (lib.rs:854). The policies page could only evaluate that for root,
+   * because `depth` alone says a node sits at level 2 but not WHICH level-1
+   * node it hangs from. So shrinking a mid-tree budget below its children
+   * passed validation, and the owner signed and paid gas for a transaction
+   * the contract was always going to reject.
+   */
+  parent: number | null;
   lifetimeSpent?: string;
   lifetimePayments?: number;
   walletBalance?: string | null;
@@ -168,6 +181,7 @@ export function nodeToApiAgent(n: VaultNode, usage: DayUsage, decimals: number):
     status: n.frozen ? "killed" : "active",
     displayName: n.label,
     depth: 0,
+    parent: n.parent,
     dailySpent: fromBaseUnits(used, decimals),
     dailyBudgetUsedPercent: cap > 0n ? Number((used * 100n) / cap) : 0,
     walletBalance: null, // the VAULT holds the tokens; an agent account holds none
