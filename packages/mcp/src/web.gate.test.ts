@@ -264,6 +264,51 @@ describe("owner-action mode", () => {
    * Arguments are rendered in full. A summary is the link describing itself,
    * which is exactly the claim under suspicion when a link is tampered with.
    */
+  /**
+   * THE PAGE MUST NOT SAY IT IS CREATING A VAULT WHEN IT IS NOT.
+   *
+   * The <h1> and subtitle are static markup - "Create your Float vault" and
+   * "Connect the wallet that will own it." - and the only code that ever
+   * touched them set the title to "Done" at the end. So an owner who clicked
+   * "freeze marketing" on the dashboard landed on a page offering to create a
+   * vault and asking them to connect the wallet that would OWN it.
+   *
+   * Two ways that goes wrong, and both are bad: a careful owner closes the tab
+   * because the page is describing something they did not ask for, and a
+   * careless one approves believing a 3-NEAR creation deposit is coming. The
+   * signature itself was always correct - freeze_node, one yocto - but the
+   * sentence above it was not, and the sentence is what the owner reads.
+   */
+  it("re-titles the page for an owner action instead of offering to create a vault", () => {
+    const src = html();
+    // Positive control FIRST: if the create copy has been renamed, the
+    // assertions below would pass against a page that no longer says it.
+    expect(src, "the create-flow heading is gone; this test needs rewriting").toContain(
+      "Create your Float vault",
+    );
+    const m = src.match(/RAW_ACTION[\s\S]{0,400}?\$\("title"\)\.textContent/);
+    expect(
+      m,
+      "nothing re-titles the page when the link carries ?action= - it still reads 'Create your Float vault'",
+    ).not.toBeNull();
+  });
+
+  it("tells the owner which vault they are connecting to approve against", () => {
+    const src = html();
+    // The subtitle must name the TARGET, not say "the wallet that will own it".
+    const m = src.match(/\$\("sub"\)\.textContent[\s\S]{0,200}?receiverId/);
+    expect(m, "the action-mode subtitle does not name the vault being changed").not.toBeNull();
+  });
+
+  /**
+   * And it must NOT promise a deposit. The create flow quotes ~3 NEAR; an
+   * owner action takes one yocto, and the connect screen is where someone
+   * decides whether to proceed.
+   */
+  it("says no deposit is taken, on the screen where the owner decides", () => {
+    expect(html()).toMatch(/Nothing is created and no deposit is taken/);
+  });
+
   it("shows the real arguments, not only the summary", () => {
     expect(html()).toMatch(/\$\("x-args"\)\.textContent = JSON\.stringify\(ACTION\.args/);
   });

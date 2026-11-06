@@ -705,6 +705,33 @@
       }
 
       function render() {
+        /**
+         * SAY WHAT THIS LINK ACTUALLY DOES, BEFORE ANYTHING ELSE.
+         *
+         * The <h1> and subtitle are static markup reading "Create your Float
+         * vault" / "Connect the wallet that will own it.", and the only code
+         * that ever touched them set the title to "Done" at the very end. So
+         * an owner who clicked "freeze marketing" on the dashboard landed on a
+         * page offering to CREATE a vault.
+         *
+         * Both reactions to that are bad. A careful owner closes the tab,
+         * because the page is describing something they did not ask for. A
+         * careless one approves expecting a ~3 NEAR creation deposit. The
+         * transaction underneath was always correct - freeze_node, one yocto -
+         * but the sentence above it was not, and the sentence is the part most
+         * people actually read.
+         *
+         * Set BEFORE the `who` check, so the copy is right on the CONNECT step
+         * too. That is the screen the owner sees first, and the one that was
+         * asking them to connect "the wallet that will own it".
+         */
+        if (RAW_ACTION && ACTION && !ACTION_ERR) {
+          $("title").textContent = ACTION.summary || "Approve a vault change";
+          $("sub").textContent =
+            `Connect the wallet that owns ${ACTION.receiverId}. ` +
+            `Nothing is created and no deposit is taken.`;
+        }
+
         const who = accountId();
         if (!who) return show("connect");
 
