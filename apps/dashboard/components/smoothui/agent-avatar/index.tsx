@@ -13,6 +13,20 @@ export type AgentAvatarProps = Omit<
   size?: number;
   /** Enable pixel animation (respects prefers-reduced-motion) */
   animated?: boolean;
+  /**
+   * Base hue, 0-359, overriding the one derived from `seed`.
+   *
+   * The hashed hue is blind to the other agents, so nothing stops two of
+   * them landing on the same colour: measured on real ids, node-2 came out
+   * at 332 degrees and node-3 at 333. A caller that knows the agent's
+   * position in the tree can space them deliberately - see lib/agent-hue.ts.
+   *
+   * Only the HUE is taken. Saturation, lightness, the per-cell grid and
+   * every animation phase still come from the seed, so two agents given
+   * neighbouring hues still look like different avatars rather than the
+   * same one recoloured.
+   */
+  hue?: number;
 };
 
 const GRID_SIZE = 6;
@@ -67,9 +81,13 @@ const createRng = (seed: number) => {
 type HSL = [hue: number, saturation: number, lightness: number];
 
 /** Derive a 3-color palette within the same hue family */
-const generatePalette = (hash: number): [HSL, HSL, HSL] => {
+const generatePalette = (hash: number, hueOverride?: number): [HSL, HSL, HSL] => {
   const rng = createRng(hash);
-  const baseHue = rng() * 360;
+  // The rng call happens either way, so the SATURATION and lightness draws
+  // below stay on the same sequence whether or not a hue was supplied. Were
+  // it skipped, passing a hue would also shift every other channel.
+  const hashedHue = rng() * 360;
+  const baseHue = hueOverride ?? hashedHue;
   const sat = 75 + rng() * 20; // 75-95%
 
   return [
@@ -118,6 +136,7 @@ const AgentAvatar = ({
   seed,
   size = 64,
   animated = true,
+  hue,
   className,
   ...props
 }: AgentAvatarProps) => {
@@ -141,7 +160,7 @@ const AgentAvatar = ({
     ctx.scale(dpr, dpr);
 
     const hash = hashSeed(seed);
-    const palette = generatePalette(hash);
+    const palette = generatePalette(hash, hue);
     const grid = generateGrid(hash);
     const cellSize = size / GRID_SIZE;
     const half = size / 2;
@@ -265,7 +284,7 @@ const AgentAvatar = ({
       cancelAnimationFrame(rafRef.current);
       motionQuery.removeEventListener("change", handleMotionChange);
     };
-  }, [seed, size, animated]);
+  }, [seed, size, animated, hue]);
 
   return (
     <canvas

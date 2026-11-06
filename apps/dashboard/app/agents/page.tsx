@@ -10,6 +10,7 @@ import { useChainWatch, useToast } from "@/lib/use-chain-watch";
 import { Toast, WatchStatus } from "@/components/toast";
 import { DANGER, DANGER_BG, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
 import { InfoDot } from "@/components/ui/info-dot";
+import { agentHue, agentSeed } from "@/lib/agent-hue";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
@@ -372,7 +373,7 @@ export default function AgentsPage() {
                     style={{ paddingLeft: `${(a.depth ?? 0) * 1.1}rem` }}
                   >
                     <div className="relative shrink-0" title={`Budget node ${nodeId}`}>
-                      <AgentAvatar seed={a.agentId} size={22} animated />
+                      <AgentAvatar seed={agentSeed(a.agentId)} hue={agentHue(a.agentId)} size={22} animated />
                     </div>
                     <div className="min-w-0">
                       <p className="text-[13px] font-medium truncate text-ink">

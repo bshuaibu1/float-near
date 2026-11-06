@@ -614,6 +614,15 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
     recentActivity: recent.map((p) => ({
       id: p.id,
       agent: p.agentName,
+      /**
+       * THE AGENT'S IDENTITY, not just its label.
+       *
+       * The Overview's activity rows seeded their avatar from `agent` (the
+       * NAME) while the budget tree two panels above seeded from `agentId`.
+       * Those hash differently, so one agent wore two colours on one page:
+       * "marketing" was yellow-green in the tree and pink in the table.
+       */
+      agentId: p.agentId,
       venue: p.venue,
       recipient: p.recipientAddress,
       // Empty string and "no memo" are the same thing to a reader, so both

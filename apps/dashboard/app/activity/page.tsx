@@ -11,6 +11,7 @@ import {
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
 import { usdc } from "@/lib/money";
+import { agentHue, agentSeed } from "@/lib/agent-hue";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 const FETCH_LIMIT = 200;
@@ -160,7 +161,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
           style={{ borderBottom: `1px solid ${LINE}` }}
         >
           <div className="flex items-center gap-2.5">
-            <AgentAvatar seed={item.agentId} size={24} animated={false} />
+            <AgentAvatar seed={agentSeed(item.agentId)} hue={agentHue(item.agentId)} size={24} animated={false} />
             <div>
               <p className="text-[13px] font-semibold text-ink">
                 {item.agentName}
@@ -558,7 +559,7 @@ export default function Activity() {
               className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors"
               style={{ ...border, background: CARD, color: INK }}
             >
-              <AgentAvatar seed={agentFilter === "all" ? "float" : agentFilter} size={14} animated={false} />
+              <AgentAvatar seed={agentFilter === "all" ? "float" : agentSeed(agentFilter)} hue={agentFilter === "all" ? undefined : agentHue(agentFilter)} size={14} animated={false} />
               <span>{selectedAgentName}</span>
               <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
                 <path d="M1 1l4 4 4-4" stroke={MUTED} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -590,7 +591,7 @@ export default function Activity() {
                       color: agentFilter === a.id ? INK : MUTED,
                     }}
                   >
-                    <AgentAvatar seed={a.id} size={14} animated={false} />
+                    <AgentAvatar seed={agentSeed(a.id)} hue={agentHue(a.id)} size={14} animated={false} />
                     {a.name}
                   </button>
                 ))}
@@ -697,7 +698,7 @@ export default function Activity() {
 
                   {/* Agent name + Venue */}
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <AgentAvatar seed={p.agentId} size={20} animated={false} />
+                    <AgentAvatar seed={agentSeed(p.agentId)} hue={agentHue(p.agentId)} size={20} animated={false} />
                     <div className="min-w-0">
                       <p
                         className="text-[12px] font-medium truncate leading-tight text-ink"

@@ -13,6 +13,7 @@ import {
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
 import { usd, usdc, percent } from "@/lib/money";
+import { agentHue, agentSeed } from "@/lib/agent-hue";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 // Includes the Base rail's two terminal states. "signed" means the vault
@@ -66,6 +67,8 @@ type ApiAgent = {
 type ActivityItem = {
   id: string;
   agent: string;
+  /** The agent's stable id. The avatar seeds from this, never the name. */
+  agentId?: string | null;
   /** memo || recipient, kept while /activity still reads it. */
   venue: string;
   /** WHO was paid. Always present on a real payment. */
@@ -413,7 +416,7 @@ export default function Overview() {
                     style={{ paddingLeft: `${(a.depth ?? 0) * 1.1}rem` }}
                   >
                     <div className="relative shrink-0">
-                      <AgentAvatar seed={a.agentId} size={24} animated />
+                      <AgentAvatar seed={agentSeed(a.agentId)} hue={agentHue(a.agentId)} size={24} animated />
                       <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white" style={{ background:SUCCESS }}/>
                     </div>
                     {/* displayName, not agentId: agentId is `node-<id>` for a team
@@ -466,7 +469,7 @@ export default function Overview() {
                 >
                   <span className="text-[12px] font-mono tabular-nums text-muted">{formatTime(r.time)}</span>
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <AgentAvatar seed={r.agent} size={16} animated />
+                    <AgentAvatar seed={agentSeed(r.agentId) || r.agent} hue={agentHue(r.agentId)} size={16} animated />
                     <span className="text-[12px] font-mono truncate text-ink">{r.agent.slice(0,8)}…</span>
                   </div>
                   {/*
