@@ -562,7 +562,10 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
     treasury: {
       ownerId: cfgView.owner,
       walletAddress: cfgView.vault_id,
-      createdAt: new Date(0).toISOString(),
+      // null, not epoch zero: the contract records no vault creation time
+      // either. Inventing 1970 makes a missing value look like a known one.
+      // See ApiAgent.createdAt in map.ts.
+      createdAt: null,
       // The vault holds the tokens; the figure the dashboard cares about is
       // how much of the ROOT budget is still available today.
       amount: root?.limits[0]

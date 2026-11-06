@@ -46,12 +46,17 @@ function computeDailySpend(activity: ActivityItem[]): { spend: number; label: st
 
 type ApiAgent = {
   agentId: string;
-  /** The tree label with its depth prefix, e.g. "   └─ r1". */
+  /** The node's own label, e.g. "marketing". No tree glyphs, no indentation. */
   displayName?: string | null;
   /** Depth in the budget tree, root 0. A number, not characters. */
   depth?: number;
   walletAddress: string;
-  createdAt: string;
+  /**
+   * NULL - the contract stores no creation time for a node. The adapter used
+   * to send epoch zero to satisfy a non-nullable type, so the first page to
+   * render this would have confidently displayed "Jan 1, 1970".
+   */
+  createdAt: string | null;
   lifetimeSpent?: string;
   lifetimePayments?: number;
   dailySpent?: string;

@@ -73,7 +73,21 @@ export interface DayUsage {
 export interface ApiAgent {
   agentId: string;
   walletAddress: string;
-  createdAt: string;
+  /**
+   * NULL, because the contract does not record one.
+   *
+   * `Node` has no timestamp field - id, parent, path, label, account,
+   * limits, cooldown, frozen, recipients, and nothing else. Only a payment
+   * REQUEST carries `created_at_ns`.
+   *
+   * This used to be `new Date(0).toISOString()`, which satisfied a
+   * non-nullable type by inventing "1970-01-01T00:00:00.000Z". Nothing
+   * rendered it yet, so it was not a visible bug - it was a loaded one: the
+   * first page to show an agent's age would have shipped "Created Jan 1,
+   * 1970" with complete confidence. A missing value has to BE missing, or
+   * the type system is helping you lie.
+   */
+  createdAt: string | null;
   status: "active" | "killed";
   /** The node's own label. NO tree glyphs, no indentation. */
   displayName: string;
@@ -150,7 +164,7 @@ export function nodeToApiAgent(n: VaultNode, usage: DayUsage, decimals: number):
     // the thing this product exists to make visible.
     agentId: n.account ?? `node-${n.id}`,
     walletAddress: n.account ?? "",
-    createdAt: new Date(0).toISOString(),
+    createdAt: null,
     status: n.frozen ? "killed" : "active",
     displayName: n.label,
     depth: 0,
