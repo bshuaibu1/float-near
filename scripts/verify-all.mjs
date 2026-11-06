@@ -84,6 +84,17 @@ const steps = [
     mustNotMatch: /MISSING|UNRESOLVABLE/,
   },
   {
+    // lib/colors.ts exists so a colour is named once. The migration to it was
+    // incomplete - sixteen "#fff" survived, several in the same style object
+    // as an already-tokenised INK. An EXACT match only: a similar colour is a
+    // design decision, an identical one is a duplicate with a name waiting.
+    name: "colour tokens",
+    cmd: "node scripts/check-color-tokens.mjs",
+    cwd: ".",
+    mustMatch: /no duplicated colours/,
+    mustNotMatch: /DUPLICATE/,
+  },
+  {
     /**
      * Added after the freeze flow ended in a dead tab: "Sign in wallet"
      * pointed at a port nothing was listening on.

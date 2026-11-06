@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useMemo } from "react";
-import { CANVAS, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
+import { CANVAS, CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
 import { useWallet } from "@/components/wallet-provider";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
 import {
@@ -151,7 +151,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
     >
       <div
         className="relative w-full max-w-lg rounded-2xl overflow-hidden"
-        style={{ background: "#fff", ...border }}
+        style={{ background: CARD, ...border }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -170,7 +170,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
           </div>
           <button
             onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-[#F5F5F4] text-muted"
+            className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-chip text-muted"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -556,7 +556,7 @@ export default function Activity() {
             <button
               onClick={() => setAgentMenuOpen(o => !o)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors"
-              style={{ ...border, background: "#fff", color: INK }}
+              style={{ ...border, background: CARD, color: INK }}
             >
               <AgentAvatar seed={agentFilter === "all" ? "float" : agentFilter} size={14} animated={false} />
               <span>{selectedAgentName}</span>
@@ -570,7 +570,7 @@ export default function Activity() {
                 className="absolute left-0 top-[calc(100%+6px)] z-20 w-52 rounded-lg overflow-hidden"
                 style={{
                   ...border,
-                  background: "#fff",
+                  background: CARD,
                   boxShadow: "0 8px 24px rgba(0,0,0,0.08)",
                 }}
               >
@@ -586,7 +586,7 @@ export default function Activity() {
                     onClick={() => { setAgentFilter(a.id); setAgentMenuOpen(false); }}
                     className="flex items-center gap-2.5 w-full px-3 py-2.5 text-[12px] font-medium text-left hover:bg-canvas transition-colors"
                     style={{
-                      borderTop: "1px solid #F5F5F4",
+                      borderTop: `1px solid ${LINE}`,
                       color: agentFilter === a.id ? INK : MUTED,
                     }}
                   >
@@ -607,7 +607,7 @@ export default function Activity() {
                   onClick={() => setRailFilter(v)}
                   className="px-2.5 py-1 rounded-md text-[11px] font-medium uppercase tracking-wider transition-colors"
                   style={railFilter === v
-                    ? { background: INK, color: "#fff" }
+                    ? { background: INK, color: CARD }
                     : { color: MUTED }}
                 >
                   {v}
@@ -624,7 +624,7 @@ export default function Activity() {
                   onClick={() => setStatusFilter(v)}
                   className="px-2.5 py-1 rounded-md text-[11px] font-medium capitalize transition-colors"
                   style={statusFilter === v
-                    ? { background: INK, color: "#fff" }
+                    ? { background: INK, color: CARD }
                     : { color: MUTED }}
                 >
                   {v}
@@ -779,7 +779,7 @@ export default function Activity() {
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
-                        className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-[#F0F0EE] text-muted"
+                        className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-chip text-muted"
                         title="View the vault on NEAR Explorer"
                       >
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -818,7 +818,7 @@ export default function Activity() {
                 style={{
                   ...border,
                   color: activePage === 1 ? "#B0ADB8" : INK,
-                  background: "#fff",
+                  background: CARD,
                 }}
               >
                 Previous
@@ -833,7 +833,7 @@ export default function Activity() {
                 style={{
                   ...border,
                   color: activePage === totalPages ? "#B0ADB8" : INK,
-                  background: "#fff",
+                  background: CARD,
                 }}
               >
                 Next
@@ -844,7 +844,7 @@ export default function Activity() {
             <button
               onClick={() => fetchPayments(walletAddress, loadedOffset, false)}
               className="text-[12px] font-medium px-3 py-1.5 rounded-md transition-colors hover:bg-canvas"
-              style={{ ...border, color: INK, background: "#fff" }}
+              style={{ ...border, color: INK, background: CARD }}
             >
               Load older
             </button>

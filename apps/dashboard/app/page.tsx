@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
+import { CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
@@ -263,7 +263,7 @@ export default function Overview() {
                 <div key={i} className="relative flex-1 flex flex-col justify-end">
                   {/* tooltip */}
                   <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 pointer-events-none opacity-0 group-hover/chart:opacity-0 peer-hover:opacity-100 z-10">
-                    <div className="px-2 py-1 rounded-md text-[10px] font-mono whitespace-nowrap" style={{ background:INK, color:"#fff" }}>
+                    <div className="px-2 py-1 rounded-md text-[10px] font-mono whitespace-nowrap" style={{ background:INK, color:CARD }}>
                       {b.label}: {usd(b.spend)}
                     </div>
                   </div>

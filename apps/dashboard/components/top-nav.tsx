@@ -324,7 +324,7 @@ export function TopNav() {
                 className="flex items-center gap-2 rounded-md px-3 py-1.5 text-[12px] font-medium transition-all duration-150 active:scale-[0.97]"
                 style={{
                   border: `1px solid ${LINE}`,
-                  background: "#fff",
+                  background: CARD,
                   color: INK,
                 }}
                 aria-expanded={accountMenuOpen}
@@ -361,9 +361,9 @@ export function TopNav() {
                       {displayedAccount}
                     </p>
                   </div>
-                  <div style={{ borderTop: "1px solid #F0F0EE" }} />
+                  <div style={{ borderTop: `1px solid ${LINE}` }} />
                   <DocsMenuItem onNavigate={() => setAccountMenuOpen(false)} />
-                  <div style={{ borderTop: "1px solid #F0F0EE" }} />
+                  <div style={{ borderTop: `1px solid ${LINE}` }} />
                   <button
                     role="menuitem"
                     onClick={() => {
@@ -419,7 +419,7 @@ export function TopNav() {
                       Choose how to open Float.
                     </p>
                   </div>
-                  <div style={{ borderTop: "1px solid #F0F0EE" }} />
+                  <div style={{ borderTop: `1px solid ${LINE}` }} />
                   {/* ONE action, because there is only one.
                       The NEAR provider's login() does not open a popup and
                       does not ask for a signature — nothing this dashboard
@@ -435,7 +435,7 @@ export function TopNav() {
                       space, and a signed-out visitor is the one most likely
                       to want it — putting it only behind the account menu
                       would hide it from exactly that reader. */}
-                  <div style={{ borderTop: "1px solid #F0F0EE" }} />
+                  <div style={{ borderTop: `1px solid ${LINE}` }} />
                   <DocsMenuItem onNavigate={() => setConnectMenuOpen(false)} />
                 </div>
               ) : null}
@@ -495,7 +495,7 @@ function NearIcon() {
   return (
     <span
       className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[8px] font-bold"
-      style={{ background: INK, color: "#fff" }}
+      style={{ background: INK, color: CARD }}
       aria-hidden
     >
       N

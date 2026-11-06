@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useVisiblePolling } from "@/lib/use-chain-watch";
 import { QRCodeSVG } from "qrcode.react";
 import { Check, Copy, ExternalLink } from "lucide-react";
-import { INK, LINE, MUTED } from "@/lib/colors";
+import { CARD, CHIP, INK, LINE, MUTED } from "@/lib/colors";
 import { usdc } from "@/lib/money";
 
 const API_BASE_URL =
@@ -114,7 +114,7 @@ export default function FundPage() {
             distinct from the root daily budget below it — see the note. */}
         <div
           className="flex flex-col gap-3 rounded-[18px] px-5 py-4 md:flex-row md:items-center md:justify-between"
-          style={{ border: `1px solid ${LINE}`, background: "#fff" }}
+          style={{ border: `1px solid ${LINE}`, background: CARD }}
         >
           <div>
             <p
@@ -193,7 +193,7 @@ export default function FundPage() {
                   landed. */}
               <div
                 className="rounded-[12px] px-3.5 py-3"
-                style={{ border: `1px solid ${LINE}`, background: "#FAFAF9" }}
+                style={{ border: `1px solid ${LINE}`, background: CHIP }}
               >
                 <p className="text-[12px] leading-5 text-muted">
                   <span className="font-medium text-ink">
@@ -221,7 +221,7 @@ export default function FundPage() {
             <div className="flex flex-col items-center gap-3">
               <div
                 className="rounded-[18px] p-4"
-                style={{ border: `1px solid ${LINE}`, background: "#FAFAF9" }}
+                style={{ border: `1px solid ${LINE}`, background: CHIP }}
               >
                 <QRCodeSVG value={info.vaultId} size={156} />
               </div>
@@ -229,7 +229,7 @@ export default function FundPage() {
               <button
                 type="button"
                 onClick={() => copy(info.vaultId, "vault")}
-                className="inline-flex items-center gap-2 rounded-[12px] border px-4 py-2 text-[13px] font-medium transition-colors hover:bg-[#F7F7F6]"
+                className="inline-flex items-center gap-2 rounded-[12px] border px-4 py-2 text-[13px] font-medium transition-colors hover:bg-chip"
                 style={{ borderColor: LINE, color: INK }}
               >
                 {copied === "vault" ? <Check size={14} /> : <Copy size={14} />}
@@ -238,7 +238,7 @@ export default function FundPage() {
 
               <div
                 className="w-full rounded-[12px] px-3 py-2.5 font-mono text-[11px] text-center break-all"
-                style={{ border: `1px solid ${LINE}`, background: "#F7F7F6", color: MUTED }}
+                style={{ border: `1px solid ${LINE}`, background: CHIP, color: MUTED }}
               >
                 {info.vaultId}
               </div>
@@ -254,7 +254,7 @@ export default function FundPage() {
                 <button
                   type="button"
                   onClick={() => copy(info.tokenId, "token")}
-                  className="flex w-full items-center justify-between gap-2 rounded-[12px] px-3 py-2 font-mono text-[11px] transition-colors hover:bg-[#F7F7F6]"
+                  className="flex w-full items-center justify-between gap-2 rounded-[12px] px-3 py-2 font-mono text-[11px] transition-colors hover:bg-chip"
                   style={{ border: `1px solid ${LINE}`, color: MUTED }}
                 >
                   <span className="break-all text-left">{info.tokenId}</span>
@@ -286,7 +286,7 @@ export default function FundPage() {
           </h2>
           <div
             className="rounded-[18px] px-5 py-4"
-            style={{ border: `1px solid ${LINE}`, background: "#fff" }}
+            style={{ border: `1px solid ${LINE}`, background: CARD }}
           >
             <p className="text-[13px] leading-6 text-muted">
               Incoming transfers are not indexed here — the vault records payments it makes, not
@@ -300,7 +300,7 @@ export default function FundPage() {
                 href={`${info.explorerBase}/address/${info.vaultId}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-[10px] border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-[#F7F7F6]"
+                className="inline-flex items-center gap-1.5 rounded-[10px] border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-chip"
                 style={{ borderColor: LINE, color: INK }}
               >
                 Vault account
@@ -310,7 +310,7 @@ export default function FundPage() {
                 href={`${info.explorerBase}/address/${info.tokenId}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-[10px] border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-[#F7F7F6]"
+                className="inline-flex items-center gap-1.5 rounded-[10px] border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-chip"
                 style={{ borderColor: LINE, color: INK }}
               >
                 Token contract
@@ -328,7 +328,7 @@ function StepNum({ n }: { n: string }) {
   return (
     <span
       className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
-      style={{ background: "#F2F2F0", color: MUTED }}
+      style={{ background: CHIP, color: MUTED }}
     >
       {n}
     </span>
@@ -347,7 +347,7 @@ function Card({
   return (
     <section
       className="rounded-[20px] p-6"
-      style={{ border: `1px solid ${LINE}`, background: "#fff" }}
+      style={{ border: `1px solid ${LINE}`, background: CARD }}
     >
       <div className="mb-5 space-y-1">
         <h2 className="text-[18px] font-semibold tracking-[-0.03em] text-ink">
@@ -379,7 +379,7 @@ function EmptyPageState({ title, message }: { title: string; message: string }) 
         </div>
         <div
           className="rounded-[18px] px-5 py-10 text-center text-[13px]"
-          style={{ border: `1px solid ${LINE}`, background: "#fff", color: MUTED }}
+          style={{ border: `1px solid ${LINE}`, background: CARD, color: MUTED }}
         >
           {message}
         </div>
