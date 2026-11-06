@@ -45,6 +45,41 @@
       (float-dashboard/app/link/page.tsx) so the two products look related.
     -->
     <style>
+      /**
+       * GEIST, SELF-HOSTED.
+       *
+       * The dashboard renders in Geist. This page rendered in the system
+       * stack, so the one screen where someone is asked to SIGN looked like a
+       * different product from the one they arrived from — and a page that
+       * does not match the product is what users are trained to treat as
+       * phishing. Measured before changing: dashboard "GeistSans", this page
+       * "-apple-system".
+       *
+       * Local, not a CDN. This page loads no external resource at all, and a
+       * signing surface is the last place to introduce one. `font-display:
+       * swap` so a slow font never delays the text of a transaction.
+       */
+      @font-face {
+        font-family: "Geist";
+        src: url("fonts/Geist-Regular.woff2") format("woff2");
+        font-weight: 400; font-style: normal; font-display: swap;
+      }
+      @font-face {
+        font-family: "Geist";
+        src: url("fonts/Geist-Medium.woff2") format("woff2");
+        font-weight: 500; font-style: normal; font-display: swap;
+      }
+      @font-face {
+        font-family: "Geist";
+        src: url("fonts/Geist-SemiBold.woff2") format("woff2");
+        font-weight: 600; font-style: normal; font-display: swap;
+      }
+      @font-face {
+        font-family: "GeistMono";
+        src: url("fonts/GeistMono-Regular.woff2") format("woff2");
+        font-weight: 400; font-style: normal; font-display: swap;
+      }
+
       :root {
         --bg: #fbfbfa;
         --ink: #111111;
@@ -53,6 +88,26 @@
         --line: #eaeaea;
         --card: #ffffff;
         --chip: #f3f3f1;
+
+        /**
+         * Status, taken from the dashboard's lib/colors.ts rather than
+         * approximated. The page had its own near-misses (#fff8e6 vs #FEF6E7,
+         * #fdf0f0 vs #FDEBEC) — close enough to look like a mistake and far
+         * enough to look like a different product.
+         */
+        --danger: #9f2f2d;    --danger-bg: #fdebec;
+        --success: #346538;   --success-bg: #edf3ec;
+        --warn: #92400e;      --warn-bg: #fef6e7;
+
+        /**
+         * TWO RADII, BY ROLE. There were six — 24, 18, 16, 14, 12, 6 — with
+         * nothing deciding which went where. Panels get 12, controls get 8.
+         * A reader can now tell a container from a thing you press.
+         */
+        --r-panel: 12px;
+        --r-control: 8px;
+
+        --mono: "GeistMono", ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       * { box-sizing: border-box; }
       body {
@@ -64,7 +119,8 @@
         padding: 40px 16px;
         background: var(--bg);
         color: var(--ink);
-        font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+        font: 14px/1.6 "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
       }
       .col { width: 100%; max-width: 448px; display: flex; flex-direction: column; gap: 20px; align-items: center; }
 
@@ -83,31 +139,75 @@
       /* 26px, down from 32. At 32 inside a 448px card the title wrapped to two
          lines on a phone and crowded the mark above it; the heading no longer
          has a whole page to itself. */
-      h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.03em; margin: 0; text-align: center; }
-      .sub { color: var(--muted); text-align: center; margin: 8px auto 0; max-width: 340px; font-size: 14px; }
-      code { background: var(--chip); border-radius: 6px; padding: 2px 6px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-      .card { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: 24px; }
+      h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 0; text-align: center; line-height: 1.25; }
+      .sub { color: var(--muted); text-align: center; margin: 8px auto 0; max-width: 340px; font-size: 13.5px; line-height: 1.5; }
+      code { background: var(--chip); border-radius: var(--r-control); padding: 2px 6px; font-size: 13px; font-family: var(--mono); }
+      .card { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 24px; }
       .row { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; }
       .row span:first-child { color: var(--muted); }
-      .row span:last-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; text-align: right; word-break: break-all; }
+      .row span:last-child { font-family: var(--mono); font-size: 12.5px; text-align: right; word-break: break-all; }
       .total { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 14px; font-weight: 600; }
+      /**
+       * PRIMARY AND SECONDARY MUST NOT WEIGH THE SAME.
+       *
+       * Both were 48px tall, full width, same radius — only the fill differed.
+       * On an approval screen that is a real problem: "Approve in my wallet"
+       * and "Use a different wallet" are not peers, and a tired person
+       * clicking the wrong full-width slab has signed something.
+       *
+       * The primary keeps its full presence. The secondary is shorter, quieter
+       * and borderless, so the eye lands on one of them first and it is always
+       * the same one.
+       */
       button {
-        width: 100%; height: 48px; border-radius: 16px; border: 0;
-        background: var(--ink); color: #fff; font-size: 15px; font-weight: 500;
-        cursor: pointer; font-family: inherit;
+        width: 100%; height: 44px; border-radius: var(--r-control); border: 1px solid transparent;
+        background: var(--ink); color: #fff; font-size: 14px; font-weight: 500;
+        cursor: pointer; font-family: inherit; letter-spacing: -0.01em;
+        transition: background-color 120ms ease, border-color 120ms ease;
       }
+      /* A shade below --ink (#111111), NOT pure black. Pure black appears
+         nowhere else in this product, so a button that reaches for it on
+         hover is reading from a different palette than everything around it.
+         (Written without the literal: a grep for pure black should find no
+         hits here, and prose explaining its absence would be a permanent
+         false positive — a scanner that cries wolf every run gets ignored.) */
+      button:hover:not(:disabled) { background: #1c1c1c; }
       button:disabled { opacity: 0.4; cursor: default; }
-      button.ghost { background: var(--chip); color: var(--ink); }
-      .note { color: var(--faint); font-size: 12px; text-align: center; }
-      .warn { background: #fff8e6; border: 1px solid #f0e0b0; border-radius: 18px; padding: 14px; font-size: 13px; }
-      .err { background: #fdf0f0; border: 1px solid #f0c8c8; border-radius: 18px; padding: 14px; font-size: 13px; color: #8a2020; white-space: pre-wrap; }
-      .ok { background: #f1f8f2; border: 1px solid #cce4d0; border-radius: 18px; padding: 14px; font-size: 13px; }
+      button.ghost {
+        background: transparent; color: var(--muted); height: 38px;
+        font-size: 13px; font-weight: 400; border-color: transparent;
+      }
+      button.ghost:hover:not(:disabled) { background: var(--chip); color: var(--ink); }
+      .note { color: var(--faint); font-size: 12px; text-align: center; line-height: 1.5; }
+
+      /**
+       * Status panels, at the dashboard's exact tokens. `--r-panel`, because
+       * these are containers, not controls.
+       */
+      .warn { background: var(--warn-bg); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 14px; font-size: 13px; color: var(--warn); }
+      .err { background: var(--danger-bg); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 14px; font-size: 13px; color: var(--danger); white-space: pre-wrap; }
+      .ok { background: var(--success-bg); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 14px; font-size: 13px; color: var(--success); }
+
+      /**
+       * THE THING BEING APPROVED.
+       *
+       * It used to be wrapped in `.warn` — so a neutral title, "Freeze node
+       * 1", rendered in the cream alarm box, while the ACTUAL warning below it
+       * used `.note`: faint, 12px, the quietest style on the page. The page
+       * shouted the label and whispered the consequence. This is the label,
+       * styled as a label.
+       */
+      .subject {
+        border-left: 2px solid var(--ink);
+        padding: 2px 0 2px 12px;
+        font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+      }
       /* The agent key is rendered IN FULL and never truncated — an ellipsis in
          the middle is exactly where a swapped key hides. `break-all` because
          a base58 key has no break opportunities and would otherwise overflow
          the card on a phone. */
-      #a-key, #x-args { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6;
-               background: #f6f6f4; border: 1px solid #e3e3df; border-radius: 12px;
+      #a-key, #x-args { font-family: var(--mono); font-size: 12px; line-height: 1.6;
+               background: var(--chip); border: 1px solid var(--line); border-radius: var(--r-panel);
                padding: 12px; word-break: break-all; user-select: all; }
       .hide { display: none; }
       a { color: var(--ink); }
@@ -191,14 +291,19 @@
       }
 
       /* Radius and depth are hardcoded in the sheet rather than exposed, so
-         these three need the real selectors. 16px there vs 24px on our card
-         read as two different design languages side by side. */
+         these three need the real selectors. The POINT is to match our own
+         card — and these were literals pinned to 24px/14px because that is
+         what the card used. The card now uses the radius tokens, so the
+         literals had quietly become the mismatch this block exists to
+         prevent: the wallet picker would have opened at 24px on top of a 12px
+         card, which is the "two design languages side by side" the original
+         comment was written to stop. */
       .nws-modal-wrapper .nws-modal {
-        border-radius: 24px;
+        border-radius: var(--r-panel);
         box-shadow: 0 1px 2px rgba(17, 17, 17, 0.04), 0 12px 32px rgba(17, 17, 17, 0.08);
         border: 1px solid var(--line);
       }
-      .nws-modal-wrapper .nws-modal .single-wallet { border-radius: 14px; }
+      .nws-modal-wrapper .nws-modal .single-wallet { border-radius: var(--r-control); }
       .nws-modal-wrapper .nws-modal .modal-left-title h2 { letter-spacing: -0.02em; }
     </style>
   </head>
@@ -318,10 +423,20 @@
           would ask the user to trust the link's own description of itself.
         -->
         <div id="action" class="hide">
-          <div class="warn">
-            <strong id="x-summary">Approve this change to your vault.</strong>
-          </div>
-          <div class="row" style="margin-top: 14px"><span>vault</span><span id="x-vault"></span></div>
+          <!--
+            NO RESTATEMENT OF THE HEADING HERE.
+
+            `#x-summary` used to sit in a `.warn` box — the neutral label in
+            the cream alarm style, while the real blast-radius warning below
+            used `.note` and was the faintest text on the page. Fixing that by
+            restyling it just moved the problem: the <h1> is now the summary
+            too, so the panel opened by saying "Freeze node 1" twice in
+            fourteen pixels of each other.
+
+            The heading names the action. This panel's job is the FACTS you
+            check it against, so it starts with them.
+          -->
+          <div class="row"><span>vault</span><span id="x-vault"></span></div>
           <div class="row"><span>owner</span><span id="x-owner"></span></div>
           <div class="row"><span>action</span><span id="x-method"></span></div>
           <div class="row total"><span>you send</span><span id="x-deposit"></span></div>
@@ -329,7 +444,12 @@
             Exactly what will be sent:
           </p>
           <div id="x-args"></div>
-          <div id="x-warn" class="note" style="text-align: left; margin: 14px 0 18px"></div>
+          <!--
+            The real warning, in the warning style, and HIDDEN when empty.
+            `.note` made it the faintest thing on the page; an empty `.warn`
+            would otherwise leave a cream box with nothing in it.
+          -->
+          <div id="x-warn" class="warn hide" style="text-align: left; margin: 16px 0 18px"></div>
           <button id="btn-action">Approve in my wallet</button>
           <button id="btn-action-switch" class="ghost" style="margin-top: 10px">
             Use a different wallet
@@ -1053,7 +1173,17 @@
         }
 
         const dep = BigInt(ACTION.depositYocto ?? "0");
-        $("x-summary").textContent = ACTION.summary ?? "Approve this change to your vault.";
+
+        /**
+         * The subtitle belongs to the step, not the page.
+         *
+         * render() sets it to "Connect the wallet that owns <vault>" so the
+         * CONNECT screen is honest. By the time this panel renders the wallet
+         * is connected, and that sentence is asking for something already
+         * done. This is the review step, so it says what the review is for.
+         */
+        $("sub").textContent = "Check these details, then approve in your wallet.";
+
         $("x-vault").textContent = ACTION.receiverId;
         $("x-owner").textContent = who;
         $("x-method").textContent = ACTION.methodName;
@@ -1076,6 +1206,9 @@
          * skim this box, and this box is where a real warning appears.
          */
         const hasPublicKey = JSON.stringify(ACTION.args ?? {}).includes("ed25519:");
+        // An empty warning box is a cream rectangle saying nothing, which is
+        // worse than no box: it trains the eye to ignore the one place a real
+        // warning appears.
         $("x-warn").textContent = (
           ACTION.warnings?.length
             ? ACTION.warnings
@@ -1090,6 +1223,7 @@
                   : null,
               ].filter(Boolean)
         ).join("\n\n");
+        $("x-warn").classList.toggle("hide", !$("x-warn").textContent.trim());
         $("btn-action").onclick = () => sendAction(dep);
         $("btn-action-switch").onclick = disconnect;
         show("action");
