@@ -206,6 +206,78 @@ export function planBindAgent(vault: string, nodeId: number, accountId: string):
   };
 }
 
+/**
+ * A whole departmental agent in ONE owner signature: node, binding, gas key.
+ *
+ * WHY THIS IS NOT `add_node` + `bind_virtual_agent` + an AddKey.
+ *
+ * Installing a gas key is an `AddKey` action, and NEAR requires
+ * `signer_id == receiver_id` for one. The owner signing a transaction TO the
+ * vault cannot carry it — only the vault can key itself. A browser wallet
+ * signs as the connected account and cannot sign as the vault, so composing
+ * this client-side would make fleet expansion CLI-only.
+ *
+ * And the node id cannot be threaded: `add_node` returns it, but no client
+ * can read one action's return value inside the same transaction, and
+ * predicting it from `next_node_id` races a concurrent `add_node`.
+ *
+ * So the contract does all three. This is one plain FunctionCall.
+ *
+ * THE DEPOSIT IS THE GAS KEY'S ENTIRE BALANCE, and that balance is its
+ * spending cap — a gas key's `allowance` is null by design. It is not a fee:
+ * the owner can reclaim it, because `WithdrawFromGasKey` is account-signed
+ * and the vault carries the owner's full-access key.
+ */
+export function planAddRole(
+  vault: string,
+  label: string,
+  limits: HumanTokenLimit[],
+  cooldownSec: number,
+  recipients: string[] | null,
+  publicKey: string,
+  fundingYocto: string,
+): OwnerPayload {
+  if (!label || label.length > MAX_LABEL_LEN) {
+    throw new Error(`label must be 1..=${MAX_LABEL_LEN} characters (MAX_LABEL_LEN)`);
+  }
+  assertCooldown(cooldownSec);
+  assertRecipients(recipients);
+  assertPublicKey(publicKey);
+  // Mirrors MIN_AGENT_GAS_FUNDING in the vault. Below this the key is
+  // installed and cannot complete a single call: NEAR reserves
+  // `prepaid_gas * 1e9` and the tooling sends 60 TGas, which reserves 0.06.
+  // The contract refuses too; refusing here means the owner is not sent to a
+  // wallet to sign something that will revert.
+  if (BigInt(fundingYocto) < 6n * 10n ** 22n) {
+    throw new Error(
+      `the agent's gas key needs at least 0.06 NEAR to make one 60 TGas call — ` +
+        `NEAR reserves prepaid gas up front, so a key funded to the expected ` +
+        `burn (~0.0007) cannot transact at all.`,
+    );
+  }
+  return {
+    receiverId: vault,
+    methodName: "add_role",
+    args: {
+      label,
+      limits: limitsToArgs(limits),
+      cooldown_sec: cooldownSec,
+      recipients,
+      public_key: publicKey,
+    },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: fundingYocto,
+    summary: `Add the "${label}" agent with its own budget, under root`,
+    warnings: [
+      `The ${(Number(fundingYocto) / 1e24).toFixed(3)} NEAR deposit funds the agent's ` +
+        `gas key. It is recoverable, not a fee.`,
+      `The new node is a CHILD OF ROOT, so root's caps still bound the whole ` +
+        `fleet: this divides what the vault can spend in a day, it does not raise it.`,
+      `Check the public key matches the one your agent reported before signing.`,
+    ],
+  };
+}
+
 export function planBindVirtualAgent(
   vault: string,
   nodeId: number,
@@ -363,6 +435,7 @@ export const OWNER_PLANNERS = {
   add_node: { methodName: "add_node", fn: planAddNode },
   set_node_caps: { methodName: "set_node_caps", fn: planSetNodeCaps },
   bind_agent: { methodName: "bind_agent", fn: planBindAgent },
+  add_role: { methodName: "add_role", fn: planAddRole },
   bind_virtual_agent: { methodName: "bind_virtual_agent", fn: planBindVirtualAgent },
   unbind_virtual_agent: { methodName: "unbind_virtual_agent", fn: planUnbindVirtualAgent },
   set_recipients: { methodName: "set_recipients", fn: planSetRecipients },

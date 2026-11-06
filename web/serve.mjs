@@ -16,13 +16,31 @@ import { join, resolve, extname } from "node:path";
 
 const HERE = resolve(import.meta.dirname);
 const ROOT = resolve(HERE, "..");
-const PORT = Number(process.env.PORT ?? 8787);
+/**
+ * 8080, NOT 8787.
+ *
+ * 8787 belongs to the float-adapter — it is the port every dashboard page
+ * defaults to (`NEXT_PUBLIC_FLOAT_API_URL`), and `deploy-vps.sh` deploys the
+ * adapter there. This page squatted it for a while and nothing broke only
+ * because the two were never run together; the moment the dashboard came up
+ * it would have been talking to a static file server instead of the API, and
+ * the symptom would have been every panel empty rather than a port error.
+ *
+ * This page is the newcomer, so this page moves.
+ */
+const PORT = Number(process.env.PORT ?? 8080);
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
   ".wasm": "application/wasm",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
+  // The Float mark. Without a type the browser sniffs, and a logo that
+  // sometimes renders and sometimes downloads is the kind of thing that
+  // looks like a broken page rather than a missing header.
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
 };
 
 // The contract is NOT copied into web/ — it is read from the package that

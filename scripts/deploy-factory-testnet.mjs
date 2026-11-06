@@ -129,17 +129,43 @@ const fac = new Account(FACTORY, p, signer(FACTORY));
 // code only and reads as absent for a global reference — the exact field that
 // nearly produced a false "the global never published" refutation. (Sibling
 // `viewGlobalContractCode` is the one the global path will need.)
-const deployed = await p
-  .viewContractCode({ accountId: FACTORY, blockQuery: { finality: "final" } })
-  .catch(() => null);
+//
+// `contractId`, NOT `accountId`. Measured 2026-11-03: the wrong key makes the
+// RPC reject with "Failed parsing args: missing field `account_id`", which the
+// `.catch` turned into `null` — so `have` was always null, the "code already
+// matches" branch was DEAD CODE, and nothing here ever verified what was on
+// chain. The same wrong key once reported "0 B — failed deploy" for a deploy
+// that had in fact worked. A catch that cannot tell "no contract" from "I
+// called this wrong" produces both failures.
+const readCode = async () =>
+  p.viewContractCode({ contractId: FACTORY, blockQuery: { finality: "final" } }).catch((e) => {
+    if (/does not exist|no contract code|CODE_DOES_NOT_EXIST/i.test(String(e?.message))) return null;
+    throw e; // a malformed call must not look like an empty account
+  });
+
+const deployed = await readCode();
 const want = createHash("sha256").update(code).digest();
-const have = deployed ? createHash("sha256").update(Buffer.from(deployed.code_base64, "base64")).digest() : null;
+const sha = (r) => createHash("sha256").update(Buffer.from(r.code_base64, "base64")).digest();
+const have = deployed ? sha(deployed) : null;
 if (have && want.equals(have)) {
   console.log(`  code already matches — skipping deploy`);
 } else {
-  console.log(`  deploying ${code.length} B`);
+  console.log(`  deploying ${code.length} B  (was ${deployed ? deployed.code_base64.length : 0} b64)`);
   await fac.deployContract(new Uint8Array(code));
   await new Promise((r) => setTimeout(r, 3000));
+
+  // READ IT BACK. A deploy that silently did nothing and a deploy that worked
+  // are indistinguishable from the call's return value alone, and this repo
+  // has already come one command away from shipping the wrong bytes while
+  // reporting success.
+  const after = await readCode();
+  if (!after || !want.equals(sha(after))) {
+    console.error(`\nFATAL: the code on chain does not match what was just deployed.`);
+    console.error(`  wanted sha256 ${want.toString("hex").slice(0, 16)}`);
+    console.error(`  on chain      ${after ? sha(after).toString("hex").slice(0, 16) : "(no contract)"}`);
+    process.exit(1);
+  }
+  console.log(`  verified on chain: sha256 ${want.toString("hex").slice(0, 16)}`);
 }
 
 // ── 3. initialisation ─────────────────────────────────────────────────────────
@@ -258,4 +284,4 @@ console.log(`\n  ${PARENT}   free ${near(await free(PARENT))}`);
 console.log(`  ${FACTORY}   free ${near(await free(FACTORY))}`);
 console.log(`  ${WALLET}   free ${near(await free(WALLET))}   (vault needs ${near(vaultNeed)})`);
 console.log(`\n  Serve the page, then open:`);
-console.log(`    http://127.0.0.1:8787/?network=testnet&factory=${FACTORY}\n`);
+console.log(`    http://127.0.0.1:8080/?network=testnet&factory=${FACTORY}\n`);

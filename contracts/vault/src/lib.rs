@@ -108,6 +108,24 @@ pub const PRODUCTION_DAY_NS: u64 = 86_400 * NS_PER_SEC;
 /// transact at all.
 pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
 
+/// Parallel nonce lanes on an agent's gas key. One makes its payments serial,
+/// which is the conservative default. Matches the factory and float-agent.
+pub const AGENT_GAS_KEY_NONCES: u32 = 1;
+
+/// The least a gas key can be funded with and still transact ONCE.
+///
+/// NEAR reserves `prepaid_gas * 1e9` for an in-flight call and refunds the
+/// remainder, so what a key must HOLD is the reservation, not the burn — and
+/// the two differ by ~350x. The MCP server sends 60 TGas, which reserves
+/// 0.06; the vault's own `MIN_GAS_FOR_DISPATCH` floor of 50 TGas reserves
+/// 0.05, so anything below 0.06 buys a key that cannot complete the call the
+/// tooling actually makes.
+///
+/// A floor, not a default. `add_role` funds the key with the WHOLE attached
+/// deposit, so the owner chooses the runway — 0.12 buys roughly 160 payments
+/// at the 0.000741 measured on testnet 2026-11-03.
+pub const MIN_AGENT_GAS_FUNDING: NearToken = NearToken::from_yoctonear(6 * 10u128.pow(22));
+
 /// Upper bound on a single purge sweep, so one call cannot exhaust gas
 /// part-way and leave an unpredictable amount of work done.
 pub const MAX_PURGE_LIMIT: u32 = 100;
@@ -218,6 +236,27 @@ impl Vault {
         strict_allocation: bool,
         root_limits: Vec<TokenLimit>,
         root_recipients: Option<Vec<AccountId>>,
+        // An agent to bind to the root node, in this same transaction.
+        //
+        // THE BINDING CANNOT HAPPEN ANY OTHER WAY IN A ONE-SIGNATURE FLOW.
+        // A NEAR transaction has a single `receiver_id` and every action
+        // applies to it; the browser signs to the FACTORY, so an appended
+        // `AddKey` would install the agent key on the factory — the account
+        // that creates everyone's vaults and holds the kill switch. And the
+        // vault does not exist yet at signing time, so nothing in that
+        // transaction can name it.
+        //
+        // Routing it through the factory's promise does not work either:
+        // `bind_virtual_agent` begins with `assert_owner`, and a
+        // factory-initiated call arrives with the FACTORY as predecessor, so
+        // it would panic. `new` is the one place with the authority — it
+        // already proves the caller is the vault or its parent, and `#[init]`
+        // panics against existing state, so this window shuts before the
+        // owner exists.
+        //
+        // Optional because the two-transaction path stays valid: a vault
+        // created with no agent is created exactly as before.
+        agent_pk: Option<PublicKey>,
     ) -> Self {
         let vault_id = env::current_account_id();
         let caller = env::predecessor_account_id();
@@ -295,6 +334,26 @@ impl Vault {
         );
         v.node_order.push(ROOT_NODE);
         v.next_node_id = ROOT_NODE + 1;
+
+        // Bind the agent to the root node, with the root's own limits.
+        //
+        // No duplicate check, unlike `bind_virtual_agent`: `pubkey_to_node`
+        // was constructed three statements ago and is provably empty, so
+        // there is nothing to collide with.
+        //
+        // `pubkey_to_nonce` is deliberately NOT written, matching
+        // `bind_virtual_agent`. A fresh key has no entry, reads as 0, and its
+        // first usable nonce is 1. Seeding it here would make a vault created
+        // this way disagree with one bound the ordinary way — and the whole
+        // requirement is that the two paths produce the same vault.
+        if let Some(pk) = agent_pk {
+            v.pubkey_to_node.insert(pk, ROOT_NODE);
+            // Same event the owner-driven path emits, so an indexer cannot
+            // tell the two apart and does not need to.
+            env::log_str(&format!(
+                r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{ROOT_NODE}}}]}}"#
+            ));
+        }
         v
     }
 
@@ -315,6 +374,28 @@ impl Vault {
         recipients: Option<Vec<AccountId>>,
     ) -> NodeId {
         self.assert_owner();
+        self.insert_node(parent, label, limits, cooldown_sec, recipients)
+    }
+
+    /// The node-creation body, SHARED so there is only one of it.
+    ///
+    /// Extracted because `add_role` cannot call `add_node`: `assert_owner`
+    /// demands EXACTLY one yoctoNEAR, and `add_role` must carry a real
+    /// deposit to fund its agent's gas key. Copying the body instead would
+    /// have produced two node creators that drift — which is precisely how
+    /// the factory ended up with `create_vault` silently dropping `agent_pk`
+    /// while `create_vault_with_code` honoured it.
+    ///
+    /// Takes no authorisation of its own. Every caller must check the owner
+    /// FIRST; this is private so the compiler keeps that list short.
+    fn insert_node(
+        &mut self,
+        parent: Option<NodeId>,
+        label: String,
+        limits: Vec<TokenLimit>,
+        cooldown_sec: u32,
+        recipients: Option<Vec<AccountId>>,
+    ) -> NodeId {
         if self.node_order.len() as u32 >= MAX_NODES {
             fail(ReasonCode::MaxNodes, "node limit reached");
         }
@@ -1225,6 +1306,98 @@ impl Vault {
     /// on purpose and is never reclaimed — see `unbind_virtual_agent` for why
     /// dropping it would reopen the replay guard.
     #[payable]
+    /// Add a whole departmental agent in ONE call: node, binding, gas key.
+    ///
+    /// WHY THIS IS A CONTRACT METHOD AND NOT THREE CLIENT CALLS.
+    ///
+    /// Installing a gas key is an `AddKey` action, and NEAR requires
+    /// `signer_id == receiver_id` for it. The owner signing a transaction TO
+    /// this vault therefore cannot carry one — only the vault can key itself.
+    /// A browser wallet signs as the connected account and cannot sign as the
+    /// vault, so without this method fleet expansion would be CLI-only, and
+    /// the one-signature property that makes onboarding work would be lost
+    /// the moment a second agent was wanted.
+    ///
+    /// The node id is the other reason. `add_node` returns it, but a client
+    /// cannot read one action's return value inside the same transaction, and
+    /// predicting it from `next_node_id` races any concurrent `add_node`.
+    /// Doing all three here means the id never leaves the contract.
+    ///
+    /// THE DEPOSIT IS THE AUTHORISATION. This cannot use `assert_owner`,
+    /// which demands exactly one yocto, because the gas key needs real
+    /// funding. The deposit check gives the same guarantee for free: a NEAR
+    /// function-call key cannot attach a deposit at all, so an attached
+    /// balance proves a full-access key — a wallet confirmation — signed
+    /// this. An agent's own key could never reach here.
+    ///
+    /// The new node is a CHILD OF ROOT, deliberately. Root's caps then bound
+    /// the whole fleet's combined spend: adding a tenth agent cannot raise
+    /// what the vault can lose in a day, only divide it differently.
+    #[payable]
+    pub fn add_role(
+        &mut self,
+        label: String,
+        limits: Vec<TokenLimit>,
+        cooldown_sec: u32,
+        recipients: Option<Vec<AccountId>>,
+        public_key: PublicKey,
+    ) -> NodeId {
+        if env::predecessor_account_id() != self.owner {
+            fail(ReasonCode::NotOwner, "owner only");
+        }
+        let funding = env::attached_deposit();
+        if funding < MIN_AGENT_GAS_FUNDING {
+            fail(
+                ReasonCode::InvalidConfig,
+                "attach at least MIN_AGENT_GAS_FUNDING to fund the agent's gas key",
+            );
+        }
+        // Checked BEFORE the node is created. `bind_virtual_agent` rejects a
+        // key that is already bound, and discovering that after inserting the
+        // node would leave an orphan node behind on a panic — except panics
+        // revert state, so the real cost is a confusing error. Checking first
+        // makes the message name the actual problem.
+        if self.pubkey_to_node.contains_key(&public_key) {
+            fail(ReasonCode::InvalidConfig, "key already bound to a node");
+        }
+
+        let id = self.insert_node(Some(ROOT_NODE), label, limits, cooldown_sec, recipients);
+        self.pubkey_to_node.insert(public_key.clone(), id);
+
+        // THE KEY IS ADDED TO THIS ACCOUNT, BY THIS ACCOUNT. That is the only
+        // way an `AddKey` can reach the vault from a browser signature.
+        //
+        // Funded with the WHOLE attached deposit, which arrived in this
+        // account's balance a moment ago — so the vault nets zero rather than
+        // paying for the agent out of its own stake. The factory got this
+        // wrong in the mirror-image way and would have bled 0.12 per vault.
+        //
+        // `Allowance::Unlimited` is not a loophole: a gas key's allowance is
+        // null by design and its BALANCE is the cap. The restriction that
+        // matters is receiver + method, which confine this key to
+        // `request_payment` on this vault and nothing else anywhere.
+        // THE DROP IS THE MECHANISM, not a discarded value. near-sdk's
+        // `impl Drop for Promise` calls `construct_recursively`, so letting
+        // this binding fall out of scope is what schedules the actions. Bound
+        // explicitly rather than left as a bare expression: `Promise` is
+        // `must_use`, and a warning is the only thing that would distinguish
+        // "scheduled" from "silently never happened".
+        let _install = Promise::new(env::current_account_id())
+            .add_gas_key_allowance_function_call(
+                public_key.clone(),
+                AGENT_GAS_KEY_NONCES,
+                near_sdk::Allowance::Unlimited,
+                env::current_account_id(),
+                AGENT_ALLOWED_METHOD.to_string(),
+            )
+            .transfer_to_gas_key(public_key, funding);
+
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{id}}}]}}"#
+        ));
+        id
+    }
+
     pub fn bind_virtual_agent(&mut self, node_id: NodeId, public_key: PublicKey) {
         self.assert_owner();
         // The node must exist. Unlike assert_bindable we do NOT reject a node

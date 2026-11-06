@@ -114,38 +114,34 @@ describe("treeToApiAgents", () => {
   const budgets = new Map(tree.map((n) => [n.id, { executed: "0", pending: "0" }]));
 
   it("keeps the tree order root-first so the hierarchy reads top-down", () => {
-    const NB = "\u00a0";
     const rows = treeToApiAgents(tree, budgets, D);
-    expect(rows.map((r) => r.displayName)).toEqual([
-      "root",
-      "└─ research",
-      NB.repeat(3) + "└─ r1",
-      NB.repeat(3) + "└─ r2",
-    ]);
+    expect(rows.map((r) => r.displayName)).toEqual(["root", "research", "r1", "r2"]);
   });
 
   /**
-   * REGRESSION. The first version indented with PLAIN spaces. Every assertion
-   * passed and the page rendered FLAT, because HTML collapses leading
-   * whitespace - depth 2 looked identical to depth 1 and the hierarchy, the
-   * entire point of the view, was invisible. Found by looking at the screen,
-   * not by a test. So this asserts the actual character and explicitly
-   * rejects the space that silently regresses it.
+   * Depth is a NUMBER now.
+   *
+   * It used to be three U+00A0 per level baked into displayName, and the
+   * test here asserted those characters. That format caused every
+   * invisible-character bug in this project - a plain space typed in place
+   * of the pad matched nothing and flattened the tree, silently, three
+   * separate times. A number cannot be mistyped invisibly.
    */
-  it("indents with NON-BREAKING spaces, which HTML will not collapse", () => {
+  it("reports depth as a number, with root at 0", () => {
     const rows = treeToApiAgents(tree, budgets, D);
-    const deep = rows[2]!.displayName;
-    expect(deep.startsWith("\u00a0")).toBe(true);
-    expect(deep.startsWith(" ")).toBe(false);
+    expect(rows.map((r) => r.depth)).toEqual([0, 1, 2, 2]);
   });
 
-  it("gives each depth a visibly different prefix", () => {
+  it("leaves the label clean - no glyphs, no padding, nothing invisible", () => {
     const rows = treeToApiAgents(tree, budgets, D);
-    const pre = (s: string) => s.slice(0, s.indexOf("└"));
-    expect(pre(rows[1]!.displayName)).toBe("");
-    expect(pre(rows[2]!.displayName).length).toBe(3);
+    for (const r of rows) {
+      expect(r.displayName).toBe(r.displayName.trim());
+      // Anything outside printable ASCII would be a regression to the
+      // old format; account labels are [a-z0-9] by contract rule.
+      // eslint-disable-next-line no-control-regex
+      expect(/^[\x20-\x7e]*$/.test(r.displayName)).toBe(true);
+    }
   });
-
   it("resolves the EFFECTIVE payee allowlist, not the raw node field", () => {
     // Children inherit root list on-chain. Reporting their raw null made the
     // UI badge them unrestricted, the opposite of what the contract enforces.
@@ -387,5 +383,51 @@ describe("railOf after the MPC rail was retired", () => {
     expect(railOf(null)).toBe("near");
     expect(railOf(undefined)).toBe("near");
     expect(railOf("near_direct")).toBe("near");
+  });
+});
+
+describe("own vs effective allowlist", () => {
+  /**
+   * THESE ARE DIFFERENT QUESTIONS AND AN EDITOR NEEDS BOTH.
+   *
+   * `allowedAddresses` answers "who can be paid from here" — the contract's
+   * `effective_recipients`, which walks up to the nearest ancestor with a
+   * list. `ownAllowedAddresses` answers "what is written on THIS node", and
+   * is absent when the node inherits.
+   *
+   * Conflating them is not cosmetic. A child list REPLACES the inherited one
+   * rather than extending it, so an editor shown only the effective list
+   * would display the parent's addresses as if they were the child's — and
+   * saving that form would detach the child from the parent while looking
+   * like a no-op.
+   */
+  it("reports the inherited list as effective but not as own", () => {
+    const tree: VaultNode[] = [
+      { id: 0, parent: null, path: [], label: "root", account: null, limits: [], child_cap_sum: [], child_count: 1, cooldown_sec: 0, frozen: false, recipients: ["alice.testnet"] },
+      { id: 1, parent: 0, path: [0], label: "marketing", account: null, limits: [], child_cap_sum: [], child_count: 0, cooldown_sec: 0, frozen: false, recipients: null },
+    ];
+    const [, child] = treeToApiAgents(tree, new Map(), 6);
+    expect(child.policy?.allowedAddresses).toEqual(["alice.testnet"]);
+    expect(child.policy?.ownAllowedAddresses, "an inheriting node has no own list").toBeUndefined();
+  });
+
+  it("reports a node's own list as both", () => {
+    const tree: VaultNode[] = [
+      { id: 0, parent: null, path: [], label: "root", account: null, limits: [], child_cap_sum: [], child_count: 1, cooldown_sec: 0, frozen: false, recipients: ["alice.testnet"] },
+      { id: 1, parent: 0, path: [0], label: "marketing", account: null, limits: [], child_cap_sum: [], child_count: 0, cooldown_sec: 0, frozen: false, recipients: ["bob.testnet"] },
+    ];
+    const [, child] = treeToApiAgents(tree, new Map(), 6);
+    expect(child.policy?.allowedAddresses).toEqual(["bob.testnet"]);
+    expect(child.policy?.ownAllowedAddresses).toEqual(["bob.testnet"]);
+  });
+
+  /** A child list REPLACES rather than unions — the parent's is not merged in. */
+  it("does not merge a child list with its parent's", () => {
+    const tree: VaultNode[] = [
+      { id: 0, parent: null, path: [], label: "root", account: null, limits: [], child_cap_sum: [], child_count: 1, cooldown_sec: 0, frozen: false, recipients: ["alice.testnet"] },
+      { id: 1, parent: 0, path: [0], label: "marketing", account: null, limits: [], child_cap_sum: [], child_count: 0, cooldown_sec: 0, frozen: false, recipients: ["bob.testnet"] },
+    ];
+    const [, child] = treeToApiAgents(tree, new Map(), 6);
+    expect(child.policy?.allowedAddresses).not.toContain("alice.testnet");
   });
 });

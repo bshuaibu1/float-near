@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCreatePlan, CONTRACT_BYTES, FACTORY_BY_NETWORK } from "./create.js";
+import {
+  buildCreatePlan,
+  CONTRACT_BYTES,
+  FACTORY_BY_NETWORK,
+  PAGE_HEADROOM_YOCTO,
+} from "./create.js";
 
 /**
  * The create plan is the ONE place this server talks to a user who does not
@@ -23,11 +28,47 @@ const base = {
 };
 
 describe("buildCreatePlan", () => {
-  it("asks for the required deposit plus storage for every byte of the contract", () => {
+  /**
+   * THIS TEST USED TO ASSERT THE BUG.
+   *
+   * It read `0.1 + CONTRACT_BYTES * 1e19` — the factory's on-chain floor —
+   * and passed for as long as the quote was wrong, because it restated the
+   * implementation instead of the requirement. The requirement is that the
+   * user can complete the transaction the PAGE builds, and the page attaches
+   * `stake + 0.36`. Those differ by 0.26 NEAR, which is the whole defect.
+   */
+  it("asks for storage for every byte of the contract, plus the page's headroom", () => {
     const p = buildCreatePlan(base);
-    // 0.1 + 301033 * 1e19
-    const expected = 10n ** 23n + BigInt(CONTRACT_BYTES) * 10n ** 19n;
+    const expected = BigInt(CONTRACT_BYTES) * 10n ** 19n + PAGE_HEADROOM_YOCTO;
     expect(p.depositYocto).toBe(expected.toString());
+  });
+
+  /**
+   * The factory's floor still has to be cleared — it is a real on-chain
+   * check, just a lower one here. If `required_deposit` is ever raised past
+   * the page's headroom the quote must follow it up, not sit on the constant.
+   */
+  it("clears the factory's on-chain floor as well", () => {
+    const floor = 10n ** 23n + BigInt(CONTRACT_BYTES) * 10n ** 19n;
+    expect(BigInt(buildCreatePlan(base).depositYocto)).toBeGreaterThanOrEqual(floor);
+
+    // Raise the floor above the page's headroom and the quote must rise too.
+    const raised = buildCreatePlan({ ...base, requiredDepositYocto: (10n ** 24n).toString() });
+    expect(BigInt(raised.depositYocto)).toBe(10n ** 24n + BigInt(CONTRACT_BYTES) * 10n ** 19n);
+  });
+
+  /**
+   * ...but a floor above the page's headroom is an OPERATOR bug, and quoting
+   * a bigger number does not fix it: the page attaches its constant no matter
+   * what the user holds, so the create is rejected on chain regardless. The
+   * plan has to say that rather than quoting a figure that cannot help.
+   */
+  it("warns when the factory's floor exceeds what the page attaches", () => {
+    const raised = buildCreatePlan({ ...base, requiredDepositYocto: (10n ** 24n).toString() });
+    expect(raised.warnings.join(" ")).toMatch(/DEPOSIT_TOO_SMALL|attaches only/i);
+
+    // And stays quiet in the normal case, or the warning is noise.
+    expect(buildCreatePlan(base).warnings.join(" ")).not.toMatch(/DEPOSIT_TOO_SMALL/i);
   });
 
   it("reports the deposit in NEAR, because nobody reads yoctoNEAR", () => {
@@ -141,7 +182,7 @@ describe("buildCreatePlan without a known owner", () => {
   /** The deposit does not depend on who the owner is — it is the code size. */
   it("still quotes the real deposit and the reservation", () => {
     const p = buildCreatePlan({ ...anon, ownerKnown: false });
-    const expected = 10n ** 23n + BigInt(CONTRACT_BYTES) * 10n ** 19n;
+    const expected = BigInt(CONTRACT_BYTES) * 10n ** 19n + PAGE_HEADROOM_YOCTO;
     expect(p.depositYocto).toBe(expected.toString());
     expect(BigInt(p.totalRequiredYocto) - BigInt(p.depositYocto)).toBe(
       200n * 10n ** 12n * 10n ** 9n,

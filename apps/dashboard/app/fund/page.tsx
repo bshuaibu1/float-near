@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useVisiblePolling } from "@/lib/use-chain-watch";
 import { QRCodeSVG } from "qrcode.react";
 import { Check, Copy, ExternalLink } from "lucide-react";
+import { INK, LINE, MUTED } from "@/lib/colors";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "http://127.0.0.1:8787";
+  process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
 const BALANCE_POLL_INTERVAL_MS = 15_000;
 
@@ -59,10 +61,11 @@ export default function FundPage() {
     void load();
   }, [load]);
 
-  useEffect(() => {
-    const t = setInterval(() => void load(), BALANCE_POLL_INTERVAL_MS);
-    return () => clearInterval(t);
-  }, [load]);
+  // Polls only while someone is looking, and refreshes the moment they
+  // come back. Unconditional 15s polling meant a tab left open overnight
+  // made about 5,700 requests through the adapter to a public RPC for a
+  // page nobody was reading.
+  useVisiblePolling(load, BALANCE_POLL_INTERVAL_MS);
 
   useEffect(() => () => {
     if (copyTimeout.current) clearTimeout(copyTimeout.current);
@@ -92,16 +95,15 @@ export default function FundPage() {
   const balance = info.vaultTokenBalance;
 
   return (
-    <div className="min-h-screen px-6 py-10 md:px-10" style={{ background: "#FBFBFA" }}>
+    <div className="min-h-screen px-6 py-10 md:px-10 bg-canvas">
       <div className="mx-auto max-w-4xl space-y-8">
         <div className="space-y-1">
           <h1
-            className="text-[26px] font-semibold tracking-[-0.03em]"
-            style={{ color: "#111111" }}
+            className="text-[26px] font-semibold tracking-[-0.03em] text-ink"
           >
             Fund the vault
           </h1>
-          <p className="text-[14px] leading-6" style={{ color: "#787774" }}>
+          <p className="text-[14px] leading-6 text-muted">
             Send USDC to this address. Agents never hold the tokens — they only request
             payments, and the vault checks the limits first.
           </p>
@@ -111,21 +113,19 @@ export default function FundPage() {
             distinct from the root daily budget below it — see the note. */}
         <div
           className="flex flex-col gap-3 rounded-[18px] px-5 py-4 md:flex-row md:items-center md:justify-between"
-          style={{ border: "1px solid #EAEAEA", background: "#fff" }}
+          style={{ border: `1px solid ${LINE}`, background: "#fff" }}
         >
           <div>
             <p
-              className="text-[11px] font-medium uppercase tracking-[0.14em]"
-              style={{ color: "#A0A09A" }}
+              className="text-[11px] font-medium uppercase tracking-[0.14em] text-faint"
             >
               Vault balance
             </p>
             <p
-              className="mt-0.5 text-[22px] font-semibold tracking-[-0.03em]"
-              style={{ color: "#111111" }}
+              className="mt-0.5 text-[22px] font-semibold tracking-[-0.03em] text-ink"
             >
               {balance === null ? "Unavailable" : formatUsdc(toUiAmount(balance, info.tokenDecimals))}{" "}
-              <span className="text-[14px] font-medium" style={{ color: "#787774" }}>
+              <span className="text-[14px] font-medium text-muted">
                 USDC
               </span>
             </p>
@@ -135,8 +135,7 @@ export default function FundPage() {
             href={`${info.explorerBase}/address/${info.vaultId}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-[12px] font-medium transition-opacity hover:opacity-70"
-            style={{ color: "#787774" }}
+            className="flex items-center gap-1.5 text-[12px] font-medium transition-opacity hover:opacity-70 text-muted"
           >
             View on NEAR Explorer
             <ExternalLink size={12} />
@@ -152,10 +151,10 @@ export default function FundPage() {
               <FeatureRow>
                 <StepNum n="1" />
                 <div>
-                  <p className="text-[13px] font-medium" style={{ color: "#111111" }}>
+                  <p className="text-[13px] font-medium text-ink">
                     Send USDC to the vault
                   </p>
-                  <p className="mt-0.5 text-[12px] leading-5" style={{ color: "#787774" }}>
+                  <p className="mt-0.5 text-[12px] leading-5 text-muted">
                     Send it from any NEAR wallet that supports this token. The vault has to be
                     registered with the token first, which it already is.
                   </p>
@@ -165,10 +164,10 @@ export default function FundPage() {
               <FeatureRow>
                 <StepNum n="2" />
                 <div>
-                  <p className="text-[13px] font-medium" style={{ color: "#111111" }}>
+                  <p className="text-[13px] font-medium text-ink">
                     The owner sets the limits
                   </p>
-                  <p className="mt-0.5 text-[12px] leading-5" style={{ color: "#787774" }}>
+                  <p className="mt-0.5 text-[12px] leading-5 text-muted">
                     A daily limit and a per-payment limit at every level — the whole treasury, each
                     team, each agent. Teams can hand out more than they hold, on purpose.
                   </p>
@@ -178,10 +177,10 @@ export default function FundPage() {
               <FeatureRow>
                 <StepNum n="3" />
                 <div>
-                  <p className="text-[13px] font-medium" style={{ color: "#111111" }}>
+                  <p className="text-[13px] font-medium text-ink">
                     Agents spend without ever holding funds
                   </p>
-                  <p className="mt-0.5 text-[12px] leading-5" style={{ color: "#787774" }}>
+                  <p className="mt-0.5 text-[12px] leading-5 text-muted">
                     An agent's key can only ask this vault to send money. It cannot move funds
                     itself and cannot touch anything else.
                   </p>
@@ -193,10 +192,10 @@ export default function FundPage() {
                   landed. */}
               <div
                 className="rounded-[12px] px-3.5 py-3"
-                style={{ border: "1px solid #EAEAEA", background: "#FAFAF9" }}
+                style={{ border: `1px solid ${LINE}`, background: "#FAFAF9" }}
               >
-                <p className="text-[12px] leading-5" style={{ color: "#787774" }}>
-                  <span className="font-medium" style={{ color: "#111111" }}>
+                <p className="text-[12px] leading-5 text-muted">
+                  <span className="font-medium text-ink">
                     Balance is not the same as spendable today.
                   </span>{" "}
                   The vault is holding{" "}
@@ -221,7 +220,7 @@ export default function FundPage() {
             <div className="flex flex-col items-center gap-3">
               <div
                 className="rounded-[18px] p-4"
-                style={{ border: "1px solid #EAEAEA", background: "#FAFAF9" }}
+                style={{ border: `1px solid ${LINE}`, background: "#FAFAF9" }}
               >
                 <QRCodeSVG value={info.vaultId} size={156} />
               </div>
@@ -230,7 +229,7 @@ export default function FundPage() {
                 type="button"
                 onClick={() => copy(info.vaultId, "vault")}
                 className="inline-flex items-center gap-2 rounded-[12px] border px-4 py-2 text-[13px] font-medium transition-colors hover:bg-[#F7F7F6]"
-                style={{ borderColor: "#EAEAEA", color: "#111111" }}
+                style={{ borderColor: LINE, color: INK }}
               >
                 {copied === "vault" ? <Check size={14} /> : <Copy size={14} />}
                 {copied === "vault" ? "Copied" : "Copy vault address"}
@@ -238,7 +237,7 @@ export default function FundPage() {
 
               <div
                 className="w-full rounded-[12px] px-3 py-2.5 font-mono text-[11px] text-center break-all"
-                style={{ border: "1px solid #EAEAEA", background: "#F7F7F6", color: "#787774" }}
+                style={{ border: `1px solid ${LINE}`, background: "#F7F7F6", color: MUTED }}
               >
                 {info.vaultId}
               </div>
@@ -247,8 +246,7 @@ export default function FundPage() {
                   NEP-141 transfer is only meaningful for one specific token. */}
               <div className="w-full space-y-1.5 pt-1">
                 <p
-                  className="text-[10px] font-medium uppercase tracking-[0.12em]"
-                  style={{ color: "#A0A09A" }}
+                  className="text-[10px] font-medium uppercase tracking-[0.12em] text-faint"
                 >
                   Token contract
                 </p>
@@ -256,7 +254,7 @@ export default function FundPage() {
                   type="button"
                   onClick={() => copy(info.tokenId, "token")}
                   className="flex w-full items-center justify-between gap-2 rounded-[12px] px-3 py-2 font-mono text-[11px] transition-colors hover:bg-[#F7F7F6]"
-                  style={{ border: "1px solid #EAEAEA", color: "#787774" }}
+                  style={{ border: `1px solid ${LINE}`, color: MUTED }}
                 >
                   <span className="break-all text-left">{info.tokenId}</span>
                   {copied === "token" ? (
@@ -267,7 +265,7 @@ export default function FundPage() {
                 </button>
               </div>
 
-              <p className="text-[11px] text-center leading-4" style={{ color: "#A0A09A" }}>
+              <p className="text-[11px] text-center leading-4 text-faint">
                 This token only, on NEAR {info.network}. Other tokens will not be credited to any
                 budget.
               </p>
@@ -282,14 +280,14 @@ export default function FundPage() {
             Incoming NEP-141 transfers would need event indexing the vault does
             not do, so the page links out instead of implying it knows. */}
         <section className="space-y-3">
-          <h2 className="text-[15px] font-semibold tracking-[-0.02em]" style={{ color: "#111111" }}>
+          <h2 className="text-[15px] font-semibold tracking-[-0.02em] text-ink">
             Verifying a deposit
           </h2>
           <div
             className="rounded-[18px] px-5 py-4"
-            style={{ border: "1px solid #EAEAEA", background: "#fff" }}
+            style={{ border: `1px solid ${LINE}`, background: "#fff" }}
           >
-            <p className="text-[13px] leading-6" style={{ color: "#787774" }}>
+            <p className="text-[13px] leading-6 text-muted">
               Incoming transfers are not indexed here — the vault records payments it makes, not
               deposits it receives. The balance above is read from the token contract on every
               refresh, so a completed transfer shows up there within {BALANCE_POLL_INTERVAL_MS / 1000}{" "}
@@ -302,7 +300,7 @@ export default function FundPage() {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 rounded-[10px] border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-[#F7F7F6]"
-                style={{ borderColor: "#EAEAEA", color: "#111111" }}
+                style={{ borderColor: LINE, color: INK }}
               >
                 Vault account
                 <ExternalLink size={11} />
@@ -312,7 +310,7 @@ export default function FundPage() {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 rounded-[10px] border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-[#F7F7F6]"
-                style={{ borderColor: "#EAEAEA", color: "#111111" }}
+                style={{ borderColor: LINE, color: INK }}
               >
                 Token contract
                 <ExternalLink size={11} />
@@ -329,7 +327,7 @@ function StepNum({ n }: { n: string }) {
   return (
     <span
       className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
-      style={{ background: "#F2F2F0", color: "#787774" }}
+      style={{ background: "#F2F2F0", color: MUTED }}
     >
       {n}
     </span>
@@ -348,13 +346,13 @@ function Card({
   return (
     <section
       className="rounded-[20px] p-6"
-      style={{ border: "1px solid #EAEAEA", background: "#fff" }}
+      style={{ border: `1px solid ${LINE}`, background: "#fff" }}
     >
       <div className="mb-5 space-y-1">
-        <h2 className="text-[18px] font-semibold tracking-[-0.03em]" style={{ color: "#111111" }}>
+        <h2 className="text-[18px] font-semibold tracking-[-0.03em] text-ink">
           {title}
         </h2>
-        <p className="text-[13px] leading-6" style={{ color: "#787774" }}>
+        <p className="text-[13px] leading-6 text-muted">
           {subtitle}
         </p>
       </div>
@@ -369,19 +367,18 @@ function FeatureRow({ children }: { children: ReactNode }) {
 
 function EmptyPageState({ title, message }: { title: string; message: string }) {
   return (
-    <div className="min-h-screen px-6 py-10 md:px-10" style={{ background: "#FBFBFA" }}>
+    <div className="min-h-screen px-6 py-10 md:px-10 bg-canvas">
       <div className="mx-auto max-w-4xl space-y-8">
         <div className="space-y-1">
           <h1
-            className="text-[26px] font-semibold tracking-[-0.03em]"
-            style={{ color: "#111111" }}
+            className="text-[26px] font-semibold tracking-[-0.03em] text-ink"
           >
             {title}
           </h1>
         </div>
         <div
           className="rounded-[18px] px-5 py-10 text-center text-[13px]"
-          style={{ border: "1px solid #EAEAEA", background: "#fff", color: "#787774" }}
+          style={{ border: `1px solid ${LINE}`, background: "#fff", color: MUTED }}
         >
           {message}
         </div>
@@ -392,13 +389,13 @@ function EmptyPageState({ title, message }: { title: string; message: string }) 
 
 function FundPageSkeleton() {
   return (
-    <div className="min-h-screen px-6 py-10 md:px-10" style={{ background: "#FBFBFA" }}>
+    <div className="min-h-screen px-6 py-10 md:px-10 bg-canvas">
       <div className="mx-auto max-w-4xl space-y-8">
-        <div className="h-8 w-56 rounded-[8px]" style={{ background: "#F2F2F0" }} />
-        <div className="h-20 rounded-[18px]" style={{ background: "#F2F2F0" }} />
+        <div className="h-8 w-56 rounded-[8px] bg-chip" />
+        <div className="h-20 rounded-[18px] bg-chip" />
         <div className="grid gap-4 md:grid-cols-[1.15fr_0.85fr]">
-          <div className="h-80 rounded-[20px]" style={{ background: "#F2F2F0" }} />
-          <div className="h-80 rounded-[20px]" style={{ background: "#F2F2F0" }} />
+          <div className="h-80 rounded-[20px] bg-chip" />
+          <div className="h-80 rounded-[20px] bg-chip" />
         </div>
       </div>
     </div>

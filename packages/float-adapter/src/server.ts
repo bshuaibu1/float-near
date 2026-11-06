@@ -25,13 +25,8 @@ import { toBaseUnits, fromBaseUnits } from "@floatonnear/mcp/amounts";
 import { newRequestId, viewAccessKeys, viewFunction } from "@floatonnear/mcp";
 import { buildRoute, sendRequestPayment, type RouteArg } from "@floatonnear/mcp/sign";
 import { getQuote, signBinding, toBase64 } from "@floatonnear/mcp/quote";
-import {
-  planFreezeNode,
-  planSetCooldown,
-  planSetNodeCaps,
-  planSetRecipients,
-  toCliCommand,
-} from "@floatonnear/mcp/payloads";
+import { toCliCommand } from "@floatonnear/mcp/payloads";
+import { planOwnerAction, type OwnerPlanRequest } from "./owner-plan.js";
 
 import {
   getAgentKeys,
@@ -309,43 +304,23 @@ const server = createServer(async (req, res) => {
         req.on("data", (d) => (s += d));
         req.on("end", () => ok(s));
       });
-      const b = JSON.parse(body || "{}") as {
-        action: "caps" | "cooldown" | "recipients" | "freeze";
-        nodeId: number;
-        dailyCap?: string;
-        perTxCap?: string;
-        cooldownSec?: number;
-        recipients?: string[] | null;
-        frozen?: boolean;
-      };
+      const b = JSON.parse(body || "{}") as OwnerPlanRequest;
 
       const net = await view<{ network: string }>("get_config", {});
       let payload;
-      switch (b.action) {
-        case "caps":
-          // HUMAN units, with decimals — `planSetNodeCaps` scales them itself
-          // via limitsToArgs. Calling toBaseUnits here too would scale twice
-          // and turn a 100 USDC cap into 100 million USDC.
-          payload = planSetNodeCaps(env.vault, b.nodeId, [
-            {
-              token: env.token,
-              dailyCap: b.dailyCap ?? "0",
-              perTxCap: b.perTxCap ?? "0",
-              decimals: env.decimals,
-            },
-          ]);
-          break;
-        case "cooldown":
-          payload = planSetCooldown(env.vault, b.nodeId, b.cooldownSec ?? 0);
-          break;
-        case "recipients":
-          payload = planSetRecipients(env.vault, b.nodeId, b.recipients ?? null);
-          break;
-        case "freeze":
-          payload = planFreezeNode(env.vault, b.nodeId, b.frozen ?? false);
-          break;
-        default:
-          return send(400, { error: `unknown action: ${String(b.action)}` });
+      try {
+        payload = planOwnerAction(b, env);
+      } catch (e) {
+        // REPORT WHAT ACTUALLY WENT WRONG.
+        //
+        // This used to swallow the error and say `unknown action` for
+        // everything, so an underfunded gas key, a mistyped public key and
+        // an over-long label all produced the one message that cannot lead
+        // the caller to a fix. The validators in planAddRole write for a
+        // human; this hands that text through unchanged.
+        return send(400, {
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
 
       return send(200, { payload, cli: toCliCommand(payload, net.network) });

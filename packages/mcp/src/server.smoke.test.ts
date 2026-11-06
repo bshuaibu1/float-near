@@ -128,6 +128,8 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_request",
         "vault_tree",
         "vault_create",
+        "vault_add_role",
+        "vault_roles",
       ].sort(),
     );
   });
@@ -155,13 +157,24 @@ describe("the MCP server starts and registers its tools", () => {
       "vault_request",
       "vault_config",
       "vault_pending_approval",
+      // Lists which agents this server can sign AS, by role. Returns no key
+      // material — only role, node and account id.
+      "vault_roles",
     ]);
-    // ONBOARDING: reads the factory and returns a URL for the USER's wallet to
-    // approve. Holds no key and signs nothing, so it sits on the read side of
-    // the boundary — but it is listed separately rather than folded into READS
-    // because it is the one tool that talks to someone with no vault, and that
-    // deserves to be visible here rather than hidden in a set named "reads".
-    const ONBOARDING = new Set(["vault_create"]);
+    // PROVISIONING: generates an AGENT's keypair locally, writes the secret
+    // to the keyring, and returns an UNSIGNED payload for the owner's wallet.
+    //
+    // A third category on purpose. These are not reads — they write key
+    // material to disk — and they are not `vault_plan_*`, because that prefix
+    // promises a pure function of its arguments. But they do not sign, and
+    // the key they create is an AGENT's: restricted to `request_payment` on
+    // one vault, bounded by the budget tree, unable to attach a deposit. The
+    // owner's key still never comes near this server, which is the property
+    // the whole boundary exists to protect.
+    //
+    // `vault_create` moved here from a set that described it as holding no
+    // key. That stopped being true when it gained `bindAgent`.
+    const PROVISIONING = new Set(["vault_create", "vault_add_role"]);
     const unclassified = tools
       .map((t) => t.name)
       .filter(
@@ -169,7 +182,7 @@ describe("the MCP server starts and registers its tools", () => {
           n !== "vault_pay" &&
           !n.startsWith("vault_plan_") &&
           !READS.has(n) &&
-          !ONBOARDING.has(n),
+          !PROVISIONING.has(n),
       );
     expect(unclassified).toEqual([]);
 

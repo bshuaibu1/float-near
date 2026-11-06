@@ -31,10 +31,55 @@
  * clean failure: CreateAccount succeeds and the vault sits below its own
  * storage requirement, bricking on the first write.
  */
-export const CONTRACT_BYTES = 293728;
+export const CONTRACT_BYTES = 298819;
 
 /** NEAR charges 1e19 yoctoNEAR per byte of storage. */
 export const STORAGE_COST_PER_BYTE = 10n ** 19n;
+
+/**
+ * What `web/index.html` adds on top of the code's storage stake.
+ *
+ * THE FACTORY'S FLOOR IS NOT WHAT THE USER IS ASKED FOR, and conflating the
+ * two quoted a deposit 0.26 NEAR too low. `begin()` in
+ * contracts/factory/src/lib.rs rejects below `required_deposit + bytes * 1e19`
+ * — a real floor, 3.037280 on testnet today. But the page attaches
+ * `stake + 0.36` instead, as headroom for the root node's state, and a wallet
+ * checks the balance against what the PAGE attaches.
+ *
+ * Measured 2026-11-03: a vault created through the page,
+ * tinyrice9138-testnet.fac.floatv4.testnet, holds exactly 3.297280 — the
+ * page's figure to the yoctoNEAR. A user funded to the old 3.237280 quote is
+ * rejected by their wallet needing 3.497280, which is precisely the failure
+ * GAS_RESERVATION_YOCTO below was written to prevent, arriving through the
+ * other term.
+ *
+ * This is a COPY of a value in a file that cannot import from here — the page
+ * is standalone HTML served to a browser with no build step. `create.pins.
+ * test.ts` reads that file and fails if the two disagree, the same way
+ * CONTRACT_BYTES and CREATE_GAS_TGAS are pinned. A copy nothing checks is a
+ * copy that drifts.
+ */
+export const PAGE_HEADROOM_YOCTO = 36n * 10n ** 22n;
+
+/**
+ * Funding for an agent's gas key, when one is bound at creation.
+ *
+ * A NEP-611 gas key's BALANCE is its spending cap — `allowance` is null by
+ * design — so this is the only thing bounding how much gas the agent burns.
+ * 0.12 NEAR ≈ 50 payments at the vault's 50-TGas `MIN_GAS_FOR_DISPATCH`
+ * floor, matching `gasKeyFunding({tgas:60, payments:50})` in create-float.
+ *
+ * Charged ONLY when an agent is bound. The factory raises its own on-chain
+ * deposit floor by exactly this amount in that case, so a quote that omits it
+ * is refused with DEPOSIT_TOO_SMALL — and a quote that always includes it
+ * overcharges everyone who creates a bare vault.
+ *
+ * A COPY of `AGENT_GAS_KEY_FUNDING` in contracts/factory/src/lib.rs and
+ * `AGENT_GAS` in web/index.html. Three files, one number, which is exactly
+ * the shape that already shipped a 0.26 NEAR underquote here — so
+ * `create.pins.test.ts` reads both of the others and fails if any disagree.
+ */
+export const AGENT_GAS_KEY_FUNDING_YOCTO = 12n * 10n ** 22n;
 
 /**
  * Gas the create page attaches. MEASURED commitment is 124.88 TGas:
@@ -97,6 +142,14 @@ export interface CreatePlanInput {
   appUrl: string;
   /** Whether the derived account is already on chain. */
   exists?: boolean;
+  /**
+   * The agent public key to bind at creation, if any.
+   *
+   * Only affects the QUOTE here — the server neither generates nor holds the
+   * secret half, and the page still asks the user to confirm the key before
+   * anything is signed.
+   */
+  agentPk?: string | null;
 }
 
 export interface CreatePlan {
@@ -154,11 +207,43 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
     );
   }
 
-  const deposit = BigInt(i.requiredDepositYocto) + BigInt(CONTRACT_BYTES) * STORAGE_COST_PER_BYTE;
+  // Two different floors, and the quote must clear BOTH.
+  //
+  //   pageAttaches   what the wallet is actually asked to approve
+  //   factoryFloor   what `begin()` rejects below, on chain
+  //
+  // They are independent: the page's headroom is a fixed constant while the
+  // factory's floor moves with `set_required_deposit`. Quoting either one
+  // alone is what broke — the old code quoted the floor, and the page then
+  // asked for 0.26 more.
+  const stake = BigInt(CONTRACT_BYTES) * STORAGE_COST_PER_BYTE;
+  // Both floors move by the gas-key funding when an agent is bound: the page
+  // attaches it, and the factory requires it.
+  const agentFunding = i.agentPk ? AGENT_GAS_KEY_FUNDING_YOCTO : 0n;
+  const pageAttaches = stake + PAGE_HEADROOM_YOCTO + agentFunding;
+  const factoryFloor = BigInt(i.requiredDepositYocto) + stake + agentFunding;
+  const deposit = pageAttaches > factoryFloor ? pageAttaches : factoryFloor;
   const total = deposit + GAS_RESERVATION_YOCTO;
+
+  // If the operator raises `required_deposit` past the page's headroom, the
+  // page under-attaches and the create is rejected ON CHAIN with
+  // DEPOSIT_TOO_SMALL. Quoting the higher figure does not rescue that — the
+  // user would hold enough and still fail, because the page attaches the
+  // lesser amount regardless of what they hold. Say so rather than quoting a
+  // number that cannot help.
+  const underAttachWarning =
+    factoryFloor > pageAttaches
+      ? [
+          `WARNING: ${i.factory} now requires ${yoctoToNear(factoryFloor)} NEAR, but the ` +
+            `create page attaches only ${yoctoToNear(pageAttaches)}. The transaction will be ` +
+            `rejected on chain with DEPOSIT_TOO_SMALL no matter how much you hold. The page's ` +
+            `headroom constant needs raising — this is an operator bug, not a funding problem.`,
+        ]
+      : [];
 
   const url = new URL(i.appUrl);
   if (known) url.searchParams.set("owner", i.owner);
+  if (i.agentPk) url.searchParams.set("agent_pk", i.agentPk);
   url.searchParams.set("factory", i.factory);
   url.searchParams.set("network", i.network);
 
@@ -184,6 +269,7 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
     totalRequiredNear: yoctoToNear(total),
     url: url.toString(),
     warnings: [
+      ...underAttachWarning,
       ...unknownOwnerWarnings,
       `Almost all of the ${yoctoToNear(deposit)} NEAR is a refundable storage ` +
         `deposit held by your vault, not a fee.`,

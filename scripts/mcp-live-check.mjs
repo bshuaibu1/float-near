@@ -33,7 +33,7 @@ const p = spawn("node", [resolve(ROOT, "packages", "mcp", "dist", "server.js")],
     NEAR_VAULT_TOKEN: "usdc.fakes.testnet",
     NEAR_VAULT_TOKEN_DECIMALS: "6",
     NEAR_VAULT_FACTORY: FACTORY,
-    NEAR_VAULT_APP_URL: "http://127.0.0.1:8787",
+    NEAR_VAULT_APP_URL: "http://127.0.0.1:8080",
   },
 });
 p.stderr.on("data", (d) => process.stderr.write(`[server] ${d}`));

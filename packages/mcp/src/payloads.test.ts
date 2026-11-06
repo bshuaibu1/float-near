@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   ONE_YOCTO,
@@ -135,22 +137,38 @@ describe("the planner surface", () => {
     }
   });
 
+  /**
+   * READ FROM THE CONTRACT, not from a list kept by hand.
+   *
+   * This compared against a hardcoded Set, which only asserted that the
+   * planners match a list someone remembered to update — so the way to make
+   * it pass was always to edit the list, and a planner naming a method the
+   * contract had REMOVED would have survived that edit untouched. A guard
+   * whose failure mode is "add it to the list" is not a guard.
+   *
+   * The failure it exists to prevent is expensive and silent: an owner is
+   * handed a payload, signs it in their wallet, pays gas, gets
+   * MethodNotFound.
+   */
   it("exposes only methods the contract actually has", () => {
-    const CONTRACT_OWNER_METHODS = new Set([
-      "add_node",
-      "set_node_caps",
-      "bind_agent",
-      "bind_virtual_agent",
-      "unbind_virtual_agent",
-      "set_recipients",
-      "set_cooldown",
-      "freeze_node",
-      "set_paused",
-      "set_strict_allocation",
-      "purge_settled",
-    ]);
+    const LIB = resolve(
+      import.meta.dirname, "..", "..", "..", "contracts", "vault", "src", "lib.rs",
+    );
+    if (!existsSync(LIB)) {
+      console.warn(`SKIPPED: ${LIB} not present, cannot check planners against the contract`);
+      return;
+    }
+    const src = readFileSync(LIB, "utf8");
+    const methods = new Set([...src.matchAll(/pub fn (\w+)\s*\(/g)].map((m) => m[1]));
+
+    // POSITIVE CONTROL. A regex that matched nothing would make every planner
+    // valid by vacuity, and the test would pass hardest exactly when it had
+    // stopped working.
+    expect(methods.has("add_node"), "the extractor found no known method").toBe(true);
+    expect(methods.size).toBeGreaterThan(10);
+
     for (const m of Object.values(OWNER_PLANNERS)) {
-      expect(CONTRACT_OWNER_METHODS.has(m.methodName)).toBe(true);
+      expect(methods.has(m.methodName), `${m.methodName} is not a pub fn on the vault`).toBe(true);
     }
   });
 });

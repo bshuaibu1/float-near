@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useMemo } from "react";
+import { CANVAS, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
 import { useWallet } from "@/components/wallet-provider";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
 import {
@@ -10,7 +11,7 @@ import {
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "http://127.0.0.1:8787";
+const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 const FETCH_LIMIT = 200;
 const PAGE_SIZE = 12;
 
@@ -128,7 +129,7 @@ type Payment = {
 type RailFilter = "all" | "near" | "base" | "blocked";
 type StatusFilter = "all" | "success" | "failed" | "blocked";
 
-const border = { border: "1px solid #EAEAEA" };
+const border = { border: `1px solid ${LINE}` };
 
 // ---------------------------------------------------------------------------
 // Detail Modal
@@ -155,21 +156,20 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
         {/* Header */}
         <div
           className="flex items-center justify-between px-6 pt-5 pb-4"
-          style={{ borderBottom: "1px solid #EAEAEA" }}
+          style={{ borderBottom: `1px solid ${LINE}` }}
         >
           <div className="flex items-center gap-2.5">
             <AgentAvatar seed={item.agentId} size={24} animated={false} />
             <div>
-              <p className="text-[13px] font-semibold" style={{ color: "#111111" }}>
+              <p className="text-[13px] font-semibold text-ink">
                 {item.agentName}
               </p>
-              <p className="text-[11px]" style={{ color: "#787774" }}>{resolveVenue(item.venue)}</p>
+              <p className="text-[11px] text-muted">{resolveVenue(item.venue)}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-[#F5F5F4]"
-            style={{ color: "#787774" }}
+            className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-[#F5F5F4] text-muted"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -186,8 +186,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
               href={item.resultUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="block w-full overflow-hidden rounded-lg relative group"
-              style={{ background: "#F5F5F4" }}
+              className="block w-full overflow-hidden rounded-lg relative group bg-chip"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -212,11 +211,11 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
 
           {/* Prompt */}
           {item.prompt && (
-            <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+            <div className="rounded-lg px-4 py-3 bg-canvas">
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-1 text-muted">
                 Prompt
               </p>
-              <p className="text-[12px] leading-relaxed" style={{ color: "#111111" }}>
+              <p className="text-[12px] leading-relaxed text-ink">
                 {item.prompt}
               </p>
             </div>
@@ -225,7 +224,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
           {/* Block reason message — for policy-blocked events */}
           {item.blockMessage && (
             <div className="rounded-lg px-4 py-3" style={{ background: "#FFF8F0", border: "1px solid #F5D9B8" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#9A5F1A" }}>
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: WARN }}>
                 Blocked by policy
               </p>
               <p className="text-[12px] leading-relaxed" style={{ color: "#5C3B10" }}>
@@ -236,67 +235,67 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
 
           {/* Time + Amount */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+            <div className="rounded-lg px-4 py-3 bg-canvas">
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-1 text-muted">
                 Time
               </p>
-              <p className="text-[11px] font-mono leading-tight" style={{ color: "#111111" }}>
+              <p className="text-[11px] font-mono leading-tight text-ink">
                 {formatExactTime(item.createdAt)}
               </p>
             </div>
-            <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+            <div className="rounded-lg px-4 py-3 bg-canvas">
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-1 text-muted">
                 {isBlocked(item.status) ? "Attempted" : "Amount"}
               </p>
               <p
                 className="text-[13px] font-mono font-semibold"
-                style={{ color: isBlocked(item.status) ? "#9A5F1A" : "#111111" }}
+                style={{ color: isBlocked(item.status) ? WARN : INK }}
               >
                 {parseFloat(item.amount).toFixed(6)}{" "}
-                <span className="text-[11px] font-normal" style={{ color: "#787774" }}>USDC</span>
+                <span className="text-[11px] font-normal text-muted">USDC</span>
               </p>
             </div>
           </div>
 
           {/* Status + Rail */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-2" style={{ color: "#787774" }}>
+            <div className="rounded-lg px-4 py-3 bg-canvas">
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-2 text-muted">
                 Status
               </p>
               <span
                 className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
                 style={
                   isSuccess(item.status)
-                    ? { background: "#EDF3EC", color: "#346538" }
+                    ? { background: SUCCESS_BG, color: SUCCESS }
                     : isBlocked(item.status)
-                      ? { background: "#FEF3E2", color: "#9A5F1A" }
-                      : { background: "#FDEBEC", color: "#9F2F2D" }
+                      ? { background: WARN_BG, color: WARN }
+                      : { background: DANGER_BG, color: DANGER }
                 }
               >
                 {isSuccess(item.status) ? "success" : item.status}
               </span>
             </div>
-            <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+            <div className="rounded-lg px-4 py-3 bg-canvas">
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-1 text-muted">
                 Rail
               </p>
-              <p className="text-[12px] font-mono uppercase" style={{ color: "#111111" }}>
+              <p className="text-[12px] font-mono uppercase text-ink">
                 {resolveRail(item.rail)}
               </p>
             </div>
           </div>
 
           {/* Agent */}
-          <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-            <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+          <div className="rounded-lg px-4 py-3 bg-canvas">
+            <p className="text-[10px] font-medium uppercase tracking-widest mb-1 text-muted">
               Agent
             </p>
-            <p className="text-[12px] font-medium" style={{ color: "#111111" }}>
+            <p className="text-[12px] font-medium text-ink">
               {item.agentName}
             </p>
             {item.agentId !== item.agentName && (
-              <p className="text-[11px] font-mono mt-0.5" style={{ color: "#787774" }}>
+              <p className="text-[11px] font-mono mt-0.5 text-muted">
                 {item.agentId}
               </p>
             )}
@@ -304,11 +303,11 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
 
           {/* Recipient — only show if we have an address */}
           {item.recipientAddress && (
-            <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-              <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+            <div className="rounded-lg px-4 py-3 bg-canvas">
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-1 text-muted">
                 Recipient address
               </p>
-              <p className="text-[11px] font-mono break-all" style={{ color: "#111111" }}>
+              <p className="text-[11px] font-mono break-all text-ink">
                 {item.recipientAddress}
               </p>
             </div>
@@ -318,14 +317,14 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
               Replaces a "Tx Signature" block that linked to Solscan and could
               never render: the adapter always sets txSignature to null, because
               the vault indexes payments by request id, not by tx hash. */}
-          <div className="rounded-lg px-4 py-3" style={{ background: "#FBFBFA" }}>
-            <p className="text-[10px] font-medium uppercase tracking-widest mb-1" style={{ color: "#787774" }}>
+          <div className="rounded-lg px-4 py-3 bg-canvas">
+            <p className="text-[10px] font-medium uppercase tracking-widest mb-1 text-muted">
               Request ID
             </p>
-            <p className="text-[11px] font-mono break-all" style={{ color: "#111111" }}>
+            <p className="text-[11px] font-mono break-all text-ink">
               {item.id}
             </p>
-            <p className="text-[10px] mt-1.5" style={{ color: "#787774" }}>
+            <p className="text-[10px] mt-1.5 text-muted">
               {isBlocked(item.status)
                 ? "Blocked attempts are not stored on-chain — this row is held in the adapter's memory."
                 : "Stored on-chain. Look it up with get_request on the vault."}
@@ -508,24 +507,22 @@ export default function Activity() {
         <div className="flex items-end justify-between mb-8">
           <div>
             <p
-              className="text-[11px] font-medium uppercase tracking-widest mb-1"
-              style={{ color: "#787774" }}
+              className="text-[11px] font-medium uppercase tracking-widest mb-1 text-muted"
             >
               Agent Console
             </p>
             <h2
-              className="text-[22px] font-semibold tracking-tight"
-              style={{ color: "#111111" }}
+              className="text-[22px] font-semibold tracking-tight text-ink"
             >
               Activity
             </h2>
           </div>
           {payments.length > 0 && (
-            <p className="text-[12px] font-mono" style={{ color: "#787774" }}>
+            <p className="text-[12px] font-mono text-muted">
               {rows.length - blockedCount} payment{rows.length - blockedCount !== 1 ? "s" : ""}&nbsp;·&nbsp;
               {totalUsdc.toFixed(2)} USDC
               {blockedCount > 0 && (
-                <span style={{ color: "#9A5F1A" }}>&nbsp;·&nbsp;{blockedCount} blocked</span>
+                <span style={{ color: WARN }}>&nbsp;·&nbsp;{blockedCount} blocked</span>
               )}
             </p>
           )}
@@ -542,8 +539,8 @@ export default function Activity() {
             className="mb-4 rounded-lg px-3.5 py-2.5 text-[12px] leading-5"
             style={
               !coverage.scanned || coverage.unreadBlocks > 0
-                ? { background: "#FFF8E6", border: "1px solid #F0E0B0", color: "#7A5B14" }
-                : { background: "#FBFBFA", border: "1px solid #EAEAEA", color: "#787774" }
+                ? { background: WARN_BG, border: "1px solid #F0E0B0", color: WARN }
+                : { background: CANVAS, border: `1px solid ${LINE}`, color: MUTED }
             }
           >
             {coverage.text}
@@ -558,12 +555,12 @@ export default function Activity() {
             <button
               onClick={() => setAgentMenuOpen(o => !o)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors"
-              style={{ ...border, background: "#fff", color: "#111111" }}
+              style={{ ...border, background: "#fff", color: INK }}
             >
               <AgentAvatar seed={agentFilter === "all" ? "float" : agentFilter} size={14} animated={false} />
               <span>{selectedAgentName}</span>
               <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
-                <path d="M1 1l4 4 4-4" stroke="#787774" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M1 1l4 4 4-4" stroke={MUTED} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
 
@@ -578,8 +575,7 @@ export default function Activity() {
               >
                 <button
                   onClick={() => { setAgentFilter("all"); setAgentMenuOpen(false); }}
-                  className="flex items-center gap-2.5 w-full px-3 py-2.5 text-[12px] font-medium text-left hover:bg-[#FBFBFA] transition-colors"
-                  style={{ color: "#111111" }}
+                  className="flex items-center gap-2.5 w-full px-3 py-2.5 text-[12px] font-medium text-left hover:bg-canvas transition-colors text-ink"
                 >
                   All agents
                 </button>
@@ -587,10 +583,10 @@ export default function Activity() {
                   <button
                     key={a.id}
                     onClick={() => { setAgentFilter(a.id); setAgentMenuOpen(false); }}
-                    className="flex items-center gap-2.5 w-full px-3 py-2.5 text-[12px] font-medium text-left hover:bg-[#FBFBFA] transition-colors"
+                    className="flex items-center gap-2.5 w-full px-3 py-2.5 text-[12px] font-medium text-left hover:bg-canvas transition-colors"
                     style={{
                       borderTop: "1px solid #F5F5F4",
-                      color: agentFilter === a.id ? "#111111" : "#787774",
+                      color: agentFilter === a.id ? INK : MUTED,
                     }}
                   >
                     <AgentAvatar seed={a.id} size={14} animated={false} />
@@ -610,15 +606,15 @@ export default function Activity() {
                   onClick={() => setRailFilter(v)}
                   className="px-2.5 py-1 rounded-md text-[11px] font-medium uppercase tracking-wider transition-colors"
                   style={railFilter === v
-                    ? { background: "#111111", color: "#fff" }
-                    : { color: "#787774" }}
+                    ? { background: INK, color: "#fff" }
+                    : { color: MUTED }}
                 >
                   {v}
                 </button>
               ))}
             </div>
 
-            <div style={{ width: 1, height: 16, background: "#EAEAEA" }} />
+            <div style={{ width: 1, height: 16, background: LINE }} />
 
             <div className="flex items-center gap-1">
               {(["all", "success", "failed", "blocked"] as StatusFilter[]).map(v => (
@@ -627,8 +623,8 @@ export default function Activity() {
                   onClick={() => setStatusFilter(v)}
                   className="px-2.5 py-1 rounded-md text-[11px] font-medium capitalize transition-colors"
                   style={statusFilter === v
-                    ? { background: "#111111", color: "#fff" }
-                    : { color: "#787774" }}
+                    ? { background: INK, color: "#fff" }
+                    : { color: MUTED }}
                 >
                   {v}
                 </button>
@@ -644,8 +640,8 @@ export default function Activity() {
           <div
             className="grid gap-4 px-6 py-3 text-[11px] font-medium uppercase tracking-wider"
             style={{
-              color: "#787774",
-              borderBottom: "1px solid #EAEAEA",
+              color: MUTED,
+              borderBottom: `1px solid ${LINE}`,
               gridTemplateColumns: "5rem minmax(17rem, 1fr) 6rem 4rem 5.5rem 1.5rem",
               minWidth: "48rem",
             }}
@@ -661,17 +657,17 @@ export default function Activity() {
           {/* Empty / loading states */}
           {!walletAddress && !ownerSessionAvailable ? (
             <div className="px-6 py-16 text-center">
-              <p className="text-[13px]" style={{ color: "#787774" }}>
+              <p className="text-[13px] text-muted">
                 Connect your wallet to view activity.
               </p>
             </div>
           ) : loading && payments.length === 0 ? (
             <div className="px-6 py-16 text-center">
-              <p className="text-[13px]" style={{ color: "#787774" }}>Loading activity...</p>
+              <p className="text-[13px] text-muted">Loading activity...</p>
             </div>
           ) : rows.length === 0 ? (
             <div className="px-6 py-16 text-center">
-              <p className="text-[13px]" style={{ color: "#787774" }}>
+              <p className="text-[13px] text-muted">
                 {payments.length === 0
                   ? "No payment activity yet. Payments made by your agents will appear here."
                   : "No payments match the current filters."}
@@ -683,17 +679,16 @@ export default function Activity() {
                 <button
                   key={p.id}
                   onClick={() => setSelected(p)}
-                  className="w-full grid gap-4 items-center px-6 py-3.5 hover:bg-[#FBFBFA] transition-colors duration-100 text-left"
+                  className="w-full grid gap-4 items-center px-6 py-3.5 hover:bg-canvas transition-colors duration-100 text-left"
                   style={{
                     gridTemplateColumns: "5rem minmax(17rem, 1fr) 6rem 4rem 5.5rem 1.5rem",
               minWidth: "48rem",
-                    borderBottom: i < pageRows.length - 1 ? "1px solid #EAEAEA" : "none",
+                    borderBottom: i < pageRows.length - 1 ? `1px solid ${LINE}` : "none",
                   }}
                 >
                   {/* Time */}
                   <span
-                    className="text-[12px] font-mono tabular-nums"
-                    style={{ color: "#787774" }}
+                    className="text-[12px] font-mono tabular-nums text-muted"
                     title={formatExactTime(p.createdAt)}
                   >
                     {formatTime(p.createdAt)}
@@ -704,8 +699,7 @@ export default function Activity() {
                     <AgentAvatar seed={p.agentId} size={20} animated={false} />
                     <div className="min-w-0">
                       <p
-                        className="text-[12px] font-medium truncate leading-tight"
-                        style={{ color: "#111111" }}
+                        className="text-[12px] font-medium truncate leading-tight text-ink"
                       >
                         {p.agentName}
                       </p>
@@ -716,13 +710,12 @@ export default function Activity() {
                           hid it behind a click. Not truncated, deliberately:
                           the sentence is the content. */}
                       {isBlocked(p.status) && p.blockMessage ? (
-                        <p className="text-[11px] leading-snug" style={{ color: "#9A5F1A" }}>
+                        <p className="text-[11px] leading-snug" style={{ color: WARN }}>
                           {p.blockMessage}
                         </p>
                       ) : (
                         <p
-                          className="text-[11px] truncate leading-tight"
-                          style={{ color: "#787774" }}
+                          className="text-[11px] truncate leading-tight text-muted"
                         >
                           {resolveVenue(p.venue)}
                         </p>
@@ -736,21 +729,21 @@ export default function Activity() {
                     style={{
                       color:
                         isSuccess(p.status) || isSigned(p.status) || isDelivered(p.status)
-                          ? "#111111"
-                           : isBlocked(p.status) ? "#9A5F1A"
-                           : "#9F2F2D",
+                          ? INK
+                           : isBlocked(p.status) ? WARN
+                           : DANGER,
                     }}
                   >
                     {isBlocked(p.status) ? "–" : parseFloat(p.amount).toFixed(4)}
                     {!isBlocked(p.status) && (
-                      <span className="ml-1 text-[10px]" style={{ color: "#A0A09A" }}>USDC</span>
+                      <span className="ml-1 text-[10px] text-faint">USDC</span>
                     )}
                   </span>
 
                   {/* Rail */}
                   <span
                     className="text-[10px] uppercase tracking-wider text-center font-medium"
-                    style={{ color: isBlocked(p.status) ? "#9A5F1A" : "#787774" }}
+                    style={{ color: isBlocked(p.status) ? WARN : MUTED }}
                   >
                     {resolveRail(p.rail)}
                   </span>
@@ -761,12 +754,12 @@ export default function Activity() {
                       className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
                       style={
                         isSuccess(p.status) || isDelivered(p.status)
-                          ? { background: "#EDF3EC", color: "#346538" }
+                          ? { background: SUCCESS_BG, color: SUCCESS }
                           : isSigned(p.status)
                             ? { background: "#EEF2F7", color: "#3B5A7A" }
                             : isBlocked(p.status)
-                              ? { background: "#FEF3E2", color: "#9A5F1A" }
-                              : { background: "#FDEBEC", color: "#9F2F2D" }
+                              ? { background: WARN_BG, color: WARN }
+                              : { background: DANGER_BG, color: DANGER }
                       }
                     >
                       {isSuccess(p.status) ? "success" : p.status}
@@ -785,8 +778,7 @@ export default function Activity() {
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
-                        className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-[#F0F0EE]"
-                        style={{ color: "#787774" }}
+                        className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-[#F0F0EE] text-muted"
                         title="View the vault on NEAR Explorer"
                       >
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -811,7 +803,7 @@ export default function Activity() {
 
         {/* Footer */}
         <div className="mt-4 flex items-center justify-between">
-          <p className="text-[12px]" style={{ color: "#787774" }}>
+          <p className="text-[12px] text-muted">
             {rows.length > 0
               ? `Showing ${pageStart + 1}-${Math.min(pageStart + PAGE_SIZE, rows.length)} of ${rows.length}`
               : ""}
@@ -824,13 +816,13 @@ export default function Activity() {
                 className="text-[12px] font-medium px-3 py-1.5 rounded-md transition-colors disabled:cursor-not-allowed"
                 style={{
                   ...border,
-                  color: activePage === 1 ? "#B0ADB8" : "#111111",
+                  color: activePage === 1 ? "#B0ADB8" : INK,
                   background: "#fff",
                 }}
               >
                 Previous
               </button>
-              <span className="text-[12px] font-mono" style={{ color: "#787774" }}>
+              <span className="text-[12px] font-mono text-muted">
                 Page {activePage} of {totalPages}
               </span>
               <button
@@ -839,7 +831,7 @@ export default function Activity() {
                 className="text-[12px] font-medium px-3 py-1.5 rounded-md transition-colors disabled:cursor-not-allowed"
                 style={{
                   ...border,
-                  color: activePage === totalPages ? "#B0ADB8" : "#111111",
+                  color: activePage === totalPages ? "#B0ADB8" : INK,
                   background: "#fff",
                 }}
               >
@@ -850,14 +842,14 @@ export default function Activity() {
           {hasMore && !loading && (walletAddress || ownerSessionAvailable) && (
             <button
               onClick={() => fetchPayments(walletAddress, loadedOffset, false)}
-              className="text-[12px] font-medium px-3 py-1.5 rounded-md transition-colors hover:bg-[#FBFBFA]"
-              style={{ ...border, color: "#111111", background: "#fff" }}
+              className="text-[12px] font-medium px-3 py-1.5 rounded-md transition-colors hover:bg-canvas"
+              style={{ ...border, color: INK, background: "#fff" }}
             >
               Load older
             </button>
           )}
           {loading && payments.length > 0 && (
-            <p className="text-[12px]" style={{ color: "#787774" }}>Loading...</p>
+            <p className="text-[12px] text-muted">Loading...</p>
           )}
         </div>
       </div>

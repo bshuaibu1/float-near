@@ -66,9 +66,25 @@
         color: var(--ink);
         font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
       }
-      .col { width: 100%; max-width: 448px; display: flex; flex-direction: column; gap: 24px; align-items: center; }
-      h1 { font-size: 32px; font-weight: 600; letter-spacing: -0.04em; margin: 0; text-align: center; }
-      .sub { color: var(--muted); text-align: center; margin: 12px 0 0; max-width: 384px; }
+      .col { width: 100%; max-width: 448px; display: flex; flex-direction: column; gap: 20px; align-items: center; }
+
+      /* The card's own header: title, then one line of orientation.
+         Separated by a rule rather than by space alone, so the panel below it
+         reads as the thing you act on and this reads as the thing that tells
+         you where you are. */
+      .head { text-align: center; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
+
+      /* 72px, above the card. `.col` centres it via align-items, so no auto
+         margins are needed — and `height: auto` lets the intrinsic aspect
+         ratio hold if the asset is ever replaced with a non-square one,
+         rather than squashing it to a square that happens to be wrong. */
+      #logo { width: 72px; height: auto; object-fit: contain; }
+
+      /* 26px, down from 32. At 32 inside a 448px card the title wrapped to two
+         lines on a phone and crowded the mark above it; the heading no longer
+         has a whole page to itself. */
+      h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.03em; margin: 0; text-align: center; }
+      .sub { color: var(--muted); text-align: center; margin: 8px auto 0; max-width: 340px; font-size: 14px; }
       code { background: var(--chip); border-radius: 6px; padding: 2px 6px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       .card { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: 24px; }
       .row { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; }
@@ -86,18 +102,127 @@
       .warn { background: #fff8e6; border: 1px solid #f0e0b0; border-radius: 18px; padding: 14px; font-size: 13px; }
       .err { background: #fdf0f0; border: 1px solid #f0c8c8; border-radius: 18px; padding: 14px; font-size: 13px; color: #8a2020; white-space: pre-wrap; }
       .ok { background: #f1f8f2; border: 1px solid #cce4d0; border-radius: 18px; padding: 14px; font-size: 13px; }
+      /* The agent key is rendered IN FULL and never truncated — an ellipsis in
+         the middle is exactly where a swapped key hides. `break-all` because
+         a base58 key has no break opportunities and would otherwise overflow
+         the card on a phone. */
+      #a-key, #x-args { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6;
+               background: #f6f6f4; border: 1px solid #e3e3df; border-radius: 12px;
+               padding: 12px; word-break: break-all; user-select: all; }
       .hide { display: none; }
       a { color: var(--ink); }
+
+      /* ------------------------------------------------------------------
+         THE WALLET PICKER, IN FLOAT'S PALETTE.
+
+         wallet-selector's modal ships its own stylesheet and arrives in a
+         stock blue — #4F7CD1 and three siblings appear 34 times across it —
+         which is why the picker looked like a different product from the
+         card that opened it. That seam lands at exactly the wrong moment: a
+         user is deciding whether to trust this page with a wallet.
+
+         THE REAL API IS THE `--wallet-selector-*` PREFIX, and it is small.
+         The sheet reads twelve of them, always as the FIRST fallback:
+
+           background-color: var(--wallet-selector-selected-wallet-bg,
+                                 var(--selected-wallet-bg));
+
+         The unprefixed names are its internal defaults. Setting those looks
+         like it should work and mostly does not — four of the ones tried
+         here (`--confirm-button-bg`, `--spinner-color`,
+         `--wallet-option-border-color`, `--selected-wallet-bg-hover`) are
+         declared by the sheet and then never read by it, exactly like
+         `--border`. `scripts/check-wallet-modal-overrides.mjs` finds them.
+
+         SCOPED TO THE ID, matching the sheet's own `#near-wallet-selector-modal`
+         block. An ID outranks a class, so a `.nws-modal-wrapper` override
+         would have lost on specificity if the two ever land on the same
+         element — and the failure mode is a modal that looks untouched while
+         the code says it was restyled.
+
+         PINNED TO 8.9.13 by the <link> above. These names are that version's
+         API. Bumping the version without re-reading the stylesheet would
+         leave the modal silently stock again — the page would still work,
+         which is exactly why it would go unnoticed.
+      */
+      #near-wallet-selector-modal {
+        /* Darker than the sheet's own #26262630. At 15% the page behind read
+           almost as bright as the modal, so the dialog sat flat on it instead
+           of above it — and a modal that does not feel lifted does not read
+           as the only thing you are meant to act on. */
+        --wallet-selector-backdrop-bg: #11111159;
+        --wallet-selector-content-bg: var(--card);
+        --wallet-selector-heading-color: var(--ink);
+        --wallet-selector-text-color: var(--muted);
+        --wallet-selector-sidebar-border-color: var(--line);
+
+        /* DARK ON PURPOSE. This one paints both the selected wallet row AND
+           the "Get a Wallet" button — and that button's text is hardcoded
+           `color: #FFFFFF` in the sheet. Setting it to a light neutral, which
+           is what the rest of this palette wants, produces white text on a
+           near-white button: invisible, and invisible in the one place a
+           first-time user is looking. */
+        --wallet-selector-selected-wallet-bg: var(--ink);
+        --wallet-selector-wallet-option-bg-hover: #f3f3f1;
+
+        --wallet-selector-close-button-bg-color: var(--chip);
+        --wallet-selector-close-button-fill-icon-color: var(--muted);
+        --wallet-selector-home-button-bg: var(--chip);
+        --wallet-selector-mobile-bottom-section: var(--chip);
+
+        /* NOT EVERY BLUE HAS A PREFIXED HOOK. These four are read directly —
+           `var(--selected-wallet-bg)` with no `--wallet-selector-*` fallback
+           in front — so the prefixed names above never reach them, and
+           setting only those left the toggle, the icon tiles and the "what is
+           a wallet" glyphs stock blue while the rest of the modal turned.
+           The bare names are the only way in. */
+        /* MUTED, not ink. This name is read bare in 7 places and all of them
+           are secondary: the Remember-wallets toggle, the Ledger path link,
+           the Ledger account button, the QR copy button. In ink the toggle
+           competed with the primary CTA for attention, which inverts their
+           importance — one remembers a preference, the other gets you a
+           wallet.
+           The CTA is unaffected: it reads the PREFIXED name above, which
+           stays ink. */
+        --selected-wallet-bg: var(--muted);
+        --gradient-dark-icon: var(--chip);      /* the two icon tiles */
+        --what-wallet-icon-color: var(--ink);   /* the glyphs on them */
+        --gray: var(--line);                    /* the toggle's off state */
+      }
+
+      /* Radius and depth are hardcoded in the sheet rather than exposed, so
+         these three need the real selectors. 16px there vs 24px on our card
+         read as two different design languages side by side. */
+      .nws-modal-wrapper .nws-modal {
+        border-radius: 24px;
+        box-shadow: 0 1px 2px rgba(17, 17, 17, 0.04), 0 12px 32px rgba(17, 17, 17, 0.08);
+        border: 1px solid var(--line);
+      }
+      .nws-modal-wrapper .nws-modal .single-wallet { border-radius: 14px; }
+      .nws-modal-wrapper .nws-modal .modal-left-title h2 { letter-spacing: -0.02em; }
     </style>
   </head>
   <body>
     <div class="col">
-      <div>
-        <h1 id="title">Create your Float vault</h1>
-        <p class="sub" id="sub">Connect the wallet that will own it.</p>
-      </div>
+      <!--
+        THE MARK SITS ABOVE THE CARD, not inside it.
+
+        `nobgfloat.png` is the dashboard's own logo, copied from
+        apps/dashboard/public rather than redrawn, so the two products are
+        recognisably the same one.
+
+        Decorative, hence the empty alt and aria-hidden: the <h1> immediately
+        below already says "Float", and a screen reader announcing it twice
+        is noise rather than information.
+      -->
+      <img id="logo" src="./nobgfloat.png" alt="" aria-hidden="true" width="72" height="72" />
 
       <div id="panel" class="card">
+        <header class="head">
+          <h1 id="title">Create your Float vault</h1>
+          <p class="sub" id="sub">Connect the wallet that will own it.</p>
+        </header>
+
         <div id="loading" class="note">loading…</div>
 
         <div id="connect" class="hide">
@@ -107,6 +232,110 @@
           </p>
         </div>
 
+        <!--
+          THE AGENT GATE. Shown only when the link carries `agent_pk`.
+
+          Every other parameter on this link fails SAFE when tampered with: a
+          swapped `owner` makes the page refuse outright, and a swapped
+          `factory` renders a visibly different vault address next to the
+          deposit. `agent_pk` is the first one that does not — swap it and the
+          page looks identical, the user signs, and an attacker's agent is
+          bound to their vault with spending authority inside the caps.
+
+          That asymmetry is the whole reason this panel exists, and why it is
+          a separate screen rather than another row on the plan. A row gets
+          skimmed. The decision being made here is "authorise this specific
+          key", so it is the only thing on screen, the key is rendered in full
+          rather than truncated, and the button says what it does.
+        -->
+        <div id="agent" class="hide">
+          <div class="warn">
+            <strong>Security check.</strong><br />
+            You are authorising an AI agent to spend from the vault you are
+            about to create.
+          </div>
+          <p class="note" style="text-align: left; margin: 14px 0 6px">
+            Check this public key matches the one your agent showed you. If it
+            does not match, close this page — someone has altered your link.
+          </p>
+          <div id="a-key"></div>
+          <div class="row" style="margin-top: 14px">
+            <span>can spend</span><span id="a-limit"></span>
+          </div>
+          <!--
+            THE CONNECTED WALLET IS SHOWN HERE, not only on the plan.
+
+            This gate moved in front of the plan, which took the "use a
+            different wallet" button with it — so a user who arrived with the
+            wrong wallet connected could SEE the wrong vault id here and have
+            no way to act on it except closing the tab. Observed live: the
+            gate read `work12-testnet.fac...` while the intended owner was a
+            different account entirely.
+
+            An owner-less link derives everything from whichever wallet is
+            open, which is the flexibility and also the trap. Naming the
+            account, not just the derived vault, makes the mismatch legible
+            without having to recognise a prefix.
+          -->
+          <div class="row"><span>owner</span><span id="a-owner"></span></div>
+          <div class="row"><span>from vault</span><span id="a-vault"></span></div>
+          <p class="note" style="text-align: left; margin: 14px 0 18px">
+            This agent can never exceed those limits, and you can revoke it at
+            any time from your vault.
+          </p>
+          <button id="btn-agent-ok">I have checked the key — continue</button>
+          <button id="btn-agent-no" class="ghost" style="margin-top: 10px">
+            Create the vault without an agent
+          </button>
+          <button id="btn-agent-switch" class="ghost" style="margin-top: 10px">
+            Use a different wallet
+          </button>
+        </div>
+
+        <!--
+          OWNER-ACTION MODE. Shown when the link carries `?action=`.
+
+          Every `vault_plan_*` tool, and `vault_add_role`, returns an UNSIGNED
+          payload for the owner to approve — and until now nothing could
+          approve one from a browser. The owner's key lives in their wallet,
+          so the only route was a CLI with a full-access key on disk, which is
+          exactly the trade this product exists to avoid.
+
+          A page that signs an arbitrary FunctionCall from a URL is a weapon,
+          so this one does not. Two guards, both necessary:
+
+            1. The method must be one of the vault's own OWNER METHODS. A
+               crafted link cannot make this page call `ft_transfer` on a
+               token, or anything at all on a contract that is not a vault.
+
+            2. The receiver's `get_config().owner` must equal the CONNECTED
+               account. You can only ever sign owner-actions against a vault
+               you already own — which is the property that makes the rest of
+               it safe, because every method on that list is one the owner
+               could already call.
+
+          The arguments are rendered in full before signing. A summary alone
+          would ask the user to trust the link's own description of itself.
+        -->
+        <div id="action" class="hide">
+          <div class="warn">
+            <strong id="x-summary">Approve this change to your vault.</strong>
+          </div>
+          <div class="row" style="margin-top: 14px"><span>vault</span><span id="x-vault"></span></div>
+          <div class="row"><span>owner</span><span id="x-owner"></span></div>
+          <div class="row"><span>action</span><span id="x-method"></span></div>
+          <div class="row total"><span>you send</span><span id="x-deposit"></span></div>
+          <p class="note" style="text-align: left; margin: 14px 0 6px">
+            Exactly what will be sent:
+          </p>
+          <div id="x-args"></div>
+          <div id="x-warn" class="note" style="text-align: left; margin: 14px 0 18px"></div>
+          <button id="btn-action">Approve in my wallet</button>
+          <button id="btn-action-switch" class="ghost" style="margin-top: 10px">
+            Use a different wallet
+          </button>
+        </div>
+
         <div id="plan" class="hide">
           <div class="row"><span>owner</span><span id="p-owner"></span></div>
           <div class="row"><span>vault</span><span id="p-vault"></span></div>
@@ -114,6 +343,7 @@
           <div class="row"><span>network</span><span id="p-net"></span></div>
           <div class="row"><span>contract</span><span id="p-size"></span></div>
           <div class="row"><span>daily limit</span><span id="p-daily"></span></div>
+          <div class="row hide" id="p-agent-row"><span>agent</span><span id="p-agent"></span></div>
           <div class="row total"><span>you send</span><span id="p-total"></span></div>
           <p class="note" style="text-align: left; margin: 14px 0 18px">
             Almost all of this is a refundable deposit, not a fee. Nothing can
@@ -143,9 +373,6 @@
         <div id="error" class="hide"><div class="err" id="err-text"></div></div>
       </div>
 
-      <p class="note" id="foot">
-        Float — a budget an agent cannot talk its way out of
-      </p>
     </div>
 
     <script type="module">
@@ -162,7 +389,7 @@
       // announcing itself. A failure now names the module that caused it.
       const $ = (id) => document.getElementById(id);
       const show = (...ids) => {
-        for (const s of ["loading", "connect", "plan", "signing", "done", "error"]) $(s).classList.add("hide");
+        for (const s of ["loading", "connect", "agent", "action", "plan", "signing", "done", "error"]) $(s).classList.add("hide");
         for (const id of ids) $(id).classList.remove("hide");
       };
       const fail = (m) => {
@@ -181,7 +408,169 @@
       const PERTX = q.get("pertx") ?? (NETWORK === "mainnet" ? "0.51" : "10");
       const PREFIX = q.get("prefix") ?? "float";
 
+      /**
+       * DECLARED HERE, with the other constants, and not beside the function
+       * that reads it.
+       *
+       * It lived next to `affordable()` near the bottom of this script, which
+       * threw at runtime:
+       *
+       *   Cannot access 'RPC_URL' before initialization
+       *
+       * `const` is hoisted but sits in the temporal dead zone until its own
+       * line executes, and `render()` runs during init — before that line is
+       * reached. The owner-action path calls `view()` from `render()`, so it
+       * hit the TDZ every time while the create path, which reads it later
+       * from a click handler, never did.
+       *
+       * Neither `node --check` nor a scan for undefined functions can see
+       * this: the file is syntactically valid and every name resolves. Only
+       * ORDER is wrong, and order is a runtime property.
+       */
+
+      const RPC_URL =
+        NETWORK === "mainnet"
+          ? "https://free.rpc.fastnear.com"
+          : "https://test.rpc.fastnear.com";
+
       const FACTORY = q.get("factory");
+
+      /**
+       * The agent to bind at creation, if the link carries one.
+       *
+       * VALIDATED BEFORE IT IS EVER DISPLAYED, because this value is shown to
+       * a user as the thing they are authorising, and anything that reaches
+       * that panel is implicitly being vouched for. A malformed key must be a
+       * refusal, not a confirmation prompt around a string we never parsed —
+       * `ed25519:` followed by anything would otherwise render as a plausible
+       * key.
+       *
+       * The contract would reject it too, but only after the user signed and
+       * paid gas, and the failure would arrive as an opaque deserialisation
+       * panic rather than "your link is malformed".
+       *
+       * Deliberately NOT mutable state: `agentPk` is what the link asked for,
+       * and `bindAgent` is what the user consented to. Collapsing them into
+       * one variable makes "declined" indistinguishable from "never asked",
+       * and the decline path has to produce a vault with no agent bound.
+       */
+      /**
+       * An optional second vault for the SAME owner.
+       *
+       * `resolve_vault` in the factory already supports this and derives
+       * `<prefix>-<label>.<factory>` — rooted in the caller's own prefix, so
+       * a label cannot squat an address belonging to anyone else. The page
+       * simply never offered it, which meant one account could hold exactly
+       * one vault and a second one needed a whole new wallet.
+       *
+       * Validated to the CONTRACT's rule, not a looser one: 1-16 characters
+       * of a-z0-9, or it panics BAD_LABEL after the user has signed and paid.
+       */
+      const LABEL = q.get("label");
+      const LABEL_OK = LABEL === null || /^[a-z0-9]{1,16}$/.test(LABEL);
+
+      /**
+       * An owner action to approve — base64url of the payload a `vault_plan_*`
+       * or `vault_add_role` call returned.
+       *
+       * THE METHOD WHITELIST IS THE SECURITY BOUNDARY. Without it this page
+       * would sign any FunctionCall a URL asked it to: `ft_transfer` on a
+       * token, anything at all on any contract. With it, the worst a crafted
+       * link can do is an action the connected account could ALREADY perform,
+       * on a vault it ALREADY owns — and the owner check below enforces the
+       * second half.
+       *
+       * The list is the vault's own owner methods, pinned against the
+       * contract source by web.gate.test.ts so a method renamed in Rust
+       * cannot leave a stale name sitting here looking authoritative.
+       */
+      const OWNER_METHODS = new Set([
+        "add_node",
+        "add_role",
+        "set_node_caps",
+        "bind_agent",
+        "bind_virtual_agent",
+        "unbind_virtual_agent",
+        "set_recipients",
+        "set_cooldown",
+        "freeze_node",
+        "set_paused",
+        "set_strict_allocation",
+        "purge_settled",
+        "approve_payment",
+        "reject_payment",
+        "set_approval_threshold",
+      ]);
+
+      const RAW_ACTION = q.get("action");
+      let ACTION = null;
+      let ACTION_ERR = null;
+      if (RAW_ACTION) {
+        try {
+          // DECODE AND PARSE ARE REPORTED SEPARATELY. Lumping them into one
+          // "not valid base64url JSON" told a user nothing: base64 that
+          // decodes but does not parse means the link was TRUNCATED in
+          // transit, which is a copy-paste problem with an obvious fix, while
+          // a decode failure means the characters themselves are wrong. The
+          // first version collapsed both and sent exactly the wrong signal.
+          let decoded;
+          try {
+            // Pad back to a multiple of 4. `atob` tolerates missing padding,
+            // but being explicit costs nothing and removes a variable.
+            const b64 = RAW_ACTION.replace(/-/g, "+").replace(/_/g, "/");
+            const binary = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+
+            // UTF-8, NOT the raw byte string atob returns.
+            //
+            // The dashboard encodes with TextEncoder because `btoa` throws on
+            // any code point above U+00FF - and the branch glyph U+2514
+            // U+2500 sits in every child agent's display name, so a summary
+            // naming one would crash the link before it was ever sent.
+            //
+            // This side must match. A bare `atob` here would NOT throw on
+            // those payloads; it would hand JSON.parse UTF-8 bytes read as
+            // Latin-1 and render mojibake in the summary the owner is about
+            // to approve. A wrong description of a transaction is worse than
+            // a broken link, because the owner still signs it.
+            decoded = new TextDecoder().decode(
+              Uint8Array.from(binary, (c) => c.charCodeAt(0)),
+            );
+          } catch (e) {
+            throw new Error(
+              `the link's payload is not valid base64 (${RAW_ACTION.length} characters ` +
+                `received). ${e.message}`,
+            );
+          }
+          let a;
+          try {
+            a = JSON.parse(decoded);
+          } catch {
+            throw new Error(
+              `the payload decoded but is not complete JSON — ${decoded.length} bytes ` +
+                `ending "${decoded.slice(-24)}". A link this long is usually cut short ` +
+                `when copied; copy it again in one piece, or use a shorter one.`,
+            );
+          }
+          if (!a || typeof a.receiverId !== "string" || typeof a.methodName !== "string") {
+            ACTION_ERR = "the payload is missing receiverId or methodName";
+          } else if (!OWNER_METHODS.has(a.methodName)) {
+            // Name the method. "Unsupported action" would leave the reader
+            // unable to tell a stale link from a hostile one.
+            ACTION_ERR =
+              `"${a.methodName}" is not one of the vault's owner methods, so this page ` +
+              `will not sign it. The link is asking for something this page is not ` +
+              `allowed to do.`;
+          } else {
+            ACTION = a;
+          }
+        } catch (e) {
+          ACTION_ERR = e.message;
+        }
+      }
+
+      const RAW_AGENT = q.get("agent_pk");
+      const AGENT_OK = RAW_AGENT === null || /^ed25519:[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(RAW_AGENT);
+      let bindAgent = null;
 
       const units = (human) => {
         const [i, f = ""] = String(human).split(".");
@@ -319,6 +708,22 @@
         const who = accountId();
         if (!who) return show("connect");
 
+        // OWNER-ACTION MODE short-circuits everything create-related. This
+        // link is not creating a vault; it is approving a change to one that
+        // already exists, so none of the deposit arithmetic below applies.
+        if (RAW_ACTION) {
+          if (ACTION_ERR) {
+            $("err-text").textContent =
+              `This link cannot be signed.\n\n${ACTION_ERR}\n\nNothing has been sent.`;
+            return show("error");
+          }
+          reviewAction(who).catch((e) => {
+            $("err-text").textContent = `Could not check this vault: ${e.message}`;
+            show("error");
+          });
+          return;
+        }
+
         // THE LINK'S ?owner= MUST MATCH THE CONNECTED WALLET.
         //
         // This page derives everything from the CONNECTED account and ignored
@@ -349,6 +754,33 @@
           return;
         }
 
+        if (!LABEL_OK) {
+          $("err-text").textContent =
+            `This link carries the label "${LABEL}", which the factory will reject.
+
+` +
+            `A label must be 1-16 characters of a-z or 0-9. Nothing has been signed — ` +
+            `ask for a new link rather than editing this one, because the contract ` +
+            `refuses BAD_LABEL only after you have paid for the transaction.`;
+          show("error");
+          return;
+        }
+
+        // A malformed agent key is a BROKEN LINK, not a prompt. Refusing here
+        // keeps the gate panel a place where every key shown has already
+        // parsed, so "we displayed it" never means less than it looks.
+        if (!AGENT_OK) {
+          $("err-text").textContent =
+            `This link carries an agent key that is not a valid NEAR ed25519 public key.
+
+` +
+            `Nothing has been signed. Ask for a new link rather than editing this one — ` +
+            `a key that does not parse here would be rejected by the contract after ` +
+            `you had already paid for the transaction.`;
+          show("error");
+          return;
+        }
+
         // THE FACTORY CREATES THE VAULT, not this page.
         //
         // A wallet refuses a DeployContract ACTION from a dApp — measured in
@@ -361,14 +793,31 @@
         // alice.testnet -> alice-testnet.<factory>. Dots become hyphens so the
         // mapping stays injective — alice.near and alice.testnet must not
         // collapse to the same vault.
-        const vault = FACTORY ? `${derivePrefix(who)}.${FACTORY}` : `${PREFIX}.${who}`;
+        // THE LABEL IS PART OF THE ADDRESS. Showing the unlabelled id while
+        // sending a labelled one would put a different account in front of
+        // the user than the one their deposit creates — the same class of
+        // mistake the owner-mismatch guard above exists to prevent.
+        const suffix = LABEL ? `-${LABEL}` : "";
+        const vault = FACTORY
+          ? `${derivePrefix(who)}${suffix}.${FACTORY}`
+          : `${PREFIX}${suffix}.${who}`;
 
         // The deposit, matching the factory's own floor: the contract's storage
         // stake plus headroom for the root node's state. Derived from the real
         // artifact, never hardcoded — the figures this project hardcoded are
         // the two that went stale and shipped wrong.
         const stake = BigInt(wasm.length) * 10n ** 19n;
-        const total = stake + 36n * 10n ** 22n;
+        // Funding for the agent's gas key, when one is bound. Must match
+        // AGENT_GAS_KEY_FUNDING in contracts/factory/src/lib.rs — the factory
+        // raises its own deposit floor by this amount, so a total that omits
+        // it is refused on chain with DEPOSIT_TOO_SMALL.
+        //
+        // It is NOT part of the base total, because it is only spent when the
+        // user consents to an agent. Charging it either way would quietly
+        // overcharge everyone who declines.
+        const AGENT_GAS = 12n * 10n ** 22n;
+        const baseTotal = stake + 36n * 10n ** 22n;
+        const totalFor = (agent) => baseTotal + (agent ? AGENT_GAS : 0n);
 
         $("p-owner").textContent = who;
         $("p-vault").textContent = vault;
@@ -376,22 +825,69 @@
         $("p-net").textContent = NETWORK;
         $("p-size").textContent = `${(wasm.length / 1024).toFixed(0)} KB`;
         $("p-daily").textContent = `${DAILY} / day, ${PERTX} / tx`;
-        $("p-total").textContent = `${near(total)} NEAR`;
-        $("btn-create").onclick = () => create(who, vault, total);
-        show("plan");
 
-        // CHECK AFFORDABILITY BEFORE OFFERING THE BUTTON.
+        // THE AGENT GATE COMES BEFORE THE PLAN, not after.
         //
-        // Without this an underfunded account produces "the transaction
-        // failed", which is indistinguishable from the wallet refusing the
+        // Put after, it would be one more confirmation between a user and a
+        // button they have already decided to press — the position where
+        // warnings are dismissed fastest. Put first, it is the thing that
+        // stands between arriving and seeing a cost, which is when attention
+        // is highest and nothing has been invested yet.
+        //
+        // `renderPlan` is the continuation either way, so declining is a real
+        // path and not a dead end: it creates exactly the vault the old
+        // two-transaction flow created.
+        const renderPlan = () => {
+          // THE TOTAL DEPENDS ON CONSENT, so it is computed here and not
+          // before the gate. Binding an agent adds its gas-key funding to the
+          // deposit; declining must not be charged for it.
+          const total = totalFor(bindAgent);
+
+          // Show the agent on the plan too. The gate can be acknowledged and
+          // then forgotten while the wallet takes seconds to render 294 KB,
+          // and the last screen before signing should still say what is being
+          // authorised.
+          $("p-agent-row").classList.toggle("hide", !bindAgent);
+          if (bindAgent) $("p-agent").textContent = `${bindAgent.slice(0, 20)}…`;
+          $("p-total").textContent = `${near(total)} NEAR`;
+          $("btn-create").onclick = () => create(who, vault, total);
+          show("plan");
+
+          // CHECK AFFORDABILITY AGAINST THE FIGURE ACTUALLY BEING SIGNED.
+          // Run here rather than once up front, because the two branches ask
+          // for different amounts and a user can afford one and not the other.
+          affordable(who, total).catch(() => {});
+        };
+
+        if (RAW_AGENT) {
+          $("a-key").textContent = RAW_AGENT;
+          $("a-limit").textContent = `${DAILY} / day, ${PERTX} / tx`;
+          $("a-owner").textContent = who;
+          $("a-vault").textContent = vault;
+          $("btn-agent-ok").onclick = () => {
+            bindAgent = RAW_AGENT;
+            renderPlan();
+          };
+          $("btn-agent-no").onclick = () => {
+            bindAgent = null;
+            renderPlan();
+          };
+          show("agent");
+        } else {
+          renderPlan();
+        }
+
+        // Affordability is checked inside `renderPlan`, against the figure
+        // that branch actually signs. It used to run once here, which stopped
+        // working when the total became a function of consent — a user who
+        // can afford the bare vault but not the agent must be told so, and
+        // the old call could only have checked one of the two.
+        //
+        // Why it is checked at all: an underfunded account produces "the
+        // transaction failed", indistinguishable from the wallet refusing the
         // 294 KB payload — and that distinction is the entire reason this page
-        // exists right now. A confusing failure here would cost a wrong
-        // conclusion, not just a wrong message.
-        //
-        // Read-only, and it never blocks the plan from rendering: if the RPC is
-        // unreachable the button stays live rather than locking the user out
-        // over a check that is only advisory.
-        affordable(who, total).catch(() => {});
+        // exists. It never blocks the plan from rendering, because the check
+        // is advisory and an unreachable RPC must not lock anyone out.
       }
 
       /**
@@ -399,10 +895,36 @@
        * figure that matters is balance minus what the account already has
        * staked — the same free-balance arithmetic the CLI uses.
        */
+      /**
+       * One read-only contract call.
+       *
+       * Returns null when the account has no such method or does not exist,
+       * which the owner-action path needs in order to say "that is not a
+       * Float vault" rather than throwing a raw RPC error at the user.
+       */
+      async function view(contractId, method, args) {
+        const r = await fetch(RPC_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "query",
+            params: {
+              request_type: "call_function",
+              finality: "final",
+              account_id: contractId,
+              method_name: method,
+              args_base64: btoa(JSON.stringify(args ?? {})),
+            },
+          }),
+        }).then((x) => x.json());
+        if (!r.result?.result) return null;
+        return JSON.parse(new TextDecoder().decode(new Uint8Array(r.result.result)));
+      }
+
       async function affordable(who, total) {
-        const rpc = NETWORK === "mainnet"
-          ? "https://free.rpc.fastnear.com"
-          : "https://test.rpc.fastnear.com";
+        const rpc = RPC_URL;
         const r = await fetch(rpc, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -432,10 +954,105 @@
       }
 
       $("btn-connect").onclick = () => modal.show();
-      $("btn-disconnect").onclick = async () => {
+      const disconnect = async () => {
         const w = await selector.wallet();
         await w.signOut();
       };
+      // BOTH escape hatches run the SAME handler. The gate sits in front of
+      // the plan now, so the plan's button is unreachable from it — and a
+      // second inline copy of signOut is how the two would drift apart.
+      $("btn-disconnect").onclick = disconnect;
+      $("btn-agent-switch").onclick = disconnect;
+
+      /**
+       * Review an owner action, then sign it.
+       *
+       * THE OWNER CHECK IS WHAT MAKES THE WHITELIST SAFE. The method list
+       * alone only bounds WHAT can be called; this bounds WHERE. Reading
+       * `get_config().owner` off the receiver and requiring it to equal the
+       * connected account means every link resolves to "an action you could
+       * already take on a vault you already own".
+       *
+       * It also catches the ordinary mistake: a link prepared for one vault,
+       * opened in a wallet connected to another. Refuse rather than warn —
+       * the actions on that list change spending policy.
+       */
+      async function reviewAction(who) {
+        const cfg = await view(ACTION.receiverId, "get_config", {});
+        if (!cfg || typeof cfg.owner !== "string") {
+          $("err-text").textContent =
+            `${ACTION.receiverId} does not look like a Float vault — it has no ` +
+            `get_config. This page only signs owner actions against vaults.`;
+          return show("error");
+        }
+        if (cfg.owner !== who) {
+          $("err-text").textContent =
+            `This link changes ${ACTION.receiverId}, which is owned by ${cfg.owner}.\n\n` +
+            `Your wallet is connected as ${who}, so the transaction would be rejected ` +
+            `by the contract — and you would pay gas to learn that.\n\n` +
+            `Connect ${cfg.owner}, or ask for a link for this wallet.`;
+          return show("error");
+        }
+
+        const dep = BigInt(ACTION.depositYocto ?? "0");
+        $("x-summary").textContent = ACTION.summary ?? "Approve this change to your vault.";
+        $("x-vault").textContent = ACTION.receiverId;
+        $("x-owner").textContent = who;
+        $("x-method").textContent = ACTION.methodName;
+        $("x-deposit").textContent = `${near(dep)} NEAR`;
+        // ARGUMENTS IN FULL. A summary is the link describing itself, which is
+        // precisely the thing under suspicion when a link is tampered with.
+        $("x-args").textContent = JSON.stringify(ACTION.args ?? {}, null, 2);
+        // The page supplies the standing advice when the link does not carry
+        // any. Shipping three long sentences through a URL made the link
+        // ~750 bytes of JSON, and a link long enough to be truncated by a
+        // copy-paste is a link that fails for a reason the user cannot see.
+        // The arguments above are the authoritative part; this is guidance,
+        // and guidance belongs in the page.
+        $("x-warn").textContent = (
+          ACTION.warnings?.length
+            ? ACTION.warnings
+            : [
+                dep > 0n
+                  ? `The ${near(dep)} NEAR deposit is held by your vault, not spent — it is recoverable.`
+                  : null,
+                `Check any public key above against the one your agent reported before approving.`,
+              ].filter(Boolean)
+        ).join("\n\n");
+        $("btn-action").onclick = () => sendAction(dep);
+        $("btn-action-switch").onclick = disconnect;
+        show("action");
+      }
+
+      async function sendAction(dep) {
+        show("signing");
+        try {
+          const wallet = await selector.wallet();
+          await wallet.signAndSendTransaction({
+            receiverId: ACTION.receiverId,
+            actions: [
+              {
+                type: "FunctionCall",
+                params: {
+                  methodName: ACTION.methodName,
+                  args: ACTION.args ?? {},
+                  gas: String(BigInt(ACTION.gasTgas ?? 100) * 10n ** 12n),
+                  deposit: dep.toString(),
+                },
+              },
+            ],
+          });
+          $("d-vault").textContent = `${ACTION.methodName} on ${ACTION.receiverId}`;
+          $("d-explorer").href =
+            NETWORK === "mainnet"
+              ? `https://explorer.near.org/accounts/${ACTION.receiverId}`
+              : `https://explorer.testnet.near.org/accounts/${ACTION.receiverId}`;
+          show("done");
+        } catch (e) {
+          $("err-text").textContent = `The wallet refused or the call failed:\n\n${e.message}`;
+          show("error");
+        }
+      }
 
       async function create(who, vault, total) {
         show("signing");
@@ -498,9 +1115,16 @@
                   methodName: "create_vault_with_code",
                   args: {
                     code: b64(wasm),
-                    label: null,
+                    label: LABEL,
                     root_limits: rootLimits,
                     root_recipients: rootRecipients,
+                    // `bindAgent`, NOT `RAW_AGENT`. The link's request and the
+                    // user's consent are different facts, and only consent
+                    // belongs in a transaction. Sending the raw parameter here
+                    // would make the decline button decorative — the agent
+                    // would be bound either way, which is the exact failure
+                    // the gate exists to prevent.
+                    agent_pk: bindAgent,
                   },
                   gas: "200000000000000",
                   deposit: total.toString(),

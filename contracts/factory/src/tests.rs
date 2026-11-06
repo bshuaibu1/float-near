@@ -129,7 +129,7 @@ fn ready() -> Factory {
 fn create_vault_refuses_a_deposit_below_the_requirement() {
     let mut f = ready();
     testing_env!(fctx(alice(), NearToken::from_millinear(99)).build());
-    let _ = f.create_vault(None, root_limits(), root_recipients());
+    let _ = f.create_vault(None, root_limits(), root_recipients(), None);
 }
 
 /// Exactly the requirement is enough. A `<` / `<=` slip here either bricks the
@@ -141,7 +141,7 @@ fn create_vault_accepts_exactly_the_required_deposit() {
     // Passing is the assertion: no panic means the boundary is inclusive.
     // Nothing is asserted about the vault existing — the promise has not run,
     // and near-sdk's mock VM does not execute promises at all.
-    let _ = f.create_vault(None, root_limits(), root_recipients());
+    let _ = f.create_vault(None, root_limits(), root_recipients(), None);
 }
 
 /// The kill switch has to work, or a discovered bug cannot be contained.
@@ -152,7 +152,7 @@ fn create_vault_refuses_while_paused() {
     testing_env!(fctx(fowner(), NearToken::from_yoctonear(1)).build());
     f.set_paused(true);
     testing_env!(fctx(alice(), required()).build());
-    let _ = f.create_vault(None, root_limits(), root_recipients());
+    let _ = f.create_vault(None, root_limits(), root_recipients(), None);
 }
 
 /// An owner whose derived id is not a legal account must be told so BEFORE the
@@ -168,7 +168,7 @@ fn create_vault_refuses_an_owner_whose_derived_id_is_illegal() {
     // only reaching the id check because the deposit check happened to pass.
     // A test named for one guard must not be gated on another.
     testing_env!(fctx(implicit, NearToken::from_near(1)).build());
-    let _ = f.create_vault(None, root_limits(), root_recipients());
+    let _ = f.create_vault(None, root_limits(), root_recipients(), None);
 }
 
 /// Only the owner may repoint new vaults at a different global contract.
@@ -259,7 +259,7 @@ fn create_vault_with_code_refuses_a_deposit_that_ignores_the_code_size() {
     // Exactly the fixed requirement — enough for the GLOBAL path, nowhere near
     // enough once 100 KB of code has to be stored.
     testing_env!(fctx(alice(), required()).build());
-    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients());
+    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients(), None);
 }
 
 /// Code storage plus the fixed floor is enough.
@@ -270,7 +270,7 @@ fn create_vault_with_code_accepts_code_storage_plus_the_floor() {
     let needed = NearToken::from_yoctonear(bytes * 10u128.pow(19)).saturating_add(required());
     testing_env!(fctx(alice(), needed).build());
     // Passing is the assertion: no panic means the boundary is inclusive.
-    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients());
+    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients(), None);
 }
 
 /// EMPTY CODE WOULD CREATE A FUNDED ACCOUNT WITH NO CONTRACT.
@@ -283,7 +283,7 @@ fn create_vault_with_code_accepts_code_storage_plus_the_floor() {
 fn create_vault_with_code_refuses_empty_code() {
     let mut f = ready();
     testing_env!(fctx(alice(), NearToken::from_near(1)).build());
-    let _ = f.create_vault_with_code(code(0), None, root_limits(), root_recipients());
+    let _ = f.create_vault_with_code(code(0), None, root_limits(), root_recipients(), None);
 }
 
 /// The kill switch covers BOTH creation paths, or it is not a kill switch.
@@ -294,7 +294,7 @@ fn create_vault_with_code_honours_the_kill_switch() {
     testing_env!(fctx(fowner(), NearToken::from_yoctonear(1)).build());
     f.set_paused(true);
     testing_env!(fctx(alice(), NearToken::from_near(2)).build());
-    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients());
+    let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients(), None);
 }
 
 // ─── the `label` escape hatch, which had no tests at all ─────────────────────
@@ -498,7 +498,7 @@ fn create_vault_with_code_installs_the_signers_key_as_a_full_access_key() {
     b.signer_account_pk(a_pk());
     testing_env!(b.build());
 
-    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients());
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), None);
 
     let receipts = near_sdk::test_utils::get_created_receipts();
     let batch = receipts
@@ -538,7 +538,7 @@ fn create_vault_installs_the_signers_key_as_a_full_access_key() {
     b.signer_account_pk(a_pk());
     testing_env!(b.build());
 
-    let _ = f.create_vault(None, root_limits(), root_recipients());
+    let _ = f.create_vault(None, root_limits(), root_recipients(), None);
 
     let receipts = near_sdk::test_utils::get_created_receipts();
     let batch = receipts
@@ -552,4 +552,271 @@ fn create_vault_installs_the_signers_key_as_a_full_access_key() {
         .filter(|a| matches!(a, MockAction::AddKeyWithFullAccess { .. }))
         .count();
     assert_eq!(n, 1, "the global path must install the owner's key too");
+}
+
+// =====================================================================
+// Agent binding threaded through `new`
+// =====================================================================
+
+/// The agent must survive the hop into the vault's `new` arguments.
+///
+/// Worth testing at this level because the failure is SILENT: a factory that
+/// accepts `agent_pk` and drops it creates a perfectly good vault with no
+/// agent bound, and reports success. The user signs once, is told their AI is
+/// authorised, and discovers otherwise on the first payment.
+#[test]
+fn agent_pk_reaches_the_vault_new_args() {
+    let args = new_args(&alice(), "testnet", root_limits(), root_recipients(), &Some(a_pk()));
+    let v: near_sdk::serde_json::Value =
+        near_sdk::serde_json::from_slice(&args).expect("args are not valid json");
+    assert_eq!(
+        v["agent_pk"],
+        near_sdk::serde_json::json!(String::from(&a_pk())),
+        "the agent key did not reach the vault's new()",
+    );
+}
+
+/// And when there is no agent, the field must be `null` rather than absent or
+/// an empty string — near-sdk decodes `null` to `None`, which is what the
+/// vault's optional parameter expects.
+#[test]
+fn no_agent_serialises_as_null() {
+    let args = new_args(&alice(), "testnet", root_limits(), root_recipients(), &None);
+    let v: near_sdk::serde_json::Value = near_sdk::serde_json::from_slice(&args).unwrap();
+    assert!(v.get("agent_pk").is_some(), "the field must be present");
+    assert!(v["agent_pk"].is_null(), "an absent agent must serialise as null");
+}
+
+/// BOTH CREATION PATHS MUST PRODUCE THE SAME VAULT.
+///
+/// `new_args` exists for exactly this, and for a while only
+/// `create_vault_with_code` called it — `create_vault` kept an inline copy of
+/// the same json. That drift was invisible until `agent_pk` was added, at
+/// which point the global-contract path accepted an agent and silently
+/// dropped it.
+///
+/// A test cannot read the promise's arguments back out of the mocked
+/// receipts, so this pins the thing that made the bug possible: there is ONE
+/// builder, and it is a function both paths call.
+#[test]
+fn there_is_exactly_one_new_args_builder() {
+    let src = include_str!("lib.rs");
+    assert_eq!(
+        src.matches("new_args(&owner, &self.network").count(),
+        2,
+        "both create paths must call new_args; an inline json! copy is how they drift apart",
+    );
+    assert!(
+        !src.contains("\"strict_allocation\": false,\n                    \"root_limits\""),
+        "an inline copy of the new() args has reappeared outside new_args",
+    );
+}
+
+/// Find the batch receipt that creates the vault.
+fn create_batch() -> near_sdk::mock::Receipt {
+    near_sdk::test_utils::get_created_receipts()
+        .into_iter()
+        .find(|r| r.actions.iter().any(|a| matches!(a, MockAction::CreateAccount { .. })))
+        .expect("no receipt contains CreateAccount")
+}
+
+/// THE BINDING IS ONLY HALF AN AGENT.
+///
+/// `bind_virtual_agent` authorises a key against a budget node; it does not
+/// let that key SUBMIT anything. Submitting needs the same key installed as a
+/// NEP-611 gas key on the vault. A vault with the binding and no key produces
+/// an agent that is authorised and unable to act, and the failure surfaces at
+/// the first payment — long after the user was told the setup was done.
+#[test]
+fn an_agent_gets_a_funded_gas_key_in_the_same_batch() {
+    let mut f = ready();
+    let mut b = fctx(alice(), NearToken::from_near(4));
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), Some(a_pk()));
+
+    let batch = create_batch();
+    let gas_key = batch
+        .actions
+        .iter()
+        .find_map(|a| match a {
+            MockAction::AddGasKeyWithFunctionCall { receiver_id, method_names, allowance, .. } => {
+                Some((receiver_id.clone(), method_names.clone(), allowance.clone()))
+            }
+            _ => None,
+        })
+        .expect("no gas key was installed for the agent");
+
+    // Confined to ONE method on ONE receiver. That pair is the real
+    // restriction; the allowance is null for a gas key by design, because the
+    // key's BALANCE is what bounds it.
+    assert_eq!(
+        gas_key.0,
+        vault_id("alice.near", "float.near").unwrap(),
+        "the gas key must target the vault",
+    );
+    assert_eq!(
+        gas_key.1,
+        vec![b"request_payment".to_vec()],
+        "the gas key must be restricted to request_payment and nothing else",
+    );
+    assert_eq!(gas_key.2, None, "a gas key's allowance is null; its balance is the cap");
+
+    let funded = batch
+        .actions
+        .iter()
+        .find_map(|a| match a {
+            MockAction::TransferToGasKey { deposit, .. } => Some(deposit.clone()),
+            _ => None,
+        })
+        .expect("the gas key was installed but never funded — the agent cannot pay");
+    assert_eq!(funded, AGENT_GAS_KEY_FUNDING);
+}
+
+/// NEGATIVE CONTROL. Without an agent there must be no gas key at all — an
+/// unfunded or stray key on a vault is a balance nobody asked for.
+#[test]
+fn no_agent_means_no_gas_key() {
+    let mut f = ready();
+    let mut b = fctx(alice(), NearToken::from_near(4));
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), None);
+
+    let batch = create_batch();
+    assert!(
+        !batch.actions.iter().any(|a| matches!(a, MockAction::AddGasKeyWithFunctionCall { .. })),
+        "a vault created without an agent must not carry a gas key",
+    );
+    assert!(
+        !batch.actions.iter().any(|a| matches!(a, MockAction::TransferToGasKey { .. })),
+        "nothing should be funded when there is no agent",
+    );
+}
+
+/// The SAME deposit must be accepted without an agent.
+///
+/// Without this, `an_agent_raises_the_deposit_floor` proves only that some
+/// deposit is too small — which would stay green if the floor were wrong for
+/// a completely unrelated reason. The pair is what shows the agent is the
+/// thing that moved it.
+#[test]
+fn the_same_deposit_is_enough_without_an_agent() {
+    let mut f = ready();
+    let just_enough = NearToken::from_yoctonear(
+        required().as_yoctonear() + 1_000u128 * 10u128.pow(19),
+    );
+    let mut b = fctx(alice(), just_enough);
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    // Must NOT panic.
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), None);
+}
+
+/// THE DEPOSIT FLOOR MUST COVER THE FUNDING.
+///
+/// `transfer_to_gas_key` moves NEAR OUT of the vault's balance. A floor that
+/// covers only code and state leaves the vault under its storage requirement
+/// the instant the key is funded — the same bricking the floor exists to
+/// prevent, arriving one action later and looking like a contract bug.
+#[test]
+#[should_panic(expected = "DEPOSIT_TOO_SMALL")]
+fn an_agent_raises_the_deposit_floor() {
+    let mut f = ready();
+    // Exactly enough for code + required_deposit, and not a yocto more.
+    let just_enough = NearToken::from_yoctonear(
+        required().as_yoctonear() + 1_000u128 * 10u128.pow(19),
+    );
+    let mut b = fctx(alice(), just_enough);
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    // Without an agent this exact deposit is accepted; with one it must not be.
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), Some(a_pk()));
+}
+
+/// THE GAS KEY MUST BE PAID OUT OF THE DEPOSIT, NOT THE FACTORY'S BALANCE.
+///
+/// Every action in a promise batch is funded by the account that CREATES the
+/// receipt — this factory — regardless of which account the batch acts on. So
+/// forwarding the whole attached deposit to the vault and then calling
+/// `transfer_to_gas_key` spends 0.12 NEAR of the FACTORY'S OWN balance on
+/// every agent vault.
+///
+/// Measured live on testnet 2026-11-03, and the arithmetic was exact. The
+/// factory had 0.07476 free and Meteor refused:
+///
+///   The account fac.floatv4.testnet wouldn't have enough balance to cover
+///   storage, required to have 45239339918679100000000 yoctoNEAR more
+///
+/// 0.07476 + 0.04524 = 0.12000. The factory would have been drained by one
+/// gas key per vault until it fell under its own storage stake and every
+/// create started failing — for everyone, not just the agent ones.
+///
+/// The unit test above could not see this: it asserted the TransferToGasKey
+/// action exists with the right amount, and mocked receipts do not model
+/// whose balance an action spends. So this asserts the CONSERVATION instead —
+/// what leaves the factory must equal what arrived.
+#[test]
+fn the_gas_key_is_funded_from_the_deposit_not_the_factory() {
+    let mut f = ready();
+    let attached = NearToken::from_near(4);
+    let mut b = fctx(alice(), attached);
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), Some(a_pk()));
+
+    let batch = create_batch();
+    let to_vault: u128 = batch
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            MockAction::Transfer { deposit, .. } => Some(deposit.as_yoctonear()),
+            _ => None,
+        })
+        .sum();
+    let to_gas_key: u128 = batch
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            MockAction::TransferToGasKey { deposit, .. } => Some(deposit.as_yoctonear()),
+            _ => None,
+        })
+        .sum();
+
+    assert_eq!(
+        to_vault + to_gas_key,
+        attached.as_yoctonear(),
+        "the factory moved {} yocto but only {} was attached — the difference comes out of \
+         the factory's own balance and eventually breaks its storage stake",
+        to_vault + to_gas_key,
+        attached.as_yoctonear(),
+    );
+    assert_eq!(to_gas_key, AGENT_GAS_KEY_FUNDING.as_yoctonear());
+}
+
+/// Without an agent nothing is held back — the vault gets the whole deposit.
+#[test]
+fn a_bare_vault_receives_the_entire_deposit() {
+    let mut f = ready();
+    let attached = NearToken::from_near(4);
+    let mut b = fctx(alice(), attached);
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), None);
+
+    let to_vault: u128 = create_batch()
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            MockAction::Transfer { deposit, .. } => Some(deposit.as_yoctonear()),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(to_vault, attached.as_yoctonear());
 }

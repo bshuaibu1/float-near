@@ -12,7 +12,36 @@
 //! See `docs/DESIGN-browser-signing-flow.md`.
 
 use near_sdk::json_types::{Base58CryptoHash, Base64VecU8};
-use near_sdk::{env, near, AccountId, CryptoHash, Gas, NearToken, Promise};
+use near_sdk::{env, near, AccountId, CryptoHash, Gas, NearToken, Promise, PublicKey};
+
+/// The method an agent's gas key may call, and nothing else.
+///
+/// Must equal `AGENT_ALLOWED_METHOD` in the vault. Pinned by
+/// `the_agent_gas_key_is_restricted_to_one_method`.
+const AGENT_ALLOWED_METHOD: &str = "request_payment";
+
+/// What an agent's gas key is funded with when one is bound at creation.
+///
+/// A NEP-611 GAS KEY'S BALANCE IS ITS SPENDING CAP — `allowance` is null by
+/// design, so this number is the only thing bounding how much gas the agent
+/// can burn. It is not a fee: it sits on the key and the vault's owner can
+/// reclaim it, since `WithdrawFromGasKey` is account-signed and the vault
+/// carries the owner's full-access key.
+///
+/// 0.12 NEAR ≈ 50 payments, matching `gasKeyFunding({tgas:60, payments:50})`
+/// in create-float: a 50-TGas reservation charged ONCE however many payments
+/// are funded, plus ~0.0012 burned per payment. 50 TGas is the floor —
+/// `MIN_GAS_FOR_DISPATCH` in the vault refuses anything less with
+/// INSUFFICIENT_GAS.
+const AGENT_GAS_KEY_FUNDING: NearToken = NearToken::from_yoctonear(12 * 10u128.pow(22));
+
+/// Parallel nonce lanes on the agent's gas key.
+///
+/// One, matching `float-agent.mjs`. More lanes let an agent submit
+/// concurrently; one makes its payments strictly serial, which is the
+/// conservative default for a key handed out at creation time to an agent
+/// nobody has observed yet.
+const AGENT_GAS_KEY_NONCES: u32 = 1;
 
 /// Enough for the vault's `new`, which writes the root node and config.
 const GAS_FOR_VAULT_NEW: Gas = Gas::from_tgas(30);
@@ -71,6 +100,7 @@ fn new_args(
     network: &str,
     root_limits: near_sdk::serde_json::Value,
     root_recipients: near_sdk::serde_json::Value,
+    agent_pk: &Option<PublicKey>,
 ) -> Vec<u8> {
     near_sdk::serde_json::json!({
         "owner": owner,
@@ -78,6 +108,11 @@ fn new_args(
         "strict_allocation": false,
         "root_limits": root_limits,
         "root_recipients": root_recipients,
+        // Serialises as null when absent, which near-sdk decodes back to
+        // `None`. Sending the field unconditionally keeps one args shape
+        // rather than two, so the vault's `new` never has to tell "omitted"
+        // from "explicitly null" — they mean the same thing here.
+        "agent_pk": agent_pk,
     })
     .to_string()
     .into_bytes()
@@ -172,6 +207,12 @@ impl Factory {
         label: Option<String>,
         root_limits: near_sdk::serde_json::Value,
         root_recipients: near_sdk::serde_json::Value,
+        // Bound to the new vault's root node inside `new`, in this same
+        // batch. It CANNOT be an action on the caller's transaction: that
+        // transaction's receiver is this factory, so an `AddKey` there would
+        // land on the factory itself, and the vault does not exist yet to be
+        // named. See the vault's `new`.
+        agent_pk: Option<PublicKey>,
     ) -> Promise {
         let bytes = code.0.len();
         if bytes == 0 {
@@ -187,20 +228,92 @@ impl Factory {
         // while the account sits below its own storage requirement —
         // LackBalanceForState on the next write, a bricked vault rather than a
         // failed call.
+        //
+        // AND IT SCALES WITH THE AGENT TOO. A gas key's funding is moved out
+        // of the vault's balance by `transfer_to_gas_key`, so a deposit that
+        // covers only code + state leaves the vault below its storage
+        // requirement the moment the key is funded — the same bricking this
+        // floor exists to prevent, arriving one action later.
         let need = self
             .required_deposit
-            .saturating_add(NearToken::from_yoctonear(bytes as u128 * 10u128.pow(19)));
+            .saturating_add(NearToken::from_yoctonear(bytes as u128 * 10u128.pow(19)))
+            .saturating_add(if agent_pk.is_some() {
+                AGENT_GAS_KEY_FUNDING
+            } else {
+                NearToken::from_yoctonear(0)
+            });
         let (owner, vault) = self.begin(&label, need);
         let deposit = env::attached_deposit();
-        Promise::new(vault.clone())
+
+        // THE GAS KEY IS PAID OUT OF THE DEPOSIT, so hold its funding back
+        // from what the vault receives.
+        //
+        // EVERY ACTION IN A PROMISE BATCH IS FUNDED BY THE ACCOUNT THAT
+        // CREATES THE RECEIPT — this factory — no matter which account the
+        // batch acts on. Forwarding the whole deposit and then calling
+        // `transfer_to_gas_key` therefore spends 0.12 of the FACTORY'S OWN
+        // balance per agent vault, draining it until it falls under its own
+        // storage stake and every create begins failing, agent or not.
+        //
+        // Measured live on testnet 2026-11-03: the factory had 0.07476 free
+        // and Meteor refused the transaction with "wouldn't have enough
+        // balance to cover storage, required to have 45239339918679100000000
+        // yoctoNEAR more". 0.07476 + 0.04524 = 0.12000, exactly.
+        //
+        // `begin` has already rejected any deposit below `need`, which
+        // includes this funding, so the subtraction cannot underflow — but
+        // `saturating_sub` costs nothing and an underflow here would transfer
+        // a colossal number rather than panic.
+        let to_vault = if agent_pk.is_some() {
+            deposit.saturating_sub(AGENT_GAS_KEY_FUNDING)
+        } else {
+            deposit
+        };
+
+        let batch = Promise::new(vault.clone())
             .create_account()
-            .transfer(deposit)
+            .transfer(to_vault)
             .deploy_contract(code.0)
             // THE VAULT NEEDS A SIGNER OF ITS OWN. See `create_vault`.
-            .add_full_access_key(env::signer_account_pk())
+            .add_full_access_key(env::signer_account_pk());
+
+        // THE BINDING IS ONLY HALF AN AGENT.
+        //
+        // `bind_virtual_agent` maps the key to a budget node, which is what
+        // authorises a payment. It does NOT let the agent SUBMIT one: that
+        // needs the same key installed as a NEP-611 gas key on the vault, and
+        // funded, because a gas key's balance is what it spends on gas. A
+        // vault with the binding but no key produces an agent that is
+        // authorised and unable to act — and the failure surfaces at the
+        // first payment, long after the user was told they were done.
+        //
+        // This mirrors `float-agent.mjs` exactly: bind, add a function-call
+        // gas key restricted to one method on one receiver, fund it. The
+        // difference is only that all three happen inside the batch the
+        // browser already signed, which is the entire feature.
+        //
+        // `Allowance::Unlimited` is not a loophole. For a gas key the
+        // allowance field is null by design and the BALANCE is the cap, so
+        // the bound is `AGENT_GAS_KEY_FUNDING` — and the restriction that
+        // matters is the receiver and method, which confine this key to
+        // `request_payment` on this vault and nothing else, on any account.
+        let batch = match &agent_pk {
+            Some(pk) => batch
+                .add_gas_key_allowance_function_call(
+                    pk.clone(),
+                    AGENT_GAS_KEY_NONCES,
+                    near_sdk::Allowance::Unlimited,
+                    vault.clone(),
+                    AGENT_ALLOWED_METHOD.to_string(),
+                )
+                .transfer_to_gas_key(pk.clone(), AGENT_GAS_KEY_FUNDING),
+            None => batch,
+        };
+
+        batch
             .function_call(
                 "new".to_string(),
-                new_args(&owner, &self.network, root_limits, root_recipients),
+                new_args(&owner, &self.network, root_limits, root_recipients, &agent_pk),
                 NearToken::from_yoctonear(0),
                 GAS_FOR_VAULT_NEW,
             )
@@ -287,6 +400,7 @@ impl Factory {
         label: Option<String>,
         root_limits: near_sdk::serde_json::Value,
         root_recipients: near_sdk::serde_json::Value,
+        agent_pk: Option<PublicKey>,
     ) -> Promise {
         // `begin`, NOT a second copy of its checks. This path used to duplicate
         // the pause gate, the deposit gate and the label handling inline —
@@ -349,15 +463,18 @@ impl Factory {
                 // The recipients matter as much as the caps: a root with
                 // `None` means "inherit from the nearest ancestor", the root
                 // has none, and every payment comes back NO_RECIPIENTS_SET.
-                near_sdk::serde_json::json!({
-                    "owner": owner,
-                    "network": self.network,
-                    "strict_allocation": false,
-                    "root_limits": root_limits,
-                    "root_recipients": root_recipients,
-                })
-                .to_string()
-                .into_bytes(),
+                // `new_args`, NOT a second inline copy. This path built its own
+                // `json!` block while `create_vault_with_code` called the
+                // helper — so the helper whose entire doc comment is "built
+                // once so both creation paths produce an identical vault" was
+                // used by exactly one of them.
+                //
+                // That latent duplication became a real bug the moment
+                // `agent_pk` was added: this path accepted the parameter and
+                // silently dropped it, producing a vault with no agent bound
+                // while reporting success. The compiler's unused-variable
+                // warning is the only thing that caught it.
+                new_args(&owner, &self.network, root_limits, root_recipients, &agent_pk),
                 NearToken::from_yoctonear(0),
                 GAS_FOR_VAULT_NEW,
             )

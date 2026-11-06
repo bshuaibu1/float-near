@@ -75,7 +75,18 @@ export interface ApiAgent {
   walletAddress: string;
   createdAt: string;
   status: "active" | "killed";
+  /** The node's own label. NO tree glyphs, no indentation. */
   displayName: string;
+  /**
+   * How deep in the budget tree this node sits. Root is 0.
+   *
+   * A NUMBER, deliberately. Depth used to be encoded into displayName as
+   * U+00A0 padding plus a box-drawing glyph, and every invisible-character
+   * bug in this project traces back to that: regexes that silently matched
+   * nothing, `btoa` throwing on the glyph, agent names carrying invisible
+   * padding into prose. A consumer that wants indentation can multiply.
+   */
+  depth: number;
   lifetimeSpent?: string;
   lifetimePayments?: number;
   walletBalance?: string | null;
@@ -86,7 +97,24 @@ export interface ApiAgent {
     perTxLimit?: string;
     cooldownSeconds?: number;
     blockUnknown?: boolean;
+    /** The EFFECTIVE allowlist — this node's own, or the nearest ancestor's. */
     allowedAddresses?: string[];
+    /**
+     * This node's OWN list, present only when it has one.
+     *
+     * Reported separately from `allowedAddresses` because the two answer
+     * different questions, and an editor needs both. `allowedAddresses` says
+     * "who can be paid from here", which is what a reader wants. This says
+     * "who is written on THIS node", which is what a writer needs — because
+     * saving a list REPLACES the inherited one rather than extending it, so
+     * an editor that only sees the effective list would show a parent's
+     * addresses and silently offer to copy them onto the child.
+     *
+     * Absent means inheriting. That is a different state from an empty list,
+     * which the contract rejects outright: `validate_recipients` fails on
+     * `is_empty()` with "1..=32 recipients, or None to inherit".
+     */
+    ownAllowedAddresses?: string[];
   } | null;
 }
 
@@ -125,6 +153,7 @@ export function nodeToApiAgent(n: VaultNode, usage: DayUsage, decimals: number):
     createdAt: new Date(0).toISOString(),
     status: n.frozen ? "killed" : "active",
     displayName: n.label,
+    depth: 0,
     dailySpent: fromBaseUnits(used, decimals),
     dailyBudgetUsedPercent: cap > 0n ? Number((used * 100n) / cap) : 0,
     walletBalance: null, // the VAULT holds the tokens; an agent account holds none
@@ -155,13 +184,22 @@ export function treeToApiAgents(
   const byId = new Map(tree.map((n) => [n.id, n]));
   return tree.map((n) => {
     const a = nodeToApiAgent(n, budgets.get(n.id) ?? { executed: "0", pending: "0" }, decimals);
-    a.displayName = indent(n.path.length, n.label);
+    a.depth = n.path.length;
 
     // The EFFECTIVE allowlist, resolved the way the contract resolves it.
     // Reporting the raw `recipients` field made every inheriting node look
     // unrestricted in the UI ("Open x402"), which is the opposite of true:
     // they inherit the root's allowlist and the contract enforces it.
-    a.policy = { ...a.policy, allowedAddresses: effectiveRecipients(n, byId) };
+    // BOTH, deliberately. `allowedAddresses` is what the contract will
+    // enforce here; `ownAllowedAddresses` is what is actually written on this
+    // node, and is undefined when it inherits. An editor that cannot tell
+    // them apart will offer to "keep" a parent's list and, by saving it,
+    // detach the child from the parent forever.
+    a.policy = {
+      ...a.policy,
+      allowedAddresses: effectiveRecipients(n, byId),
+      ownAllowedAddresses: n.recipients?.length ? n.recipients : undefined,
+    };
 
     const lt = lifetime.get(n.id);
     if (lt) {
@@ -172,19 +210,6 @@ export function treeToApiAgents(
   });
 }
 
-/**
- * Depth prefix using NON-BREAKING spaces.
- *
- * Plain spaces look right in a test assertion and vanish on screen: HTML
- * collapses leading whitespace, so depth-2 rendered identically to depth-1 and
- * the hierarchy — the entire point of the view — was invisible. The unit test
- * was green while the screen was wrong, which is why this is asserted against
- * the rendered character and not a trimmed string.
- */
-export function indent(depth: number, label: string): string {
-  if (depth === 0) return label;
-  return `${"\u00a0".repeat(3 * (depth - 1))}└─ ${label}`;
-}
 
 /** Mirrors the contract's `effective_recipients`: nearest ancestor with a list. */
 export function effectiveRecipients(

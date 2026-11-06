@@ -44,3 +44,11 @@ packages/create-float/SKILL.md
 #
 # Regenerate with: node scripts/print-mcp-command.mjs
 .mcp.json
+
+# Scratch build dir for a second dev server (see next.config.ts)
+.next-preview/
+
+# Local agent state, not project source.
+# .claude/worktrees holds a FULL COPY of this repository - 1.2 GB measured -
+# so committing this directory would add the repo to itself.
+.claude/

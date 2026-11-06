@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
@@ -12,7 +13,7 @@ import {
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "http://127.0.0.1:8787";
+const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 // Includes the Base rail's two terminal states. "signed" means the vault
 // authorized and signed the transfer; "delivered" means a relayer reported it
 // landed. Both are approved payments — omitting them showed "4 transactions,
@@ -41,19 +42,19 @@ function computeDailySpend(activity: ActivityItem[]): { spend: number; label: st
   });
 }
 
-type Period = "24h" | "7d" | "30d";
 
 type ApiAgent = {
   agentId: string;
   /** The tree label with its depth prefix, e.g. "   └─ r1". */
   displayName?: string | null;
+  /** Depth in the budget tree, root 0. A number, not characters. */
+  depth?: number;
   walletAddress: string;
   createdAt: string;
   lifetimeSpent?: string;
   lifetimePayments?: number;
   dailySpent?: string;
   dailyBudgetUsedPercent?: number;
-  walletBalance?: string | null;
   policy?: { dailyBudget?: string };
 };
 type ActivityItem = { id: string; agent: string; venue: string; modelName?: string; amount: string; rail: string; time: string; status: string; };
@@ -99,17 +100,16 @@ type Treasury = { walletAddress: string; amount: string; currency: string; decim
 type DashboardData = { treasury: Treasury | null; agents: ApiAgent[]; transactionStats?: TransactionStats; recentActivity: ActivityItem[]; };
 
 const card   = "bg-white rounded-lg p-6" as const;
-const border = { border: "1px solid #EAEAEA" } as const;
+const border = { border: `1px solid ${LINE}` } as const;
 
-function utilColor(pct: number) { return pct >= 80 ? "#9F2F2D" : pct >= 50 ? "#92400e" : "#346538"; }
-function utilTrack(pct: number) { return pct >= 80 ? "#FDEBEC" : pct >= 50 ? "#FEF3C7" : "#EDF3EC"; }
+function utilColor(pct: number) { return pct >= 80 ? DANGER : pct >= 50 ? WARN : SUCCESS; }
+function utilTrack(pct: number) { return pct >= 80 ? DANGER_BG : pct >= 50 ? WARN_BG : SUCCESS_BG; }
 
 export default function Overview() {
   const { walletAddress } = useWallet();
   const ownerSessionAvailable = useOwnerSessionAvailable();
   const dashboardAuthorized = Boolean(walletAddress) || ownerSessionAvailable;
   const [mounted, setMounted]   = useState(false);
-  const [period, setPeriod]     = useState<Period>("24h");
   const [data, setData]         = useState<DashboardData | null>(null);
   const [loading, setLoading]   = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -163,21 +163,29 @@ export default function Overview() {
 
       <div className="flex items-center justify-between mb-8">
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-widest mb-1" style={{ color:"#787774" }}>Agent Console</p>
-          <h2 className="text-[22px] font-semibold tracking-tight" style={{ color:"#111111" }}>Overview</h2>
+          <p className="text-[11px] font-medium uppercase tracking-widest mb-1 text-muted">Agent Console</p>
+          <h2 className="text-[22px] font-semibold tracking-tight text-ink">Overview</h2>
         </div>
-        <div className="flex items-center rounded-md overflow-hidden" style={{ border:"1px solid #EAEAEA" }}>
-          {(["24h","7d","30d"] as Period[]).map(p => (
-            <button key={p} onClick={() => setPeriod(p)}
-              className="px-3 py-1.5 text-[12px] font-medium transition-colors duration-150"
-              style={period === p ? { background:"#111111", color:"#fff" } : { background:"#fff", color:"#787774" }}
-            >{p}</button>
-          ))}
-        </div>
+        {/* THE 24h/7d/30d TOGGLE IS GONE.
+            `period` was read in exactly one place — deciding which button
+            looked selected. It reached no fetch, no filter and no sum, so
+            clicking it moved a highlight and nothing else.
+
+            That made it worse than the dead columns beside it: those showed
+            ABSENT data, this one implied the numbers had changed when they
+            had not. Every figure on this page is the contract's per-UTC-day
+            ledger, so the honest label is the one now in the heading.
+
+            Real ranges are possible — the contract keeps a ledger per day —
+            but that is adapter work, not a control to leave switched on in
+            the meantime. */}
+        <span className="rounded-md border border-line bg-card px-3 py-1.5 text-[12px] font-medium text-muted">
+          Today · UTC
+        </span>
       </div>
 
       {loadError ? (
-        <div className="mb-4 rounded-lg px-4 py-3 text-[13px]" style={{ border: "1px solid #F5C2C0", background: "#FDEBEC", color: "#9F2F2D" }}>
+        <div className="mb-4 rounded-lg px-4 py-3 text-[13px]" style={{ border: "1px solid #F5C2C0", background: DANGER_BG, color: DANGER }}>
           {loadError}
         </div>
       ) : null}
@@ -185,40 +193,40 @@ export default function Overview() {
       {/* 4 stat cards */}
       <div className="grid grid-cols-4 gap-3 mb-3">
         <div className={card} style={border}>
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3" style={{ color:"#787774" }}>Active Agents</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Active Agents</p>
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none" style={{ color:"#111111" }}>{dash(agents.length)}</span>
+            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{dash(agents.length)}</span>
           </div>
-          <p className="text-[12px]" style={{ color:"#787774" }}>{dashboardAuthorized ? "linked to this account" : "connect account"}</p>
+          <p className="text-[12px] text-muted">{dashboardAuthorized ? "linked to this account" : "connect account"}</p>
         </div>
 
         <div className={card} style={border}>
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3" style={{ color:"#787774" }}>Total Spent</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Total Spent</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none" style={{ color:"#111111" }}>{loading ? "—" : `$${totalSpent.toFixed(2)}`}</span>
+            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{loading ? "—" : `$${totalSpent.toFixed(2)}`}</span>
           </div>
-          <p className="text-[12px]" style={{ color:"#787774" }}>lifetime, all agents</p>
+          <p className="text-[12px] text-muted">lifetime, all agents</p>
         </div>
 
         <div className={card} style={border}>
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3" style={{ color:"#787774" }}>Transactions</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Transactions</p>
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none" style={{ color:"#111111" }}>{dash(txCount)}</span>
+            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{dash(txCount)}</span>
           </div>
-          <p className="text-[12px]" style={{ color:"#787774" }}>
+          <p className="text-[12px] text-muted">
             {txCount > 0
-              ? <><span style={{ color:"#346538" }}>{txApproved} approved</span> <span style={{ color:"#787774" }}>/</span> <span style={{ color:"#9F2F2D" }}>{txBlocked} blocked{txFailed > 0 ? ` / ${txFailed} failed` : ""}</span></>
+              ? <><span style={{ color:SUCCESS }}>{txApproved} approved</span> <span className="text-muted">/</span> <span style={{ color:DANGER }}>{txBlocked} blocked{txFailed > 0 ? ` / ${txFailed} failed` : ""}</span></>
               : "no activity yet"
             }
           </p>
         </div>
 
         <div className={card} style={border}>
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3" style={{ color:"#787774" }}>Avg TX Size</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Avg TX Size</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none" style={{ color:"#111111" }}>{loading ? "—" : `$${avgTx}`}</span>
+            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{loading ? "—" : `$${avgTx}`}</span>
           </div>
-          <p className="text-[12px]" style={{ color:"#787774" }}>per payment</p>
+          <p className="text-[12px] text-muted">per payment</p>
         </div>
       </div>
 
@@ -230,15 +238,15 @@ export default function Overview() {
               daily_cap - executed - pending for the root node. Labelling it
               "USDC Balance" made a 100/day cap look like the whole treasury.
               The real balance is on the Fund page. */}
-          <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5" style={{ color:"#787774" }}>How much can still be spent today</p>
-          <p className="text-[12px] mb-4" style={{ color:"#A0A09A" }}>This is the shared limit for everyone. Agents draw from it.</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5 text-muted">How much can still be spent today</p>
+          <p className="text-[12px] mb-4 text-faint">This is the shared limit for everyone. Agents draw from it.</p>
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-[36px] font-semibold tracking-tight leading-none" style={{ color:"#111111" }}>
+            <span className="text-[36px] font-semibold tracking-tight leading-none text-ink">
               {loading ? "—" : balance.toLocaleString([], { minimumFractionDigits:2, maximumFractionDigits:2 })}
             </span>
-            <span className="text-sm font-medium" style={{ color:"#787774" }}>USDC</span>
+            <span className="text-sm font-medium text-muted">USDC</span>
           </div>
-          <p className="text-[12px] mb-6" style={{ color:"#787774" }}>
+          <p className="text-[12px] mb-6 text-muted">
             {treasury ? `Vault · ${treasury.walletAddress}` : "Vault adapter unreachable"}
           </p>
           <div className="flex items-end gap-[2px] h-10 group/chart">
@@ -249,7 +257,7 @@ export default function Overview() {
                 <div key={i} className="relative flex-1 flex flex-col justify-end">
                   {/* tooltip */}
                   <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 pointer-events-none opacity-0 group-hover/chart:opacity-0 peer-hover:opacity-100 z-10">
-                    <div className="px-2 py-1 rounded-md text-[10px] font-mono whitespace-nowrap" style={{ background:"#111111", color:"#fff" }}>
+                    <div className="px-2 py-1 rounded-md text-[10px] font-mono whitespace-nowrap" style={{ background:INK, color:"#fff" }}>
                       {b.label}: ${b.spend.toFixed(3)}
                     </div>
                   </div>
@@ -260,8 +268,8 @@ export default function Overview() {
                       height: mounted ? `${Math.max(b.pct, hasSpend ? 4 : 0)}%` : "0%",
                       minHeight: mounted && hasSpend ? 3 : 0,
                       background: isToday
-                        ? (hasSpend ? "#346538" : "#EAEAEA")
-                        : (hasSpend ? "#346538CC" : "#EAEAEA"),
+                        ? (hasSpend ? SUCCESS : LINE)
+                        : (hasSpend ? SUCCESS_SOFT : LINE),
                       transition: `height 600ms cubic-bezier(0.16,1,0.3,1) ${i * 30}ms`,
                     }}
                   />
@@ -270,64 +278,64 @@ export default function Overview() {
             })}
           </div>
           <div className="flex justify-between mt-2">
-            <p className="text-[10px] font-mono" style={{ color:"#787774" }}>{bars[0]?.label}</p>
-            <p className="text-[10px] font-mono" style={{ color:"#787774" }}>Today</p>
+            <p className="text-[10px] font-mono text-muted">{bars[0]?.label}</p>
+            <p className="text-[10px] font-mono text-muted">Today</p>
           </div>
         </div>
 
         <div className={`col-span-12 md:col-span-4 ${card}`} style={{ ...border, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-widest mb-4" style={{ color:"#787774" }}>Quick Actions</p>
+            <p className="text-[10px] font-semibold uppercase tracking-widest mb-4 text-muted">Quick Actions</p>
 
             <div className="flex flex-col" style={{ gap: 8 }}>
               <Link href="/fund"
-                className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-150 hover:bg-[#FBFBFA] group"
-                style={{ border:"1px solid #EAEAEA" }}
+                className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-150 hover:bg-canvas group"
+                style={{ border:`1px solid ${LINE}` }}
               >
-                <div className="flex items-center justify-center w-8 h-8 rounded-md shrink-0" style={{ background:"#EDF3EC" }}>
+                <div className="flex items-center justify-center w-8 h-8 rounded-md shrink-0" style={{ background:SUCCESS_BG }}>
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path d="M7 2v10M2 7h10" stroke="#346538" strokeWidth="1.8" strokeLinecap="round"/>
+                    <path d="M7 2v10M2 7h10" stroke={SUCCESS} strokeWidth="1.8" strokeLinecap="round"/>
                   </svg>
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium" style={{ color:"#111111" }}>Fund the vault</p>
-                  <p className="text-[11px]" style={{ color:"#787774" }}>Send USDC to the vault address</p>
+                  <p className="text-[13px] font-medium text-ink">Fund the vault</p>
+                  <p className="text-[11px] text-muted">Send USDC to the vault address</p>
                 </div>
-                <ArrowRight size={12} className="ml-auto shrink-0" style={{ color:"#EAEAEA" }} />
+                <ArrowRight size={12} className="ml-auto shrink-0 text-line" />
               </Link>
 
               <Link href="/api-keys"
-                className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-150 hover:bg-[#FBFBFA]"
-                style={{ border:"1px solid #EAEAEA" }}
+                className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-150 hover:bg-canvas"
+                style={{ border:`1px solid ${LINE}` }}
               >
-                <div className="flex items-center justify-center w-8 h-8 rounded-md shrink-0" style={{ background:"#F5F5F4" }}>
+                <div className="flex items-center justify-center w-8 h-8 rounded-md shrink-0 bg-chip">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <circle cx="7" cy="7" r="5.5" stroke="#111111" strokeWidth="1.5"/>
-                    <path d="M7 4.5v5M4.5 7h5" stroke="#111111" strokeWidth="1.5" strokeLinecap="round"/>
+                    <circle cx="7" cy="7" r="5.5" stroke={INK} strokeWidth="1.5"/>
+                    <path d="M7 4.5v5M4.5 7h5" stroke={INK} strokeWidth="1.5" strokeLinecap="round"/>
                   </svg>
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium" style={{ color:"#111111" }}>Agent keys</p>
-                  <p className="text-[11px]" style={{ color:"#787774" }}>Restricted keys, read from the chain</p>
+                  <p className="text-[13px] font-medium text-ink">Agent keys</p>
+                  <p className="text-[11px] text-muted">Restricted keys, read from the chain</p>
                 </div>
-                <ArrowRight size={12} className="ml-auto shrink-0" style={{ color:"#EAEAEA" }} />
+                <ArrowRight size={12} className="ml-auto shrink-0 text-line" />
               </Link>
 
               <Link href="/activity"
-                className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-150 hover:bg-[#FBFBFA]"
-                style={{ border:"1px solid #EAEAEA" }}
+                className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-150 hover:bg-canvas"
+                style={{ border:`1px solid ${LINE}` }}
               >
-                <div className="flex items-center justify-center w-8 h-8 rounded-md shrink-0" style={{ background:"#F5F5F4" }}>
+                <div className="flex items-center justify-center w-8 h-8 rounded-md shrink-0 bg-chip">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <rect x="1.5" y="3.5" width="11" height="7" rx="1.5" stroke="#111111" strokeWidth="1.5"/>
-                    <path d="M1.5 6h11" stroke="#111111" strokeWidth="1.5"/>
+                    <rect x="1.5" y="3.5" width="11" height="7" rx="1.5" stroke={INK} strokeWidth="1.5"/>
+                    <path d="M1.5 6h11" stroke={INK} strokeWidth="1.5"/>
                   </svg>
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium" style={{ color:"#111111" }}>View Activity</p>
-                  <p className="text-[11px]" style={{ color:"#787774" }}>See all agent transactions</p>
+                  <p className="text-[13px] font-medium text-ink">View Activity</p>
+                  <p className="text-[11px] text-muted">See all agent transactions</p>
                 </div>
-                <ArrowRight size={12} className="ml-auto shrink-0" style={{ color:"#EAEAEA" }} />
+                <ArrowRight size={12} className="ml-auto shrink-0 text-line" />
               </Link>
             </div>
           </div>
@@ -336,8 +344,8 @@ export default function Overview() {
           {!loading && balance < 1 && (
             <div className="flex items-center gap-1.5 mt-4 px-3 py-2 rounded-md" style={{ background:"#FFF8E1", border:"1px solid #F5E4A0" }}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M6 1.5L10.5 10H1.5L6 1.5z" stroke="#B97B10" strokeWidth="1.3" strokeLinejoin="round"/>
-                <path d="M6 5v2M6 8.5h.01" stroke="#B97B10" strokeWidth="1.3" strokeLinecap="round"/>
+                <path d="M6 1.5L10.5 10H1.5L6 1.5z" stroke={WARN} strokeWidth="1.3" strokeLinejoin="round"/>
+                <path d="M6 5v2M6 8.5h.01" stroke={WARN} strokeWidth="1.3" strokeLinecap="round"/>
               </svg>
               <p className="text-[11px] font-medium" style={{ color:"#7A5000" }}>Low balance — top up to keep agents running</p>
             </div>
@@ -347,58 +355,55 @@ export default function Overview() {
 
       {/* Agent Overview */}
       <div className="bg-white rounded-lg overflow-hidden mb-6" style={border}>
-        <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom:"1px solid #EAEAEA" }}>
-          <p className="text-[13px] font-semibold" style={{ color:"#111111" }}>Agent Overview</p>
-          <Link href="/agents" className="flex items-center gap-1 text-[12px] transition-colors duration-150" style={{ color:"#787774" }}>
+        <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom:`1px solid ${LINE}` }}>
+          <p className="text-[13px] font-semibold text-ink">Today's spend by agent</p>
+          <Link href="/agents" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted">
             Manage agents <ArrowRight size={12}/>
           </Link>
         </div>
-        <div className="grid grid-cols-[1fr_7rem_5rem_6rem_10rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider" style={{ color:"#787774", borderBottom:"1px solid #EAEAEA" }}>
-          <span>Agent</span><span>Wallet</span><span className="text-right">Balance</span><span className="text-right">Spent today</span><span className="text-center">Daily budget</span>
+        {/* WALLET AND BALANCE ARE GONE.
+            Both were Solana-era columns, where every agent held its own
+            wallet. On NEAR a virtual agent owns nothing: its key is a gas key
+            ON THE VAULT, and the money is the vault's. The adapter has no
+            code that populates `walletAddress` or `walletBalance` — they were
+            rendering "···" and "— USDC" forever, which reads as a number
+            that has not loaded yet rather than one that is never coming. */}
+        <div className="grid grid-cols-[1fr_7rem_10rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted border-b border-line">
+          <span>Agent</span><span className="text-right">Spent today</span><span className="text-center">Daily budget</span>
         </div>
         {!dashboardAuthorized ? (
-          <div className="px-6 py-10 text-[13px]" style={{ color:"#787774" }}>Connect your account to view agents.</div>
+          <div className="px-6 py-10 text-[13px] text-muted">Connect your account to view agents.</div>
         ) : loading ? (
-          <div className="px-6 py-10 text-[13px]" style={{ color:"#787774" }}>Loading agents...</div>
+          <div className="px-6 py-10 text-[13px] text-muted">Loading agents...</div>
         ) : agents.length === 0 ? (
-          <div className="px-6 py-10 text-[13px]" style={{ color:"#787774" }}>No agents linked to this account yet.</div>
+          <div className="px-6 py-10 text-[13px] text-muted">No agents linked to this account yet.</div>
         ) : (
           <div>
-            {agents.map((a, i) => {
+            {agents.map((a) => {
               const spentToday = parseFloat(a.dailySpent || "0");
-              const bal    = a.walletBalance != null ? parseFloat(a.walletBalance) : null;
               const pct    = Math.min(a.dailyBudgetUsedPercent ?? 0, 100);
               const col    = utilColor(pct);
               const trk    = utilTrack(pct);
-              const lowBal = bal !== null && bal < 0.01;
               return (
                 <div key={a.agentId}
-                  className="grid grid-cols-[1fr_7rem_5rem_6rem_10rem] gap-4 items-center px-6 py-3 hover:bg-[#FBFBFA] transition-colors duration-100"
-                  style={{ borderBottom: i < agents.length-1 ? "1px solid #EAEAEA" : "none" }}
+                  className="grid grid-cols-[1fr_7rem_10rem] gap-4 items-center px-6 py-3 border-b border-line last:border-b-0 hover:bg-canvas transition-colors duration-100"
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
+                  <div
+                    className="flex items-center gap-2.5 min-w-0"
+                    style={{ paddingLeft: `${(a.depth ?? 0) * 1.1}rem` }}
+                  >
                     <div className="relative shrink-0">
                       <AgentAvatar seed={a.agentId} size={24} animated />
-                      <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white" style={{ background:"#346538" }}/>
+                      <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white" style={{ background:SUCCESS }}/>
                     </div>
-                    {/* displayName, not agentId: the adapter puts the tree
-                        label here with its depth prefix ("root", "└─ research",
-                        "   └─ r1"). agentId is `node-<id>` for a team node,
-                        which rendered as "node-1" and hid the hierarchy. */}
-                    <span className="text-[13px] font-medium truncate" style={{ color:"#111111" }}>
+                    {/* displayName, not agentId: agentId is `node-<id>` for a team
+                        node, which rendered as "node-1" and hid who the row was.
+                        Depth arrives separately as a number and is drawn as padding. */}
+                    <span className="text-[13px] font-medium truncate text-ink">
                       {a.displayName ?? a.agentId}
                     </span>
                   </div>
-                  <span className="text-[11px] font-mono" style={{ color:"#787774" }}>{a.walletAddress.slice(0,6)}···</span>
-                  <span
-                    className="text-[12px] font-mono text-right tabular-nums"
-                    style={{ color: lowBal ? "#9F2F2D" : "#111111" }}
-                    title={lowBal ? "Low balance — agent may fail payments" : undefined}
-                  >
-                    {bal !== null ? bal.toFixed(2) : "—"}
-                    <span className="text-[10px] ml-0.5" style={{ color: "#A0A09A" }}>USDC</span>
-                  </span>
-                  <span className="text-[12px] font-mono text-right tabular-nums" style={{ color:"#111111" }}>${spentToday.toFixed(2)}</span>
+                  <span className="text-[12px] font-mono text-right tabular-nums text-ink">${spentToday.toFixed(2)}</span>
                   <div className="flex items-center gap-2">
                     <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: trk }}>
                       <div className="h-full rounded-full transition-all duration-500" style={{ width:`${pct}%`, background: col }}/>
@@ -414,20 +419,20 @@ export default function Overview() {
 
       {/* Recent Activity */}
       <div className="bg-white rounded-lg overflow-hidden" style={border}>
-        <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom:"1px solid #EAEAEA" }}>
+        <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom:`1px solid ${LINE}` }}>
           <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background:"#346538" }}/>
-            <p className="text-[13px] font-semibold" style={{ color:"#111111" }}>Recent Activity</p>
+            <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background:SUCCESS }}/>
+            <p className="text-[13px] font-semibold text-ink">Recent Activity</p>
           </div>
-          <Link href="/activity" className="flex items-center gap-1 text-[12px] transition-colors duration-150" style={{ color:"#787774" }}>
+          <Link href="/activity" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted">
             View all <ArrowRight size={12}/>
           </Link>
         </div>
-        <div className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider" style={{ color:"#787774", borderBottom:"1px solid #EAEAEA" }}>
+        <div className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider" style={{ color:MUTED, borderBottom:`1px solid ${LINE}` }}>
           <span>Time</span><span>Agent</span><span>Route</span><span className="text-right">Amount</span><span className="text-center">Rail</span><span className="text-right">Status</span>
         </div>
         {activity.length === 0 ? (
-          <div className="px-6 py-10 text-[13px]" style={{ color:"#787774" }}>
+          <div className="px-6 py-10 text-[13px] text-muted">
             {dashboardAuthorized ? "No payment activity yet." : "Connect account to view activity."}
           </div>
         ) : (
@@ -436,20 +441,20 @@ export default function Overview() {
               const approved = APPROVED.includes(r.status?.toLowerCase());
               return (
                 <div key={r.id}
-                  className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 items-center px-6 py-3 transition-colors duration-100 hover:bg-[#FBFBFA]"
-                  style={{ borderBottom: i < Math.min(activity.length,6)-1 ? "1px solid #EAEAEA" : "none", opacity: mounted ? 1 : 0, transition:`opacity 400ms cubic-bezier(0.16,1,0.3,1) ${200+i*60}ms` }}
+                  className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 items-center px-6 py-3 transition-colors duration-100 hover:bg-canvas"
+                  style={{ borderBottom: i < Math.min(activity.length,6)-1 ? `1px solid ${LINE}` : "none", opacity: mounted ? 1 : 0, transition:`opacity 400ms cubic-bezier(0.16,1,0.3,1) ${200+i*60}ms` }}
                 >
-                  <span className="text-[12px] font-mono tabular-nums" style={{ color:"#787774" }}>{formatTime(r.time)}</span>
+                  <span className="text-[12px] font-mono tabular-nums text-muted">{formatTime(r.time)}</span>
                   <div className="flex items-center gap-1.5 min-w-0">
                     <AgentAvatar seed={r.agent} size={16} animated />
-                    <span className="text-[12px] font-mono truncate" style={{ color:"#111111" }}>{r.agent.slice(0,8)}…</span>
+                    <span className="text-[12px] font-mono truncate text-ink">{r.agent.slice(0,8)}…</span>
                   </div>
-                  <span className="text-[13px] font-medium truncate" style={{ color:"#111111" }}>{resolveVenue(r.venue, r.modelName)}</span>
-                  <span className="text-[12px] font-mono text-right tabular-nums" style={{ color:"#111111" }}>{r.amount} <span style={{ color:"#787774" }}>USDC</span></span>
-                  <span className="text-[11px] uppercase tracking-wider text-center font-medium" style={{ color:"#787774" }}>{resolveRail(r.rail)}</span>
+                  <span className="text-[13px] font-medium truncate text-ink">{resolveVenue(r.venue, r.modelName)}</span>
+                  <span className="text-[12px] font-mono text-right tabular-nums text-ink">{r.amount} <span className="text-muted">USDC</span></span>
+                  <span className="text-[11px] uppercase tracking-wider text-center font-medium text-muted">{resolveRail(r.rail)}</span>
                   <div className="flex justify-end">
                     <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
-                      style={approved ? { background:"#EDF3EC", color:"#346538" } : { background:"#FDEBEC", color:"#9F2F2D" }}
+                      style={approved ? { background:SUCCESS_BG, color:SUCCESS } : { background:DANGER_BG, color:DANGER }}
                     >{r.status}</span>
                   </div>
                 </div>

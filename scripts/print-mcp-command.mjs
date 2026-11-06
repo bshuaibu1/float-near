@@ -50,7 +50,7 @@ const RPC =
   process.env.RPC ??
   (NETWORK === "mainnet" ? "https://free.rpc.fastnear.com" : "https://test.rpc.fastnear.com");
 const TOKEN = process.env.TOKEN ?? (NETWORK === "mainnet" ? "" : "usdc.fakes.testnet");
-const APP_URL = process.env.APP_URL ?? "http://127.0.0.1:8787";
+const APP_URL = process.env.APP_URL ?? "http://127.0.0.1:8080";
 
 const env = {
   NEAR_VAULT_CONTRACT: VAULT,

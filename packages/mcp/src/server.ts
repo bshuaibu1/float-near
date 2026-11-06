@@ -41,6 +41,7 @@ import { fromBaseUnits, toBaseUnits } from "./amounts.js";
 import {
   DEFAULT_GAS_TGAS,
   planAddNode,
+  planAddRole,
   planBindVirtualAgent,
   planUnbindVirtualAgent,
   planFreezeNode,
@@ -56,6 +57,22 @@ import {
   planRejectPayment,
 } from "./payloads.js";
 import { accountExists, DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
+import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
+import { dirname } from "node:path";
+
+import { listRoles, selectRole } from "./roles.js";
+
+/**
+ * A decimal NEAR string to yoctoNEAR, without floating point.
+ *
+ * `Number("0.12") * 1e24` is 1.2000000000000001e23 — a figure that becomes a
+ * deposit, so the drift lands on chain. Parsed as text instead.
+ */
+function toYoctoNear(n: string): string {
+  const m = /^(\d+)(?:\.(\d{1,24}))?$/.exec(n.trim());
+  if (!m) throw new Error(`"${n}" is not a NEAR amount (digits, optional decimal point)`);
+  return (BigInt(m[1]!) * 10n ** 24n + BigInt((m[2] ?? "").padEnd(24, "0"))).toString();
+}
 import { buildCreatePlan, FACTORY_BY_NETWORK } from "./create.js";
 import { buildRoute, sendRequestPayment, type RouteArg } from "./sign.js";
 import { getQuote, signBinding, toBase64 } from "./quote.js";
@@ -76,6 +93,10 @@ const cfg = {
   // tool that touches an existing vault.
   factory: process.env.NEAR_VAULT_FACTORY,
   appUrl: process.env.NEAR_VAULT_APP_URL ?? "https://app.usefloat.xyz",
+  // The fleet keyring. Same default and same file the adapter reads — two
+  // readers disagreeing about where credentials live is how an agent ends up
+  // "configured" and unreachable.
+  agentKeysPath: process.env.NEAR_VAULT_AGENT_KEYS ?? ".float/agent-keys.json",
 };
 
 function requireVault(): string {
@@ -185,6 +206,100 @@ server.tool(
   async () => json(await viewFunction(cfg.rpcUrl, requireVault(), "get_config", {})),
 );
 
+server.tool(
+  "vault_add_role",
+  "Add a NEW departmental agent to an existing vault — e.g. a 'marketing' or 'news' agent with its own budget. Generates the agent's key, files it under the role name, and returns an UNSIGNED payload for the owner to approve. One FunctionCall creates the node, binds the key and installs its funded gas key. This server never signs it.",
+  {
+    role: z
+      .string()
+      .min(1)
+      .max(48)
+      .describe("the agent's name, e.g. \"marketing\". Used as the node label AND as the keyring index you later pass to vault_pay."),
+    dailyCap: z.string().describe("daily spend cap in HUMAN units, e.g. \"25.00\""),
+    perTxCap: z.string().describe("per-payment cap in HUMAN units, e.g. \"5.00\""),
+    recipients: z
+      .array(z.string())
+      .optional()
+      .describe("payee allowlist for this agent. Omitted means it inherits the nearest ancestor's list."),
+    token: z.string().optional(),
+    cooldownSec: z.number().int().min(0).optional(),
+    fundingNear: z
+      .string()
+      .optional()
+      .describe("NEAR for the agent's gas key. Default 0.12 (~160 payments measured). Minimum 0.06, because NEAR reserves prepaid gas up front."),
+  },
+  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear }) => {
+    const vault = requireVault();
+
+    // REFUSE A DUPLICATE ROLE BEFORE GENERATING A KEY. The contract would
+    // happily create a second node with the same label, and the keyring would
+    // index only the last one — so the first agent would still be bound and
+    // funded on chain while becoming unreachable locally.
+    if (listRoles(cfg).some((r) => r.role === role)) {
+      return text(
+        `This vault already has an agent with the role '${role}'. Roles index the ` +
+          `keyring, so a second one would hide the first — which would stay bound and ` +
+          `funded on chain with nothing able to select it. Pick another name, or use ` +
+          `the existing agent.`,
+      );
+    }
+
+    const fundingYocto = toYoctoNear(fundingNear ?? "0.12");
+    // `nodeId: null` — NOT YET KNOWN. `add_role` creates the node inside the
+    // contract, so its id does not exist until the transaction lands.
+    const generated = generateAgentKey({
+      vault,
+      dir: dirname(cfg.agentKeysPath),
+      role,
+      nodeId: null,
+    });
+
+    let payload;
+    try {
+      payload = planAddRole(
+        vault,
+        role,
+        [{ token: tokenFor(token), dailyCap, perTxCap, decimals: cfg.decimals }],
+        cooldownSec ?? 0,
+        recipients ?? null,
+        generated.publicKey,
+        fundingYocto,
+      );
+    } catch (e) {
+      return text(String((e as Error).message));
+    }
+
+    return json({
+      role,
+      agent: {
+        publicKey: generated.publicKey,
+        credentialWrittenTo: generated.keyringPath,
+      },
+      payload,
+      next: [
+        `Have the owner approve this payload in their own wallet.`,
+        `The node id is assigned by the contract and returned by the call; the ` +
+          `credential is filed under the ROLE, so vault_pay({role:"${role}"}) works ` +
+          `without it.`,
+      ],
+      warnings: [
+        `Show the owner this public key and have them confirm it before signing: ${generated.publicKey}`,
+        `The private key is at ${generated.keyringPath}. Do not print it.`,
+      ],
+    });
+  },
+);
+
+server.tool(
+  "vault_roles",
+  "List the agents this server can sign as, by role. Use it before vault_pay when a vault has more than one agent — the signing key decides which budget is charged. No key material is returned.",
+  {},
+  async () =>
+    json(
+      listRoles(cfg).map((r) => ({ role: r.role, nodeId: r.nodeId, agentId: r.agentId })),
+    ),
+);
+
 // ------------------------------------------------------------- onboarding
 
 server.tool(
@@ -202,8 +317,14 @@ server.tool(
       .string()
       .optional()
       .describe("override the factory; defaults to the known one for the network"),
+    bindAgent: z
+      .boolean()
+      .optional()
+      .describe(
+        "generate an agent key and bind it in the SAME transaction, so one signature creates the vault and authorises you. Adds 0.12 NEAR of gas-key funding to the deposit. The user is shown the public key and must confirm it before signing. Requires `owner`, because the credential is filed under the vault id and that cannot be derived without one.",
+      ),
   },
-  async ({ owner, network, factory }) => {
+  async ({ owner, network, factory, bindAgent }) => {
     const net = network ?? cfg.network;
     const fac = factory ?? cfg.factory ?? FACTORY_BY_NETWORK[net];
     if (!fac) {
@@ -240,6 +361,27 @@ server.tool(
 
     const exists = owner && vaultId ? await accountExists(rpc, vaultId) : false;
 
+    // AN AGENT NEEDS A VAULT ID, and not for the transaction — the page
+    // derives that from the connected wallet. It is needed for the CREDENTIAL,
+    // which the adapter files under the account the key signs as. A virtual
+    // agent's key is a gas key ON the vault, so that account is the vault
+    // itself, and without an owner there is nothing to derive it from.
+    //
+    // Refusing beats writing a record with a null account: such a record is
+    // skipped in silence by `loadKeyring`, so the agent would appear set up
+    // and simply never be found.
+    if (bindAgent && !vaultId) {
+      return text(
+        `Binding an agent needs \`owner\`, because the agent's credential is filed ` +
+          `under the vault id and that is derived from the owner. Call vault_create ` +
+          `again with the user's NEAR account, or omit bindAgent and bind afterwards ` +
+          `with vault_plan_bind_agent.`,
+      );
+    }
+
+    let generated: ReturnType<typeof generateAgentKey> | null = null;
+    if (bindAgent && vaultId) generated = generateAgentKey({ vault: vaultId });
+
     try {
       const plan = buildCreatePlan({
         owner: owner ?? "",
@@ -251,8 +393,34 @@ server.tool(
         paused: config.paused,
         appUrl: cfg.appUrl,
         exists,
+        agentPk: generated?.publicKey ?? null,
       });
-      return json({ ...plan, warnings: [...extra, ...plan.warnings] });
+      return json({
+        ...plan,
+        // THE PUBLIC HALF ONLY. The secret is on disk; a tool response is a
+        // transcript entry forever.
+        agent: generated
+          ? {
+              publicKey: generated.publicKey,
+              nodeId: AGENT_NODE_ID,
+              credentialWrittenTo: generated.keyringPath,
+              envWrittenTo: generated.envPath,
+              ...(generated.backedUpTo ? { previousKeyringMovedTo: generated.backedUpTo } : {}),
+            }
+          : null,
+        warnings: [
+          ...extra,
+          ...plan.warnings,
+          ...(generated
+            ? [
+                `Show the user this agent key and ask them to confirm it matches what ` +
+                  `the page displays before they approve: ${generated.publicKey}`,
+                `The agent's private key is at ${generated.keyringPath}. It can only call ` +
+                  `request_payment on this vault, inside the budget. Do not print it.`,
+              ]
+            : []),
+        ],
+      });
     } catch (e) {
       return text(String((e as Error).message));
     }
@@ -280,9 +448,19 @@ server.tool(
       .string()
       .optional()
       .describe("1Click asset id for rail=intents. Defaults to USDC on Base."),
+    role: z
+      .string()
+      .optional()
+      .describe(
+        "which agent pays, by role name — e.g. \"marketing\". Required once the vault has more than one agent, because the signing key decides which budget is charged. Omit it only when there is exactly one.",
+      ),
   },
-  async ({ amount, recipient, memo, token, requestId, rail, destinationAsset }) => {
-    const creds = requireAgentKey(cfg);
+  async ({ amount, recipient, memo, token, requestId, rail, destinationAsset, role }) => {
+    // WHICH KEY SIGNS *IS* WHICH BUDGET IS CHARGED. The contract resolves the
+    // spending node from the signer, not from anything in the request body,
+    // so picking the wrong key does not fail — it succeeds against someone
+    // else's budget and surfaces later as a confusing balance.
+    const creds = role === undefined ? requireAgentKey(cfg) : selectRole(cfg, role);
     const id = requestId ?? newRequestId();
     const vault = requireVault();
 

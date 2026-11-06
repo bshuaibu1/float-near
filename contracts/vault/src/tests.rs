@@ -75,7 +75,7 @@ fn new_vault(strict: bool) -> Vault {
 /// Same, for the handful of tests whose root needs different caps.
 fn vault_with(strict: bool, limits: Vec<TokenLimit>) -> Vault {
     testing_env!(ctx(vault_id(), ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), strict, limits, Some(vec![payee()]))
+    Vault::new(owner(), "sandbox".to_string(), strict, limits, Some(vec![payee()]), None)
 }
 
 /// root(1000) ─ research(500) ─ r1(500), r2(300)
@@ -2860,7 +2860,7 @@ fn new_cannot_be_called_by_anyone_but_the_vault() {
     // `new` sets the owner. If a stranger could call it on a freshly deployed
     // vault, they would own it.
     testing_env!(ctx(stranger(), ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
+    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]), None);
 }
 
 /// THE PARENT ACCOUNT MAY INITIALIZE, so a factory can create vaults.
@@ -2884,7 +2884,7 @@ fn new_cannot_be_called_by_anyone_but_the_vault() {
 fn new_accepts_the_parent_account_so_a_factory_can_initialize() {
     let parent: AccountId = "test.near".parse().unwrap();
     testing_env!(ctx(parent, ZERO, 0).build());
-    let v = Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
+    let v = Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]), None);
     assert_eq!(v.owner, owner());
 }
 
@@ -2902,7 +2902,7 @@ fn new_accepts_the_parent_account_so_a_factory_can_initialize() {
 fn new_rejects_an_account_that_merely_looks_like_a_suffix_of_the_vault() {
     let lookalike: AccountId = "est.near".parse().unwrap();
     testing_env!(ctx(lookalike, ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
+    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]), None);
 }
 
 /// ONLY THE IMMEDIATE PARENT, not any ancestor.
@@ -2916,7 +2916,7 @@ fn new_rejects_an_account_that_merely_looks_like_a_suffix_of_the_vault() {
 fn new_rejects_the_grandparent_because_it_could_not_have_created_the_vault() {
     let grandparent: AccountId = "near".parse().unwrap();
     testing_env!(ctx(grandparent, ZERO, 0).build());
-    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]));
+    Vault::new(owner(), "sandbox".to_string(), false, limit(1000, 1000), Some(vec![payee()]), None);
 }
 
 #[test]
@@ -3733,6 +3733,7 @@ fn new_creates_a_usable_root_node() {
         false,
         limit(1000, 500),
         Some(vec![payee()]),
+        None,
     );
     let tree = v.get_tree();
     assert_eq!(tree.len(), 1, "a fresh vault must have exactly one node");
@@ -3747,4 +3748,448 @@ fn new_creates_a_usable_root_node() {
         Some(vec![payee()]),
         "without an allowlist on the root every payment is NO_RECIPIENTS_SET",
     );
+}
+
+/// Build a vault the way the FACTORY does, optionally with an agent attached.
+fn vault_from_factory(agent: Option<PublicKey>) -> Vault {
+    testing_env!(ctx(vault_id(), ZERO, 0).build());
+    Vault::new(
+        owner(),
+        "sandbox".to_string(),
+        false,
+        limit(1000, 500),
+        Some(vec![payee()]),
+        agent,
+    )
+}
+
+/// THE BINDING IS ONLY WORTH ANYTHING IF THE AGENT CAN SPEND.
+///
+/// Asserting that `pubkey_to_node` gained an entry would pass even if the
+/// agent were bound to a node that does not exist, or to one whose limits
+/// reject everything. The claim made to a user is "sign once and your AI is
+/// authorized", so the test has to be a payment that actually dispatches —
+/// signed by the agent, submitted by an unrelated relayer, against a vault
+/// nobody touched after creation.
+#[test]
+fn an_agent_bound_at_init_can_actually_pay() {
+    let sk = va_signing_key();
+    let mut v = vault_from_factory(Some(va_pubkey(&sk)));
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "init-1", &tok(), usdc(100).0, &payee(), "", &route);
+
+    // A stranger relays it. Authority comes from the signature alone.
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_dispatched(v.request_payment_signed(
+        "init-1".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig,
+    ));
+}
+
+/// NEGATIVE CONTROL for the test above.
+///
+/// Without it, `an_agent_bound_at_init_can_actually_pay` would still pass if
+/// `request_payment_signed` accepted any signature whatsoever — the test
+/// would prove nothing about the binding. The same payload against a vault
+/// built with `None` must be refused.
+/// An unbound key is a hard `fail`, not a recorded `blocked` outcome — there
+/// is no node to attribute the rejection to.
+#[test]
+#[should_panic(expected = "NOT_VIRTUAL_AGENT")]
+fn without_agent_pk_nothing_is_bound() {
+    let sk = va_signing_key();
+    let mut v = vault_from_factory(None);
+    assert_eq!(v.get_virtual_agent_node(va_pubkey(&sk)), None);
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "init-1", &tok(), usdc(100).0, &payee(), "", &route);
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    v.request_payment_signed(
+        "init-1".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig,
+    );
+}
+
+/// A VAULT BOUND AT INIT MUST BE INDISTINGUISHABLE FROM ONE BOUND AFTERWARDS.
+///
+/// This is the whole safety argument for moving the binding into `new`: the
+/// one-signature path must not produce a subtly different vault from the
+/// owner-driven path. Two vaults, same key, bound two different ways, must
+/// agree on which node the agent belongs to.
+#[test]
+fn binding_at_init_matches_binding_afterwards() {
+    let sk = va_signing_key();
+
+    let at_init = vault_from_factory(Some(va_pubkey(&sk)));
+
+    let mut afterwards = vault_from_factory(None);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    afterwards.bind_virtual_agent(0, va_pubkey(&sk));
+
+    assert_eq!(
+        at_init.get_virtual_agent_node(va_pubkey(&sk)),
+        afterwards.get_virtual_agent_node(va_pubkey(&sk)),
+        "the two binding paths disagree about the agent's node",
+    );
+    assert_eq!(at_init.get_virtual_agent_node(va_pubkey(&sk)), Some(0));
+}
+
+/// THE REPLAY GUARD MUST BE LIVE ON AN INIT-BOUND AGENT.
+///
+/// `new` deliberately leaves `pubkey_to_nonce` unwritten, matching
+/// `bind_virtual_agent`. Seeding it would reject the agent's very first
+/// payment, and that failure would look like a signing bug, far from its
+/// cause. `an_agent_bound_at_init_can_actually_pay` covers that direction by
+/// succeeding at nonce 1.
+///
+/// This covers the opposite one. Note what is NOT asserted: that a SKIPPED
+/// nonce is rejected. The guard is `nonce <= last` with `last` defaulting to
+/// 0, so it is monotonic rather than sequential and nonce 2 is perfectly
+/// valid on a fresh key — a test asserting otherwise fails against a correct
+/// contract. What must hold is that a nonce cannot be REUSED.
+#[test]
+fn an_agent_bound_at_init_still_has_a_live_replay_guard() {
+    let sk = va_signing_key();
+    let mut v = vault_from_factory(Some(va_pubkey(&sk)));
+    let route = Route::NearDirect;
+
+    let sig = sign_va(&sk, 1, DEADLINE, "init-1", &tok(), usdc(100).0, &payee(), "", &route);
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_dispatched(v.request_payment_signed(
+        "init-1".into(),
+        tok(),
+        usdc(100),
+        payee(),
+        "".into(),
+        Some(route.clone()),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig.clone(),
+    ));
+
+    // The identical payload again. The counter is now 1, so `1 <= 1` bites.
+    assert_blocked(
+        v.request_payment_signed(
+            "init-1".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route),
+            va_pubkey(&sk),
+            1,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::NonceNotFresh,
+    );
+}
+
+// =====================================================================
+// add_role — a whole departmental agent in one signature
+// =====================================================================
+
+const FUND: NearToken = NearToken::from_yoctonear(120_000_000_000_000_000_000_000); // 0.12
+
+fn with_role(v: &mut Vault, label: &str, sk: &SigningKey, fund: NearToken) -> NodeId {
+    with_role_capped(v, label, sk, fund, limit(500, 100))
+}
+
+fn with_role_capped(
+    v: &mut Vault,
+    label: &str,
+    sk: &SigningKey,
+    fund: NearToken,
+    limits: Vec<TokenLimit>,
+) -> NodeId {
+    testing_env!(ctx(owner(), fund, 0).build());
+    v.add_role(label.to_string(), limits, 0, Some(vec![payee()]), va_pubkey(sk))
+}
+
+/// Spend `n` payments of `each` from one role.
+///
+/// NO SETTLE STEP, deliberately. `available = cap - (executed + pending)`, so
+/// unsettled reservations exhaust the pool on their own and this tier needs
+/// no test-only settle hook — the point made at the top of the I1 section.
+///
+/// Calling `on_transfer_result` here is what broke the first version: under
+/// the mock there is no real promise to succeed, so it read as a FAILED
+/// transfer and RELEASED every reservation. Ten payments of 100 left the root
+/// ledger reading `exec=0 pend=0`, and the cap test then happily passed a
+/// payment it should have refused.
+fn drain(v: &mut Vault, sk: &SigningKey, tag: &str, n: u64, each: u128) {
+    let route = Route::NearDirect;
+    for i in 1..=n {
+        let id = format!("{tag}-{i}");
+        let sig = sign_va(sk, i, DEADLINE, &id, &tok(), usdc(each).0, &payee(), "", &route);
+        testing_env!(ctx(stranger(), ZERO, 0).build());
+        assert_dispatched(v.request_payment_signed(
+            id.clone().into(),
+            tok(),
+            usdc(each),
+            payee(),
+            "".into(),
+            Some(route.clone()),
+            va_pubkey(sk),
+            i,
+            U64(DEADLINE),
+            sig,
+        ));
+    }
+}
+
+/// THE WHOLE POINT: one call produces an agent that can actually spend.
+///
+/// Three separate things have to land — a node, a binding, and a funded gas
+/// key — and a test that checked only the node would pass against a method
+/// that silently produced an agent unable to act. So this drives a real
+/// signed payment through the role's own node, relayed by a stranger.
+#[test]
+fn a_role_can_pay_immediately_after_being_added() {
+    let mut v = vault_from_factory(None);
+    let sk = va_signing_key();
+    let node = with_role(&mut v, "marketing", &sk, FUND);
+
+    assert_eq!(v.get_virtual_agent_node(va_pubkey(&sk)), Some(node));
+
+    let route = Route::NearDirect;
+    let sig = sign_va(&sk, 1, DEADLINE, "role-1", &tok(), usdc(50).0, &payee(), "", &route);
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_dispatched(v.request_payment_signed(
+        "role-1".into(),
+        tok(),
+        usdc(50),
+        payee(),
+        "".into(),
+        Some(route),
+        va_pubkey(&sk),
+        1,
+        U64(DEADLINE),
+        sig,
+    ));
+}
+
+/// THE FLEET CANNOT PIERCE THE ROOT CAP.
+///
+/// This is the security model the child-of-root choice buys: adding a tenth
+/// agent divides what the vault can lose in a day, it does not raise it. Two
+/// roles each capped at 100/tx against a root whose daily cap is 1000 — the
+/// second role's payment must be refused once the first has drained the
+/// shared parent, by PARENT_DAILY_BUDGET and not by its own limit.
+#[test]
+fn roles_share_the_roots_daily_cap() {
+    let mut v = vault_from_factory(None); // root: 1000/day, 500/tx
+    let a = va_signing_key();
+    let b = va_other_key();
+
+    // DELIBERATELY OVER-ALLOCATED: 800 + 800 against a root of 1000. If the
+    // caps summed to less than root the parent could never bite, and a test
+    // written that way asserts a dispatch and proves nothing — which is how
+    // the first version of this test was wrong.
+    let na = with_role_capped(&mut v, "marketing", &a, FUND, limit(800, 100));
+    let nb = with_role_capped(&mut v, "news", &b, FUND, limit(800, 100));
+    assert_ne!(na, nb, "each role must get its own node");
+
+    drain(&mut v, &a, "a", 8, 100); // marketing spends its full 800
+    drain(&mut v, &b, "b", 2, 100); // news spends 200 -> root now at 1000
+
+    // News has 600 of its OWN cap left and must still be refused, because the
+    // ROOT is exhausted. The reason code is the assertion: PARENT_DAILY_BUDGET
+    // and not DAILY_BUDGET is what distinguishes "the fleet is capped" from
+    // "this agent is capped".
+    let route = Route::NearDirect;
+    let sig = sign_va(&b, 3, DEADLINE, "b-3", &tok(), usdc(100).0, &payee(), "", &route);
+    testing_env!(ctx(stranger(), ZERO, 0).build());
+    assert_blocked(
+        v.request_payment_signed(
+            "b-3".into(),
+            tok(),
+            usdc(100),
+            payee(),
+            "".into(),
+            Some(route),
+            va_pubkey(&b),
+            3,
+            U64(DEADLINE),
+            sig,
+        ),
+        ReasonCode::ParentDailyBudget,
+    );
+}
+
+/// AN AGENT'S OWN KEY MUST NOT REACH THIS.
+///
+/// The deposit requirement IS the access control: a NEAR function-call key
+/// cannot attach one, so an attached balance proves a full-access key signed.
+/// But that only holds if the owner check is also real — otherwise anyone
+/// holding a full-access key to any account could add themselves an agent.
+#[test]
+#[should_panic(expected = "NOT_OWNER")]
+fn a_stranger_cannot_add_a_role() {
+    let mut v = vault_from_factory(None);
+    testing_env!(ctx(stranger(), FUND, 0).build());
+    v.add_role("intruder".into(), limit(500, 100), 0, Some(vec![payee()]), va_pubkey(&va_signing_key()));
+}
+
+/// An underfunded gas key cannot transact at all — NEAR reserves
+/// `prepaid_gas * 1e9` and the tooling sends 60 TGas, so below 0.06 the key
+/// is installed and useless. Refuse rather than create a dead agent.
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn a_role_cannot_be_added_with_too_little_gas_funding() {
+    let mut v = vault_from_factory(None);
+    testing_env!(ctx(owner(), NearToken::from_yoctonear(1), 0).build());
+    v.add_role("broke".into(), limit(500, 100), 0, Some(vec![payee()]), va_pubkey(&va_signing_key()));
+}
+
+/// Rebinding a key that already drives another node would give one agent two
+/// budgets, and silently repoint every signature it has ever produced.
+#[test]
+#[should_panic(expected = "INVALID_CONFIG")]
+fn the_same_key_cannot_hold_two_roles() {
+    let mut v = vault_from_factory(None);
+    let sk = va_signing_key();
+    with_role(&mut v, "marketing", &sk, FUND);
+    with_role(&mut v, "news", &sk, FUND);
+}
+
+/// Roles hang off ROOT, not off each other — otherwise the tree deepens with
+/// every agent and eventually hits MAX_DEPTH.
+#[test]
+fn every_role_is_a_child_of_root() {
+    let mut v = vault_from_factory(None);
+    let na = with_role(&mut v, "marketing", &va_signing_key(), FUND);
+    let nb = with_role(&mut v, "news", &va_other_key(), FUND);
+    for id in [na, nb] {
+        let n = v.get_tree().into_iter().find(|n| n.id == id).expect("node missing");
+        assert_eq!(n.parent, Some(0), "role {id} is not a child of root");
+        assert_eq!(n.path, vec![0]);
+    }
+}
+
+
+/// THE GAS KEY MUST BE INSTALLED, RESTRICTED, AND FUNDED.
+///
+/// Nothing in this file inspected promise actions before — every other test
+/// works through contract state. That gap was real: zeroing the
+/// `transfer_to_gas_key` amount left all 160 tests green, so `add_role` could
+/// have shipped an agent with a key it could not afford to use, and the only
+/// symptom would be the first payment failing with NotEnoughBalance far from
+/// the cause.
+///
+/// `a_role_can_pay_immediately_after_being_added` cannot cover this: the mock
+/// executes `request_payment_signed` directly and never charges a gas key, so
+/// a payment "works" in-process no matter what the key holds.
+///
+/// Mirrors the factory's receipt tests, which exist for the same reason.
+#[test]
+fn add_role_installs_a_restricted_and_funded_gas_key() {
+    use near_sdk::mock::MockAction;
+
+    let mut v = vault_from_factory(None);
+    let sk = va_signing_key();
+    with_role(&mut v, "marketing", &sk, FUND);
+
+    let actions: Vec<MockAction> = near_sdk::test_utils::get_created_receipts()
+        .into_iter()
+        .flat_map(|r| r.actions)
+        .collect();
+
+    let key = actions
+        .iter()
+        .find_map(|a| match a {
+            MockAction::AddGasKeyWithFunctionCall { receiver_id, method_names, allowance, .. } => {
+                Some((receiver_id.clone(), method_names.clone(), allowance.clone()))
+            }
+            _ => None,
+        })
+        .expect("add_role installed no gas key — the agent cannot submit anything");
+
+    // Confined to ONE method on ONE receiver. That pair is the real boundary;
+    // the allowance is null for a gas key and the BALANCE is the cap.
+    assert_eq!(key.0, vault_id(), "the gas key must target this vault");
+    assert_eq!(
+        key.1,
+        vec![AGENT_ALLOWED_METHOD.as_bytes().to_vec()],
+        "the gas key must be restricted to request_payment and nothing else",
+    );
+    assert_eq!(key.2, None, "a gas key's allowance is null; its balance is the cap");
+
+    let funded = actions
+        .iter()
+        .find_map(|a| match a {
+            MockAction::TransferToGasKey { deposit, .. } => Some(deposit.as_yoctonear()),
+            _ => None,
+        })
+        .expect("the gas key was installed but never funded — it cannot transact");
+    assert_eq!(
+        funded,
+        FUND.as_yoctonear(),
+        "the key must receive the WHOLE attached deposit; anything less means the \
+         vault kept part of what the owner sent for gas",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// validate_limits: the two rules the DASHBOARD now refuses to let an owner
+// violate. They were enforced in production and asserted nowhere, so the
+// policies page was about to describe one of them backwards.
+//
+// The page originally called `per_tx > daily` a soft warning — "it can never
+// bind, the daily cap stops the payment first" — on the assumption the
+// contract tolerates it. It does not. Without these tests that assumption had
+// nothing to contradict it, and the owner would have signed a transaction and
+// paid gas to watch it revert.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "per_tx_cap must be <= daily_cap")]
+fn vl1_per_tx_above_daily_is_rejected_outright() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_node_caps(0, limit(100, 101)); // one unit over
+}
+
+/// The allowed side of the same boundary, so the rule is pinned from both
+/// directions rather than only the rejecting one.
+#[test]
+fn vl1_per_tx_equal_to_daily_is_allowed() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_node_caps(0, limit(100, 100));
+    assert_eq!(v.get_node(0).limit_for(&tok()).unwrap().per_tx_cap, usdc(100));
+}
+
+#[test]
+#[should_panic(expected = "caps must be positive")]
+fn vl2_a_zero_daily_cap_is_rejected() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_node_caps(0, limit(0, 0));
+}
+
+#[test]
+#[should_panic(expected = "caps must be positive")]
+fn vl2_a_zero_per_tx_cap_is_rejected_even_with_a_positive_daily() {
+    let mut v = new_vault(true);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    v.set_node_caps(0, limit(100, 0));
 }

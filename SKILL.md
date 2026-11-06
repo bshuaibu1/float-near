@@ -197,10 +197,16 @@ NEAR and several are irreversible.
 
 **Use `vault_create` and send them a link. Do not ask for a private key.**
 
+Pass `bindAgent: true` to generate your key and bind it in the SAME
+transaction, so one signature creates the vault AND authorises you. The user
+is shown the public key and must confirm it before the wallet opens. Your
+private key is written to `.float/agent-keys.json` — never printed, and never
+something to paste back into chat.
+
 ```
 vault_create({ owner: "alice.near" })
  -> vault:    alice-near.<factory>
-    deposit:  3.03728 NEAR + 0.20000 gas reservation
+    deposit:  3.30679 NEAR + 0.20000 gas reservation
     url:      https://app.usefloat.xyz/?owner=alice.near&factory=...
 ```
 
@@ -225,7 +231,7 @@ difference is not cosmetic.
 
 **The operator path, for your own machine only.** `create-float` needs a NEAR
 account whose full-access key is already in `~/.near-credentials`, and the
-account must hold **3.5 NEAR** for a vault plus one agent (**3.3** for a bare
+account must hold **3.5 NEAR** for a vault plus one agent (**3.4** for a bare
 vault, plus ~0.12 per agent) along with some of the token the agents will
 spend. Mostly a refundable storage stake rather than a fee, but the wizard
 checks the balance up front and refuses if it is short — so a round "3" is not
@@ -236,19 +242,27 @@ it.
 
 1. what the link does — creates a vault they own, which they approve in their
    wallet
-2. that they need to HOLD **3.24 NEAR** at signing time: a 3.04 deposit plus a
-   0.20 gas reservation. The reservation is returned seconds later and only
+2. that they need to HOLD **3.51 NEAR** at signing time: a 3.31 deposit plus a
+   0.20 gas reservation — or **3.63** if you are binding an agent, which adds
+   0.12 of gas-key funding. The reservation is returned seconds later and only
    ~0.004 is actually spent, but a wallet checks the balance against the full
    amount and refuses below it. Quote the total, not the net — quoting the net
    is what makes a wallet reject a transaction the user was told they could
    afford.
+
+   Quote `vault_create`'s own `totalRequiredNear`, never a figure from memory.
+   This document said 3.24 until 2026-11-03, because the deposit was priced at
+   the factory's on-chain floor (`required_deposit + code storage`) while the
+   page actually attaches the code stake plus 0.36 of state headroom. Both are
+   real numbers; they differ by 0.26, and the one that matters is the one the
+   page puts in front of the wallet.
 3. that almost all of it is a **refundable storage stake** held by their own
    vault, not a fee
 4. that nothing can spend from it until they add an agent and give it a budget
 
 If `vault_create` reports no factory for the network, say so and stop. There is
 deliberately no built-in mainnet default: guessing one wrong would send a real
-3.24 NEAR deposit to an account nobody verified.
+3.31 NEAR deposit to an account nobody verified.
 
 If it reports the vault already exists, that IS their vault — connect to it
 with `NEAR_VAULT_CONTRACT`, do not create a second one.

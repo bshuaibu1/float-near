@@ -95,3 +95,162 @@ describe("choosing which agent signs", () => {
     expect(ring.byAccount.has("r1.float.me.testnet")).toBe(true);
   });
 });
+
+// =====================================================================
+// Fleets: several virtual agents on ONE vault
+// =====================================================================
+
+/** Two roles on one vault — every virtual agent shares the vault's account id. */
+const FLEET = [
+  { role: "marketing", agentId: "v.fac.testnet", nodeId: 1, secret: "ed25519:mkt" },
+  { role: "news", agentId: "v.fac.testnet", nodeId: 2, secret: "ed25519:news" },
+];
+
+describe("a fleet of virtual agents", () => {
+  /**
+   * THE BUG THIS CLOSES, and it was silent.
+   *
+   * `byAccount` is keyed on `agentId`, which for a virtual agent is the
+   * VAULT — shared by every agent on it. Two agents collapsed to one entry,
+   * so `loadKeyring`'s "exactly one key, unambiguous" branch fired on an
+   * ambiguous keyring and installed the LAST-WRITTEN agent as the fallback.
+   * An un-targeted payment then signed as the wrong agent and charged the
+   * wrong node's budget — successfully, so nothing surfaced until someone
+   * read a balance.
+   *
+   * Measured 2026-11-03 before the fix: byAccount 1, byNode 2, fallback
+   * `ed25519:news`.
+   */
+  it("refuses to guess when the request names no agent", () => {
+    const ring = loadKeyring({ agentKeysPath: keyfile(FLEET) });
+    expect(ring.all).toHaveLength(2);
+    expect(ring.fallback, "a fleet must have no silent default").toBeUndefined();
+    expect(() => selectAgent(ring, {})).toThrow(/several agents are loaded/i);
+  });
+
+  it("selects by role", () => {
+    const ring = loadKeyring({ agentKeysPath: keyfile(FLEET) });
+    expect(selectAgent(ring, { role: "marketing" }).secret).toBe("ed25519:mkt");
+    expect(selectAgent(ring, { role: "news" }).secret).toBe("ed25519:news");
+  });
+
+  /** An unknown role must name the real ones, not just fail. */
+  it("names the known roles when one is missing", () => {
+    const ring = loadKeyring({ agentKeysPath: keyfile(FLEET) });
+    expect(() => selectAgent(ring, { role: "sales" })).toThrow(/marketing/);
+    expect(() => selectAgent(ring, { role: "sales" })).toThrow(/news/);
+  });
+
+  /**
+   * The error must report EVERY agent. It listed `byAccount.values()`, which
+   * on a fleet names one — under-reporting in the message whose only job is
+   * to tell the caller what the options were.
+   */
+  it("lists every loaded agent in the ambiguity error", () => {
+    const ring = loadKeyring({ agentKeysPath: keyfile(FLEET) });
+    let msg = "";
+    try { selectAgent(ring, {}); } catch (e) { msg = (e as Error).message; }
+    expect(msg).toMatch(/marketing/);
+    expect(msg).toMatch(/news/);
+  });
+
+  /** A single agent still has a default — the old behaviour must not change. */
+  it("still defaults when there is exactly one agent", () => {
+    const ring = loadKeyring({ agentKeysPath: keyfile([FLEET[0]]) });
+    expect(selectAgent(ring, {}).secret).toBe("ed25519:mkt");
+  });
+
+  /** Role-less entries still load and are still selectable by node. */
+  it("keeps working for entries written before roles existed", () => {
+    const ring = loadKeyring({
+      agentKeysPath: keyfile([{ agentId: "v.fac.testnet", nodeId: 7, secret: "ed25519:old" }]),
+    });
+    expect(selectAgent(ring, { nodeId: 7 }).secret).toBe("ed25519:old");
+    expect(selectAgent(ring, {}).secret).toBe("ed25519:old");
+  });
+
+  /** The env pair stays authoritative, even alongside a fleet file. */
+  it("lets the env pair remain the explicit default", () => {
+    const ring = loadKeyring({
+      agentKeysPath: keyfile(FLEET),
+      agentId: "v.fac.testnet",
+      agentKey: "ed25519:env",
+    });
+    expect(selectAgent(ring, {}).secret).toBe("ed25519:env");
+    expect(selectAgent(ring, { role: "news" }).secret).toBe("ed25519:news");
+  });
+});
+
+describe("credentials belonging to another vault", () => {
+  const MINE = "mine.fac.testnet";
+  const THEIRS = "theirs.fac.testnet";
+
+  /**
+   * THE KEYRING FILE IS PER-MACHINE, NOT PER-VAULT. One
+   * `.float/agent-keys.json` accumulates every agent ever provisioned here,
+   * so an adapter serving one vault was loading every other vault's agents
+   * too.
+   *
+   * Observed 2026-11-03: an adapter on work12-testnet-fleet listed
+   * rudeisland4178's agent in a refusal — naming an option that could never
+   * have worked.
+   */
+  it("skips them when a vault is given", () => {
+    const ring = loadKeyring({
+      vault: MINE,
+      agentKeysPath: keyfile([
+        { role: "marketing", agentId: MINE, nodeId: 1, secret: "ed25519:mkt" },
+        { role: "other", agentId: THEIRS, nodeId: 1, secret: "ed25519:other" },
+      ]),
+    });
+    expect(ring.all).toHaveLength(1);
+    expect(ring.all[0].role).toBe("marketing");
+    expect(ring.skippedOtherVault).toBe(1);
+  });
+
+  /**
+   * THE QUIET FAILURE, and the reason this matters more than tidiness.
+   *
+   * With one foreign credential and no filter, `all.length === 1` made it the
+   * FALLBACK — so every un-targeted payment was signed by a key the contract
+   * has never heard of. That fails on chain with NOT_VIRTUAL_AGENT, which
+   * reads like a binding bug and sends the reader to the wrong place
+   * entirely.
+   */
+  it("never makes a foreign credential the default", () => {
+    const ring = loadKeyring({
+      vault: MINE,
+      agentKeysPath: keyfile([{ role: "other", agentId: THEIRS, nodeId: 1, secret: "ed25519:x" }]),
+    });
+    expect(ring.fallback, "a key for another vault became the default").toBeUndefined();
+    expect(() => selectAgent(ring, {})).toThrow(/different vault/i);
+  });
+
+  /**
+   * And the message must distinguish the two empty-ring cases. "Nothing
+   * configured" sends someone to add credentials they already have; the real
+   * fix is pointing the adapter at the right vault.
+   */
+  it("says so, rather than reporting an empty keyring", () => {
+    const foreign = loadKeyring({
+      vault: MINE,
+      agentKeysPath: keyfile([{ agentId: THEIRS, secret: "ed25519:x" }]),
+    });
+    expect(() => selectAgent(foreign, {})).toThrow(/different vault|NEAR_VAULT_CONTRACT/i);
+
+    const genuinelyEmpty = loadKeyring({ vault: MINE, agentKeysPath: keyfile([]) });
+    expect(() => selectAgent(genuinelyEmpty, {})).toThrow(/no agent credentials are configured/i);
+  });
+
+  /** Without a vault the old behaviour is untouched — nothing is filtered. */
+  it("filters nothing when no vault is given", () => {
+    const ring = loadKeyring({
+      agentKeysPath: keyfile([
+        { role: "a", agentId: MINE, secret: "ed25519:a" },
+        { role: "b", agentId: THEIRS, secret: "ed25519:b" },
+      ]),
+    });
+    expect(ring.all).toHaveLength(2);
+    expect(ring.skippedOtherVault).toBe(0);
+  });
+});

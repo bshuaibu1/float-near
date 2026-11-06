@@ -65,7 +65,10 @@ describe("getDashboard", () => {
     // Teams are rows too: they hold the shared pool, which is the thing this
     // product exists to show.
     return getDashboard(stubView(), cfg()).then((d) => {
-      expect(d.agents.map((a) => a.displayName)).toEqual(["root", "└─ research", "   └─ r1"]);
+// Plain strings now: depth left displayName entirely, so there is no
+      // invisible character to build or to get wrong.
+      expect(d.agents.map((a) => a.displayName)).toEqual(["root", "research", "r1"]);
+      expect(d.agents.map((a) => a.depth)).toEqual([0, 1, 2]);
     });
   });
 
