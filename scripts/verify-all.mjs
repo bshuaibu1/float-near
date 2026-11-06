@@ -83,6 +83,25 @@ const steps = [
     mustMatch: /no dangling script references/,
     mustNotMatch: /MISSING|UNRESOLVABLE/,
   },
+  {
+    /**
+     * Added after the freeze flow ended in a dead tab: "Sign in wallet"
+     * pointed at a port nothing was listening on.
+     *
+     * This does NOT assert that someone started the server - that is a fact
+     * about a machine at a moment, not about the repo, and a build gate has
+     * no business claiming it. It boots the real server on an ephemeral port
+     * and asks for the page and every asset the page references, which
+     * catches the repo-side causes of the same symptom: a crash on boot, a
+     * missing font, a MIME type the browser refuses, a dashboard and a
+     * server that disagree about which port to use.
+     */
+    name: "signing page serves",
+    cmd: "node scripts/check-signing-page.mjs",
+    cwd: ".",
+    mustMatch: /signing page serves, \d+ asset\(s\) resolve/,
+    mustNotMatch: /BROKEN/,
+  },
 ];
 
 // Mutation suites are discovered, not listed, so a deleted one cannot linger
