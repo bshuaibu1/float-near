@@ -487,3 +487,95 @@ describe("standing advice is shown only when it applies", () => {
     expect(src).toMatch(/includes\("ed25519:"\)/);
   });
 });
+
+describe("the create plan shows only what a signer can act on", () => {
+  /**
+   * `contract: 292 KB` was a row in the table of things the user is asked to
+   * check before sending 3.348 NEAR. A size in kilobytes is not a decision
+   * input: nobody declines at 292 and accepts at 280. Its two real jobs are
+   * done elsewhere now, by the refundable-deposit note and the waiting
+   * screen.
+   */
+  it("does not ask the user to check the contract's size", () => {
+    const src = html();
+    const start = src.indexOf('<div id="plan"');
+    expect(start, "plan panel not found").toBeGreaterThan(-1);
+    const panel = src.slice(start, start + 2500).replace(/<!--[\s\S]*?-->/g, "");
+    expect(panel, "sliced the wrong block").toContain('id="p-total"');
+    expect(/>contract</.test(panel), "the plan still has a contract-size row").toBe(false);
+    expect(/p-size/.test(panel), "the p-size element is still in the plan").toBe(false);
+  });
+
+  /** And nothing may write to an element that no longer exists. */
+  it("has no dangling write to the removed size element", () => {
+    expect(html()).not.toMatch(/\$\("p-size"\)/);
+  });
+});
+
+describe("a link with no factory", () => {
+  /**
+   * `create()` throws "No factory configured" when the button is pressed,
+   * because deploying straight from a browser needs a DeployContract action
+   * and wallets refuse those from a dApp. Until this guard, the page still
+   * rendered a full plan first: a derived vault id, a network, a 3.348 NEAR
+   * total and a call to action, with the absence noted as a calm table row
+   * reading "not configured". A dead end dressed as a quote.
+   *
+   * It only looked harmless because the funding check disables the button
+   * first. A funded wallet would have read the plan, pressed Create vault,
+   * and been handed a thrown error.
+   */
+  it("refuses before showing a plan, rather than at the button", () => {
+    const src = html();
+    const guard = src.match(/if \(!FACTORY\) \{[\s\S]{0,900}?show\("error"\);/);
+    expect(
+      guard,
+      "render() still builds a plan when no factory is set; the only refusal is inside create()",
+    ).not.toBeNull();
+  });
+
+  it("explains why a browser cannot do it alone", () => {
+    const src = html();
+    const guard = src.match(/if \(!FACTORY\) \{[\s\S]{0,900}?show\("error"\);/)?.[0] ?? "";
+    expect(guard).toMatch(/DeployContract/);
+    expect(guard).toMatch(/Nothing has been signed/);
+  });
+});
+
+describe("no em dashes in anything the user reads", () => {
+  /**
+   * Bashir asked for these gone. Code comments keep them; rendered strings
+   * do not. Template literals and markup text are what reach the screen.
+   */
+  it("has none in a rendered template literal", () => {
+    /**
+     * COMMENTS STRIPPED FIRST, and that is the whole difficulty.
+     *
+     * The first version scanned the raw file for /`[^`]*—[^`]*`/ and reported
+     * fourteen offenders, every one a false positive: the comments in this
+     * page quote identifiers in backticks, so a regex looking for a pair of
+     * backticks happily spans the prose BETWEEN two of them and finds the
+     * dash in the sentence. The page was clean; the test was not.
+     */
+    const code = html()
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+    const offenders = [...code.matchAll(/`[^`]*—[^`]*`/g)].map((m) =>
+      m[0].replace(/\s+/g, " ").slice(0, 70),
+    );
+    expect(offenders, `rendered strings still carry an em dash:\n${offenders.join("\n")}`).toEqual(
+      [],
+    );
+  });
+
+  /**
+   * Positive control. Without it the test above passes just as happily when
+   * the comment-stripper eats the whole file.
+   */
+  it("would notice a dash if one came back", () => {
+    const planted = 'const msg = `Needs 3.348 NEAR — you have 0.158`;';
+    expect(/`[^`]*—[^`]*`/.test(planted)).toBe(true);
+  });
+});

@@ -506,7 +506,20 @@
           <div class="row"><span>vault</span><span id="p-vault"></span></div>
           <div class="row"><span>via factory</span><span id="p-factory"></span></div>
           <div class="row"><span>network</span><span id="p-net"></span></div>
-          <div class="row"><span>contract</span><span id="p-size"></span></div>
+          <!--
+            NO `contract: 292 KB` ROW.
+
+            A size in kilobytes is not a decision input: nobody declines a
+            vault at 292 KB and accepts one at 280. Its only two real jobs
+            were explaining why the deposit is large and why the wallet may
+            pause, and both are now done where they land: the note under the
+            total says the deposit is refundable storage, and the waiting
+            screen says the transaction carries the contract and may take a
+            few seconds.
+
+            The size is still MEASURED for that waiting line. It is just not
+            a row in a table of things you are being asked to check.
+          -->
           <div class="row"><span>daily limit</span><span id="p-daily"></span></div>
           <div class="row hide" id="p-agent-row"><span>agent</span><span id="p-agent"></span></div>
           <div class="row total"><span>you send</span><span id="p-total"></span></div>
@@ -735,7 +748,7 @@
             a = JSON.parse(decoded);
           } catch {
             throw new Error(
-              `the payload decoded but is not complete JSON — ${decoded.length} bytes ` +
+              `the payload decoded but is not complete JSON. ${decoded.length} bytes ` +
                 `ending "${decoded.slice(-24)}". A link this long is usually cut short ` +
                 `when copied; copy it again in one piece, or use a shorter one.`,
             );
@@ -835,7 +848,7 @@
         const fn = mod[pick] ?? mod.default?.[pick];
         if (typeof fn !== "function") {
           throw new Error(
-            `${label} loaded but has no ${pick}() — exports: ${Object.keys(mod).join(", ") || "(none)"}`,
+            `${label} loaded but has no ${pick}(). exports: ${Object.keys(mod).join(", ") || "(none)"}`,
           );
         }
         return fn;
@@ -903,7 +916,7 @@
         // which is why it looked like a CDN problem and was not.
         if (typeof selector.store?.observable?.subscribe !== "function") {
           throw new Error(
-            `the wallet store has an unexpected shape — keys: ${Object.keys(selector.store ?? {}).join(", ")}`,
+            `the wallet store has an unexpected shape. keys: ${Object.keys(selector.store ?? {}).join(", ")}`,
           );
         }
         selector.store.observable.subscribe(render);
@@ -985,11 +998,45 @@
             `This link was prepared for ${wanted}, but your wallet is connected as ${who}.
 
 ` +
-            `Creating a vault now would make it for ${who} — not the account the ` +
+            `Creating a vault now would make it for ${who}, not the account the ` +
             `plan was quoted for.
 
 ` +
             `Either connect ${wanted}, or ask for a new link for ${who}.`;
+          show("error");
+          return;
+        }
+
+        /**
+         * NO FACTORY MEANS THIS CANNOT WORK, SO SAY SO HERE.
+         *
+         * `create()` already throws "No factory configured" when the button
+         * is pressed. But until then the page rendered a complete plan: a
+         * derived vault id, a network, a 3.348 NEAR total, and a call to
+         * action, with the absence noted as a calm table row reading "not
+         * configured". A dead end dressed as a quote.
+         *
+         * It only looked harmless because the funding check disables the
+         * button first. With a funded wallet the user would read the plan,
+         * press Create vault, and get a thrown error about DeployContract.
+         *
+         * The row stays for a factory that IS set, because it names the
+         * contract being handed 3.4 NEAR and that is worth seeing. The
+         * absence is not a row, it is a stop.
+         */
+        if (!FACTORY) {
+          $("err-text").textContent =
+            `This link has no factory, so there is nothing to create the vault.
+
+` +
+            `A vault cannot be deployed straight from a browser: that needs a ` +
+            `DeployContract action, and wallets refuse those from a web page. The ` +
+            `factory is the contract that does it on your behalf, and the link has ` +
+            `to name one.
+
+` +
+            `Nothing has been signed. Ask for a new link, or add ?factory=<account> ` +
+            `if you know the right one.`;
           show("error");
           return;
         }
@@ -999,7 +1046,7 @@
             `This link carries the label "${LABEL}", which the factory will reject.
 
 ` +
-            `A label must be 1-16 characters of a-z or 0-9. Nothing has been signed — ` +
+            `A label must be 1-16 characters of a-z or 0-9. Nothing has been signed. ` +
             `ask for a new link rather than editing this one, because the contract ` +
             `refuses BAD_LABEL only after you have paid for the transaction.`;
           show("error");
@@ -1014,7 +1061,7 @@
             `This link carries an agent key that is not a valid NEAR ed25519 public key.
 
 ` +
-            `Nothing has been signed. Ask for a new link rather than editing this one — ` +
+            `Nothing has been signed. Ask for a new link rather than editing this one: ` +
             `a key that does not parse here would be rejected by the contract after ` +
             `you had already paid for the transaction.`;
           show("error");
@@ -1063,7 +1110,6 @@
         $("p-vault").textContent = vault;
         $("p-factory").textContent = FACTORY ?? "not configured";
         $("p-net").textContent = NETWORK;
-        $("p-size").textContent = `${(wasm.length / 1024).toFixed(0)} KB`;
         $("p-daily").textContent = `${DAILY} / day, ${PERTX} / tx`;
 
         // THE AGENT GATE COMES BEFORE THE PLAN, not after.
@@ -1230,7 +1276,7 @@
         const cfg = await view(ACTION.receiverId, "get_config", {});
         if (!cfg || typeof cfg.owner !== "string") {
           $("err-text").textContent =
-            `${ACTION.receiverId} does not look like a Float vault — it has no ` +
+            `${ACTION.receiverId} does not look like a Float vault. It has no ` +
             `get_config. This page only signs owner actions against vaults.`;
           return show("error");
         }
@@ -1238,7 +1284,7 @@
           $("err-text").textContent =
             `This link changes ${ACTION.receiverId}, which is owned by ${cfg.owner}.\n\n` +
             `Your wallet is connected as ${who}, so the transaction would be rejected ` +
-            `by the contract — and you would pay gas to learn that.\n\n` +
+            `by the contract, and you would pay gas to learn that.\n\n` +
             `Connect ${cfg.owner}, or ask for a link for this wallet.`;
           return show("error");
         }
@@ -1287,7 +1333,7 @@
                 // Only a real funding deposit earns a sentence. One yocto is a
                 // signature requirement, not money leaving the owner.
                 dep > 1n
-                  ? `The ${near(dep)} NEAR deposit is held by your vault, not spent — it is recoverable.`
+                  ? `The ${near(dep)} NEAR deposit is held by your vault, not spent. It is recoverable.`
                   : null,
                 hasPublicKey
                   ? `Check the public key above against the one your agent reported before approving.`
@@ -1463,7 +1509,7 @@
           const m = e?.message ?? String(e);
           fail(
             /size|too large|exceed/i.test(m)
-              ? `The wallet refused the transaction size.\n\n${m}\n\nThis is the risk this page exists to test — the fallback is a factory contract.`
+              ? `The wallet refused the transaction size.\n\n${m}\n\nThis is the risk this page exists to test: the fallback is a factory contract.`
               : `${m}`,
           );
         }
