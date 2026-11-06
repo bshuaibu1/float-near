@@ -170,7 +170,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
           </div>
           <button
             onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-[#F5F5F4] text-muted"
+            className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-chip text-muted"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -586,7 +586,7 @@ export default function Activity() {
                     onClick={() => { setAgentFilter(a.id); setAgentMenuOpen(false); }}
                     className="flex items-center gap-2.5 w-full px-3 py-2.5 text-[12px] font-medium text-left hover:bg-canvas transition-colors"
                     style={{
-                      borderTop: "1px solid #F5F5F4",
+                      borderTop: `1px solid ${LINE}`,
                       color: agentFilter === a.id ? INK : MUTED,
                     }}
                   >
@@ -779,7 +779,7 @@ export default function Activity() {
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
-                        className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-[#F0F0EE] text-muted"
+                        className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-chip text-muted"
                         title="View the vault on NEAR Explorer"
                       >
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">

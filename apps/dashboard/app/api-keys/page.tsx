@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCheck, Copy, ExternalLink } from "lucide-react";
-import { CANVAS, DANGER, DANGER_BG, LINE, MUTED, SUCCESS, SUCCESS_BG } from "@/lib/colors";
+import { CANVAS, CHIP, DANGER, DANGER_BG, LINE, MUTED, SUCCESS, SUCCESS_BG } from "@/lib/colors";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 const border = { border: `1px solid ${LINE}` };
@@ -156,7 +156,7 @@ export default function AgentKeysPage() {
                         </p>
                         <span
                           className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
-                          style={{ background: "#F5F5F4", color: MUTED }}
+                          style={{ background: CHIP, color: MUTED }}
                         >
                           node {row.nodeId}
                         </span>
