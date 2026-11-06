@@ -598,10 +598,27 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
       failed: onchain.filter((p) => p.status === "failed").length,
       other: onchain.filter((p) => p.status === "pending").length,
     },
+    /**
+     * RECIPIENT AND MEMO TRAVEL SEPARATELY.
+     *
+     * `venue` is `memo || recipient`, which collapses two different facts into
+     * one string: the Overview table showed "work12.testnet" for one payment
+     * and "first payment from a vault created in one signature" for the next,
+     * under a single column heading, with no way to tell which kind of thing
+     * you were looking at.
+     *
+     * `venue` stays for now because /activity still reads it. These are added
+     * beside it so the table can show WHO was paid as a fact that is always
+     * present, and the note as a fact that usually is not.
+     */
     recentActivity: recent.map((p) => ({
       id: p.id,
       agent: p.agentName,
       venue: p.venue,
+      recipient: p.recipientAddress,
+      // Empty string and "no memo" are the same thing to a reader, so both
+      // become null rather than making the UI test for two falsy shapes.
+      memo: p.prompt || null,
       amount: p.amount,
       rail: p.rail,
       time: p.createdAt,
