@@ -359,3 +359,81 @@ describe("module constant ordering (temporal dead zone)", () => {
     expect(late, `declared after render() but read by it: ${late.join(", ")}`).toEqual([]);
   });
 });
+
+/**
+ * These EXECUTE code lifted out of the page rather than matching its text.
+ *
+ * web/index.html has no module boundary, so the usual options are a browser
+ * or a regex. A regex test passes when the words are present and says nothing
+ * about what the function does; extracting the body and running it gives a
+ * real behavioural assertion for the price of one `new Function`.
+ */
+describe("what the owner is told they are sending", () => {
+  function depositText(): (y: bigint | string) => string {
+    const src = html();
+    const m = src.match(/const depositText = \(y\) => \{[\s\S]*?\n      \};/);
+    expect(m, "depositText not found in web/index.html").not.toBeNull();
+    const near = "const near = (y) => (Number(y) / 1e24).toFixed(3);";
+    // eslint-disable-next-line no-new-func
+    return new Function(`${near}\n${m![1] ? m![0] : m![0]}\nreturn depositText;`)();
+  }
+
+  /**
+   * THE REGRESSION. An owner action attaches exactly one yocto because
+   * `assert_one_yocto` demands it, and `near(1n)` is "0.000" - so the screen
+   * where someone decides whether to sign read "you send 0.000 NEAR".
+   *
+   * Same defect the dashboard had with "$0.000": a figure that is not nothing,
+   * shown as nothing.
+   */
+  it("never shows a non-zero deposit as zero", () => {
+    const f = depositText();
+    expect(f(1n)).toBe("1 yocto");
+    expect(f(1n)).not.toMatch(/^0\.000/);
+    expect(f(1000n)).toBe("less than 0.001 NEAR");
+    expect(f(1000n)).not.toMatch(/^0\.000/);
+  });
+
+  it("says nothing is sent when nothing is", () => {
+    expect(depositText()(0n)).toBe("nothing");
+  });
+
+  it("still renders a real funding deposit in NEAR", () => {
+    expect(depositText()(3_370_000_000_000_000_000_000_000n)).toBe("3.370 NEAR");
+  });
+});
+
+describe("the completed-action panel", () => {
+  /**
+   * "Vault created." was hardcoded in the markup, so freezing an agent ended
+   * on a green panel announcing a vault had been created - which is the kind
+   * of thing that sends someone looking for a vault they now believe exists.
+   */
+  it("does not hardcode 'Vault created' into the done panel", () => {
+    const src = html();
+    const panel = src.match(/<div id="done"[\s\S]*?<\/div>\s*<\/div>/);
+    expect(panel, "done panel not found").not.toBeNull();
+    expect(
+      /<strong[^>]*>\s*Vault created\./.test(panel![0]),
+      "the done panel still hardcodes 'Vault created.' for every action",
+    ).toBe(false);
+  });
+
+  it("sets the done title for BOTH flows, rather than assuming one", () => {
+    const src = html();
+    expect(src).toMatch(/\$\("d-title"\)\.textContent\s*=\s*"Vault created\."/);
+    expect(src).toMatch(/\$\("d-title"\)\.textContent\s*=\s*ACTION\.summary/);
+  });
+});
+
+describe("standing advice is shown only when it applies", () => {
+  it("does not promise a recoverable deposit for a one-yocto action", () => {
+    expect(html()).toMatch(/dep > 1n/);
+  });
+
+  it("mentions a public key only when the arguments contain one", () => {
+    const src = html();
+    expect(src).toMatch(/hasPublicKey/);
+    expect(src).toMatch(/includes\("ed25519:"\)/);
+  });
+});

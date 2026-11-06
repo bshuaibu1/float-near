@@ -362,8 +362,15 @@
         </div>
 
         <div id="done" class="hide">
-          <div class="ok"><strong>Vault created.</strong> <span id="d-vault"></span></div>
-          <p class="note" style="text-align: left">
+          <!--
+            "Vault created." used to be hardcoded here, so EVERY completed
+            action reported it. Freezing an agent ended on a green panel
+            announcing a vault had been created - which is not what happened,
+            and is the kind of thing that makes someone go looking for a vault
+            they now believe exists.
+          -->
+          <div class="ok"><strong id="d-title">Done.</strong> <span id="d-vault"></span></div>
+          <p class="note" style="text-align: left" id="d-note">
             Return to your terminal — it is watching the chain and will pick this
             up on its own.
           </p>
@@ -577,6 +584,30 @@
         return BigInt(i + (f + "0".repeat(DECIMALS)).slice(0, DECIMALS));
       };
       const near = (y) => (Number(y) / 1e24).toFixed(3);
+
+      /**
+       * A deposit, worded so a non-zero amount never reads as zero.
+       *
+       * `near(1n)` is "0.000", so an owner action - which attaches exactly one
+       * yocto because `assert_one_yocto` demands it - showed "you send 0.000
+       * NEAR". That is the same defect the dashboard had with "$0.000": a
+       * figure that is NOT nothing, displayed as nothing. Here it is worse
+       * than cosmetic, because the number sits under the words "you send" on
+       * the screen where someone decides whether to sign.
+       *
+       * One yocto is named outright. It is not a cost, it is a signature
+       * requirement, and the smallest unit NEAR has - so "1 yocto" is both
+       * exact and short enough to read.
+       */
+      const depositText = (y) => {
+        const v = BigInt(y);
+        if (v === 0n) return "nothing";
+        if (v === 1n) return "1 yocto";
+        const asNear = Number(v) / 1e24;
+        // Non-zero but below display precision: say so rather than show 0.000.
+        if (asNear > 0 && asNear < 0.001) return "less than 0.001 NEAR";
+        return `${near(v)} NEAR`;
+      };
 
       /**
        * base64 for a 294 KB array.
@@ -1026,24 +1057,37 @@
         $("x-vault").textContent = ACTION.receiverId;
         $("x-owner").textContent = who;
         $("x-method").textContent = ACTION.methodName;
-        $("x-deposit").textContent = `${near(dep)} NEAR`;
+        $("x-deposit").textContent = depositText(dep);
         // ARGUMENTS IN FULL. A summary is the link describing itself, which is
         // precisely the thing under suspicion when a link is tampered with.
         $("x-args").textContent = JSON.stringify(ACTION.args ?? {}, null, 2);
-        // The page supplies the standing advice when the link does not carry
-        // any. Shipping three long sentences through a URL made the link
-        // ~750 bytes of JSON, and a link long enough to be truncated by a
-        // copy-paste is a link that fails for a reason the user cannot see.
-        // The arguments above are the authoritative part; this is guidance,
-        // and guidance belongs in the page.
+        /**
+         * The payload's own warnings first; the page's standing advice only
+         * when it has none, and only the parts that APPLY.
+         *
+         * Both fallback lines used to show on every action. On a freeze that
+         * meant the owner was told a "0.000 NEAR deposit" was recoverable -
+         * describing the one yocto `assert_one_yocto` requires as if it were
+         * the create flow's vault funding - and was asked to check a public
+         * key against what their agent reported, when a freeze carries no key
+         * at all.
+         *
+         * Advice that does not apply is not neutral. It teaches people to
+         * skim this box, and this box is where a real warning appears.
+         */
+        const hasPublicKey = JSON.stringify(ACTION.args ?? {}).includes("ed25519:");
         $("x-warn").textContent = (
           ACTION.warnings?.length
             ? ACTION.warnings
             : [
-                dep > 0n
+                // Only a real funding deposit earns a sentence. One yocto is a
+                // signature requirement, not money leaving the owner.
+                dep > 1n
                   ? `The ${near(dep)} NEAR deposit is held by your vault, not spent — it is recoverable.`
                   : null,
-                `Check any public key above against the one your agent reported before approving.`,
+                hasPublicKey
+                  ? `Check the public key above against the one your agent reported before approving.`
+                  : null,
               ].filter(Boolean)
         ).join("\n\n");
         $("btn-action").onclick = () => sendAction(dep);
@@ -1069,7 +1113,13 @@
               },
             ],
           });
+          // Say what was actually done. The summary is the sentence the owner
+          // already read and approved, so echoing it back is the one wording
+          // guaranteed to match their expectation.
+          $("d-title").textContent = ACTION.summary ? `${ACTION.summary}.` : "Done.";
           $("d-vault").textContent = `${ACTION.methodName} on ${ACTION.receiverId}`;
+          $("d-note").textContent =
+            "The change is on chain. Your dashboard will pick it up on its next refresh.";
           $("d-explorer").href =
             NETWORK === "mainnet"
               ? `https://explorer.near.org/accounts/${ACTION.receiverId}`
@@ -1159,6 +1209,8 @@
               },
             ],
           });
+          // The create flow keeps its own wording, now set rather than assumed.
+          $("d-title").textContent = "Vault created.";
           $("d-vault").textContent = vault;
           $("d-explorer").href =
             NETWORK === "mainnet"
