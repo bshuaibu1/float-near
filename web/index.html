@@ -1359,8 +1359,17 @@
         // carries the contract as an argument, and some wallets take a few
         // seconds to render it. Without a word of explanation that pause
         // reads as a hung page.
+        /**
+         * MEASURED, not quoted. This said "about 294 KB", a number lifted
+         * from a comment written when the wasm was a different size — while
+         * the plan screen two steps earlier computed `wasm.length / 1024` and
+         * displayed 292. The same page contradicting itself about the same
+         * artifact is exactly the kind of small wrongness that makes someone
+         * stop trusting the big numbers.
+         */
         $("s-note").textContent =
-          "This one carries the whole contract, about 294 KB, so some wallets take a few seconds to show it.";
+          `This one carries the whole contract, about ${(wasm.length / 1024).toFixed(0)} KB, ` +
+          `so some wallets take a few seconds to show it.`;
         $("sub").textContent = "";
         show("signing");
         try {

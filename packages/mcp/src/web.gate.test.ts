@@ -459,11 +459,20 @@ describe("the completed-action panel", () => {
     const start = src.indexOf('<div id="signing"');
     const panel = src.slice(start, start + 700);
     expect(panel, "sliced the wrong block").toContain('id="s-note"');
-    expect(/294 KB/.test(panel), "the shared signing panel still hardcodes the 294 KB claim").toBe(
-      false,
-    );
-    // and each flow sets its own
-    expect(src).toMatch(/\$\("s-note"\)\.textContent[\s\S]{0,200}?294 KB/);
+    expect(
+      /\d+ KB/.test(panel),
+      "the shared signing panel still hardcodes a contract size for every flow",
+    ).toBe(false);
+
+    // Each flow sets its own line, and the create one MEASURES rather than
+    // quoting: a literal drifts from the artifact the moment the wasm is
+    // rebuilt, and this page already displays a computed size on the plan
+    // screen. Two different numbers for one file is worse than none.
+    expect(src).toMatch(/\$\("s-note"\)\.textContent[\s\S]{0,300}?wasm\.length \/ 1024/);
+    expect(
+      /"This one carries the whole contract, about \d+ KB/.test(src),
+      "the size is hardcoded again",
+    ).toBe(false);
   });
 });
 
