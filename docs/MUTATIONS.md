@@ -21,13 +21,39 @@ Protocol for every row:
    still applied*, watch it go red, then revert. Writing it afterwards only
    describes the hole.
 
-Baseline: **33 unit + 9 sandbox = 42 passed, 0 failed, 0 warnings.**
+Baseline, measured 2026-10-28: **100 unit (production layout) / 98 unit
+(test-clock) + 24 sandbox.** Both unit runs are REQUIRED and neither subsumes
+the other: the production and test-clock state layouts differ by 8 bytes
+(`day_len_ns_override`), so the migration's real-bytes tests can only run
+without the feature and are skipped with it.
+
+    cargo test -p vault                        100 passed
+    cargo test --features test-clock -p vault   98 passed
+
+The sandbox 24 are 2 concurrency + 1 keys + 7 sandbox + 8 virtual_agent +
+4 migration + 2 panic_reason_codes (those last two need
+scripts/m21-plain-vs-cargo-near.sh; they skip LOUDLY rather than silently if
+its artifacts are absent).
+(The earlier "33 unit + 9 sandbox" line predates the virtual-agent rail and the
+removal of the MPC/Base rail's `chain_signatures.rs`.)
 
 The sandbox tier must run under Linux or WSL: `near-workspaces` ships a
 sandbox node only for linux-x86_64, linux-aarch64 and darwin-arm64. Build the
 wasm with `scripts/build-wasm.sh` (which uses `cargo near build`, never plain
 `cargo build` — see the note in the workspace `Cargo.toml`) and run with
 `CARGO_TARGET_DIR` pointed at a Linux-native path.
+
+`scripts/wsl-sandbox.sh` wraps all of that, callable from Windows:
+
+```sh
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh all          # build + whole tier
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh check        # compile only
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh one  <file>  # one test file
+wsl -d Ubuntu -- bash /mnt/c/.../scripts/wsl-sandbox.sh mut  <file>  # REBUILD + run (mutations)
+```
+
+Invoke it from PowerShell, not git-bash: git-bash rewrites the `/mnt/c/...`
+argument into a Windows path and `bash` then cannot find the script.
 
 ---
 
@@ -215,9 +241,219 @@ the exact binary the script is meant to reject.
   `production_build_reports_production_clock_and_a_real_day`, which runs under
   `cargo test -p vault --no-default-features`. Both sides of the marker are
   asserted, so neither can drift into agreeing with the other.
-- **Not verified:** `scripts/deploy-testnet.sh` itself has only been
-  syntax-checked (`bash -n`). Its end-to-end behaviour needs a testnet account
-  and has NOT been exercised. What is proven is the premise the guard rests on.
+- **Now verified (2026-10-28):** `scripts/deploy-testnet.sh` has been run
+  end-to-end against testnet, deploying to a fresh `v4.floatv4.testnet` with
+  `OWNER=floatv4.testnet`. The `clock_mode` guard executed and printed both
+  sides (`expected='production' actual='production'`). Superseded the earlier
+  note that only `bash -n` had been done.
+  - One portability fix was required: cargo-near generates the ABI by
+    compiling the crate NATIVELY as a cdylib, and on Windows MSVC that link
+    fails with ~52 unresolved near-sdk host-function externs (`panic_utf8`,
+    `promise_batch_create`, …) because `link.exe`, unlike `ld`, refuses to emit
+    a DLL with undefined symbols. The ABI step is now opt-out via `NO_ABI=1`;
+    the wasm build still runs THROUGH cargo-near, so `--cfg near` is preserved.
+    - **Superseded 2026-10-31 for `upgrade-vault.sh`:** opt-out is not enough.
+      `NO_ABI=1` is a thing you learn to set *after* the build has failed, and
+      that is exactly how it cost a cycle on the mainnet upgrade with this very
+      note already in the repo. `scripts/lib/shell-env.sh` now decides it:
+      `abi_policy git-bash` → `skip`, and WSL/Linux still → `build`, because
+      the sentence below is the reason the flag must not be unconditional.
+      `NO_ABI=1`/`0` override in both directions. Verified by capturing the
+      composed argv with a stub `cargo`:
+      `cargo near build non-reproducible-wasm --no-default-features --no-abi`.
+    Confirmed rather than assumed: the resulting wasm was byte-identical
+    (sha256 `23a44704…`) to the repo's checked-in build, `grep -c panic_utf8`
+    = 1, and a live call returned a readable
+    `Smart contract panicked: INSUFFICIENT_GAS: …` rather than a bare
+    `unreachable` trap. On Linux/WSL the ABI step succeeds and no flag is
+    needed — which is itself the evidence that the ABI step, and nothing else,
+    was the Windows failure.
+
+---
+
+### M25 / M26 / M27 — the virtual-agent rail (`tests/virtual_agent.rs`)
+
+Run against the sandbox tier on 2026-10-28, after it gained the signed path.
+Until then the virtual-agent surface had **zero** references in any sandbox
+test: the symbols were in the wasm and unreachable from a real runtime, so
+`env::ed25519_verify` had only ever been exercised against near-sdk's *mock*.
+
+Baseline for these rows: **95 unit + 18 sandbox** at the time they were run
+(8 of the 18 being `virtual_agent.rs`). The tier is 20 now — `panic_reason_codes.rs`
+was added afterwards by the M21 row below.
+
+| # | Edit | Predicted red | Actual |
+| --- | --- | --- | --- |
+| M25 | `dispatch_payment` gas floor, `prepaid_gas() < floor` → `<=` | `the_gas_floor_admits_its_own_boundary_and_refuses_below_it` only; every other test attaches `max_gas()` | ✅ **1 failed, 7 passed** — exact match, on the predicted assertion (`exactly 50 Tgas must dispatch`) |
+| M26 | nonce freshness, `nonce <= last` → `nonce < last` (permits exactly one replay) | `a_replayed_signature_is_refused_by_the_contract`, `rebinding_a_revoked_key_does_not_reset_its_nonce` | ✅ **2 failed, 6 passed** — exact match, both `left: "DUPLICATE_REQUEST"` / `right: "NONCE_NOT_FRESH"` |
+| M27 | `if !env::ed25519_verify(&sig, &msg, &pk32)` → `if false` | `a_relayer_cannot_rewrite_any_signed_field`, `an_unbound_key_cannot_spend` | ✅ **2 failed, 6 passed** — exact match, `left: "SETTLED"` / `right: "BAD_AGENT_SIGNATURE"` |
+
+Three things these rows establish that the unit tier cannot:
+
+- **M27 matters most.** It proves the HOST `env::ed25519_verify` is
+  load-bearing under `neard` — and because `tests/virtual_agent.rs` re-derives
+  the borsh encoding by hand rather than importing `VirtualAgentBinding`, that
+  the encoder genuinely detects forgery instead of agreeing with itself. The
+  unit tier signs via `near_sdk::borsh::to_vec` on the real struct, so it
+  agrees by construction and could never catch an encoding mistake.
+- **M26 shows why the reason code, not just "blocked", must be asserted.**
+  With the nonce guard weakened the replay was still refused — by the
+  duplicate-`request_id` check behind it. A test asserting only
+  `status == "BLOCKED"` would have **survived** M26 while the replay guard was
+  broken. Layered defence, bad oracle.
+- **M25 is not hypothetical.** This exact `<` → `<=` slip was introduced into
+  the working tree while the comparator's own doc comment was being corrected,
+  and was caught by the unit-tier boundary test. The floor is now pinned from
+  both sides in both tiers, and against live testnet numbers (50 Tgas settles,
+  49 panics).
+
+Protocol note: in all three rows the wasm hash was printed before the run and
+differed from baseline (`596c6791` → `03c64d2a`, `ec4c9a66`, `e3622f4e`). A
+mutation run that forgets `scripts/build-wasm.sh` tests the PREVIOUS binary and
+reads as a survival, so `scripts/wsl-sandbox.sh mut <file>` pairs the rebuild
+and the run and cannot drift apart.
+
+### M29 — the gas floor must PANIC, not return `blocked` (unit tier)
+
+Run on 2026-10-28 alongside the comment fix that scoped the nonce-burn
+guarantee. M25 pins the floor's *direction*; this pins its *mechanism*, which
+is a separate property and the one with a griefing vector behind it.
+
+Baseline for this row: **95 unit.**
+
+| # | Edit | Predicted red | Actual |
+| --- | --- | --- | --- |
+| M29 | `dispatch_payment` gas floor, `fail(ReasonCode::InsufficientGas, …)` → `return blocked(&request_id, node_id, ReasonCode::InsufficientGas)` | `an_under_gassed_signed_payload_panics_rather_than_consuming_its_nonce` only; `a_signed_payload_at_exactly_the_gas_floor_dispatches` is insensitive to it | ✅ **1 failed, 1 passed** (`cargo test -p vault gas`) — exact match, `test did not panic as expected`, and the boundary test stayed green as predicted |
+
+Why the mechanism is load-bearing: `request_payment_signed` burns the nonce
+*before* calling `dispatch_payment`. A panic reverts that insert along with the
+rest of the receipt, so an under-gassed payload stays replayable — which is
+what stops a malicious relayer from destroying an agent's signed payloads by
+deliberately under-gassing them. Returning `blocked` instead commits the burn
+and opens exactly that vector, while every assertion about the payment being
+*rejected* keeps passing. The reason code is identical either way, so an
+oracle that checks only `INSUFFICIENT_GAS` survives this mutation — same
+lesson as M26, one layer further in.
+
+**What this row does NOT establish.** The revert is invisible to the unit
+tier: an unwinding panic does not roll back the in-memory `self`, and the
+insert precedes the floor check, so this process's counter advances either
+way. The test can only assert that the path panics rather than returning. The
+revert itself rests on the live testnet run of 2026-10-28 against
+`v4.floatv4.testnet` — 49 Tgas panicked with `INSUFFICIENT_GAS` and
+`get_virtual_agent_nonce` was unchanged afterwards, so the payload remained
+replayable. Making that directly observable needs a real receipt; queued
+below.
+
+---
+
+### M30 — drop `#[private]` from `migrate`: **EXECUTED**, gap closed
+
+`a8f8c14` added `migrate` and recorded `#[private]` as deliberately **not
+covered**: "near-sdk emits that check into the wasm export, so a native unit
+test never crosses it and a should_panic test fails rather than passes. It needs
+the sandbox tier, which has no Windows binary — a known gap, not a passing
+test." The diagnosis was exactly right. The premise is no longer true:
+`scripts/wsl-sandbox.sh` runs the tier under WSL.
+
+- **Edit:** `contracts/vault/src/lib.rs`, remove `#[private]` from `migrate`.
+- **Predicted:** `a_stranger_cannot_call_migrate` and
+  `even_the_owner_cannot_call_migrate` red; the self-call control and the
+  `get_base_config` row unaffected.
+- **Actual:** ✅ **2 failed, 2 passed** — exact match.
+
+**What the mutation revealed, which is the reason the test asserts a specific
+message.** With `#[private]` gone, the stranger's call still fails — with
+`Smart contract panicked: Cannot deserialize the contract state.` It is stopped
+only by the legacy layout failing to parse, not by access control. A test that
+merely asserted "a stranger cannot call migrate" would have **survived M30**
+while the access control was gone.
+
+And that masking is not safe in the one case that matters. `migrate` exists to
+run against state that IS the legacy layout — so on a pre-migration vault the
+deserialize **succeeds**, and without `#[private]` any account could call
+`migrate` and overwrite state through the shadow struct. The only thing that
+makes the mutation look harmless in a test is that the fixture vault is already
+migrated. Same shape as M26: layered defence, bad oracle.
+
+Covered by `contracts/integration-tests/tests/migration.rs` (4 tests), which
+pairs the two rejection tests with a self-call control. The control is load
+bearing: it shows `Contract::call` satisfies predecessor == current and fails on
+deserialize instead, which is what proves the private check — rather than some
+unrelated failure — is what rejects the stranger.
+
+One process note. The first run of these tests reported **4 failed, all
+`MethodResolveError(MethodNotFound)` for `migrate`** — because `wsl-sandbox.sh
+one` does not rebuild, and `res/vault_test_clock.wasm` predated `a8f8c14`. The
+tests were correct and the binary was stale. This is the failure the protocol's
+step 3 warns about, met from the other direction: not "the mutation is missing
+from the binary" but "the FEATURE is missing from the binary". Use `mut`, which
+pairs the rebuild with the run.
+
+---
+
+### M21 — plain `cargo build` instead of `cargo near build`: **EXECUTED**, claim upheld
+
+Previously listed as blocked on the sandbox tier, and the subject of a direct
+contradiction in this repo: the workspace `Cargo.toml` and this file said a
+plain build destroys panic reason codes, while commit `c732cbe` reported that
+"both artifacts import the same 40 `env` host functions" and removed the
+warning as unsupported. Settled by measurement.
+
+- **Edit:** none to the source. The *build command* is the mutation. Both
+  artifacts produced by `scripts/m21-plain-vs-cargo-near.sh` from identical
+  source, toolchain (rustc 1.99.1), profile (`--release`) and features
+  (`test-clock`), in one WSL environment.
+- **Predicted:** the plain artifact loses the message. Written as a
+  *differential* assertion rather than an absolute one — the test asserts only
+  that the two artifacts behave DIFFERENTLY and prints which way, so a pass
+  could not encode the claim under test as its own premise.
+- **Actual:** ✅ **claim upheld.** Same source, same panic (`add_node` with an
+  empty label → `fail(ReasonCode::InvalidConfig, ..)`), one sandbox:
+
+  | build | receipt |
+  | --- | --- |
+  | `cargo near build` | `Smart contract panicked: INVALID_CONFIG: label must be 1..=48 chars` |
+  | plain `cargo build` | `WebAssembly trap: An `unreachable` opcode was executed.` |
+
+- **Pinned by:** `contracts/integration-tests/tests/panic_reason_codes.rs`,
+  which deploys both into one sandbox. It skips when the artifacts are absent,
+  since `build-wasm.sh` deliberately produces only the correct one.
+
+**Why `c732cbe` reached the opposite conclusion, and the lesson.** Its claim is
+not reproducible: the real import counts are **38 (plain) vs 40 (cargo-near)**,
+with `panic_utf8` and `sha256` missing from the plain build — measured with
+`scripts/wasm-imports.mjs`, which parses the import section. Any correct
+comparison of these two artifacts shows a difference, so whatever was compared,
+it was not these two. Note the sizes differ almost 2:1 (624,090 vs 290,110
+bytes), which is a cheap sanity check that two artifacts are not the same thing.
+
+The second lesson is where the mechanism lives. Grepping **near-sdk** for the
+cfg finds only a `compile_error!` gate and a doc line — no implementation
+switch — which reads convincingly as "the claim is unfounded." But `near-sdk`
+re-exports `panic_str` from **`near-sdk-env` 0.1.7**, which gates
+`use near_sys as sys` on `all(near, target_arch = "wasm32")` and branches:
+
+```rust
+pub fn panic_str(message: &str) -> ! {
+    execute_target_specific! {
+        host:  { unsafe { sys::panic_utf8(..) } },   // only with --cfg near
+        local: { eprintln!("{message}"); panic!() }  // otherwise
+    }
+}
+```
+
+Without `--cfg near` the `local` branch compiles: `eprintln!` goes nowhere on
+wasm and `panic!()` lowers to an `unreachable` opcode. `sha256` is substituted
+the same way. Those are the "pure-Rust fallbacks" near-sdk's docs call "not for
+on-chain use" — they are simply in a different crate than the one you would
+grep. **A negative result from reading one crate is not a refutation when the
+symbol is re-exported from another.**
+
+Third: `grep -c panic_utf8 <wasm>` is not a test for "is it imported". It also
+matches the name section and string data, so it can report a function that is
+not imported — and on a stripped binary can look identical for the wrong
+reason. Use the import section.
 
 ---
 
@@ -238,11 +474,12 @@ schedule a promise and the callback never executes there.
 | # | Edit | Predicted red |
 | --- | --- | --- |
 | M9 | drop the `pending.checked_sub` release in the failure branch | forced-failure + unregistered-recipient tests |
-| M21 | plain `cargo build --target wasm32-unknown-unknown` instead of `cargo near build` | `reason_code_panics_reach_the_receipt_outcome`. **This one already fired for real:** the tier was initially built the plain way, every panic arrived as `WebAssembly trap: unreachable`, and the contract's stable reason codes were silently gone. |
+| ~~M21~~ | plain `cargo build` instead of `cargo near build` | **EXECUTED 2026-10-28 — see the M21 section above.** No longer blocked. |
 | M22 | `TEST_DAY_NS` as the default day length in `setup()` | `concurrency_parent_cap_is_exact_*` (via the one-day-bucket assertion). **Also fired for real:** a 100 ms day made `current_day()` a moving target and would have let 16 concurrent payments draw on two separate daily budgets. |
 | M10 | remove the `status != TransferPending` idempotency gate | forced-failure test (figures double) |
 | M17 | mock's `ft_transfer` returns instead of panicking when armed | forced-failure test (differential control) |
 | M18 | drop the receiver-registration check in the mock | `unregistered_recipient_releases_the_reservation` |
+| M29 (re-run) | the M29 edit, `fail(InsufficientGas, …)` → `return blocked(…)` | **The test does not exist yet — write it before claiming this row.** The unit tier can only prove the path panics; only a real receipt shows the nonce burn reverting with it. Shape: submit a signed payload below the floor, assert the receipt failed with `INSUFFICIENT_GAS`, assert `get_virtual_agent_nonce` is unchanged, then assert the SAME payload still settles at adequate gas. Under the mutation the burn commits, so the retry comes back `NONCE_NOT_FRESH`. Until then the atomic revert rests on the manual testnet run recorded in M29. |
 
 ## Expected to survive
 
@@ -401,3 +638,282 @@ nothing at all. Nothing looks exactly like a clean pass. The mutation was only
 caught because an empty result from a command that should always print
 *something* is itself the anomaly worth checking.
 
+
+### M31 — `XCHAIN_HEADROOM` 0.02 → 0.01
+
+The cross-chain cap headroom, dropped below the worst measured spread (1.52%
+at 0.50). Covers `packages/create-float/test/xchain.test.mjs`.
+
+- **Edit:** `packages/create-float/bin/xchain.mjs`, `XCHAIN_HEADROOM = 0.01`.
+- **Predicted:** 3 of the 5 new tests red — "a derived cap covers what a live
+  quote actually charged", "xchainCap rounds UP", "the headroom exceeds the
+  worst measured spread". The smallest-size and round-trip rows PASS, because
+  0.50 still clears at 1% (cap 0.51 vs charged 0.507579) and the round-trip
+  holds for any positive headroom.
+- **Actual:** ✅ **3 failed, 6 passed** — exact match, including which rows
+  survived. The live-charge row failed at **10**, not at 0.50:
+  `cap for 10 is 10100000 but delivering it was charged 10105478`.
+- **Re-run after a correction to the subject.** The first version of this
+  change applied `xchainCap` to the WRONG BRANCH of `DEFAULT_TREE` — testnet
+  instead of mainnet, because `MAINNET ? … : …` gives mainnet the SMALL tree.
+  The fixtures were widened to the mainnet scale (0.5/1/1.5/2 alongside
+  10/50/60/100) and M31 re-run: still 3 failed, 6 passed. Worth recording that
+  the mutation was re-run rather than assumed to still hold — the fixture set
+  changed underneath it, and a row count carried over from before the change
+  would have been evidence about a suite that no longer existed.
+
+Worth recording for the shape rather than the row. The fixtures are charges
+from live 1Click dry quotes, not `desired * 1.02`, for the same reason
+`binding.test.mjs` pins bytes emitted by the Rust struct: a fixture derived
+from the thing under test only proves self-consistency. Had `MEASURED` been
+computed from the constant, every row would have stayed green at 1%, 0.5% or
+0% headroom — the suite would have asserted nothing at all while looking like
+coverage.
+
+The property row (`headroom > worst measured spread`) exists for the opposite
+drift: someone re-measures a worse spread, updates the fixtures, and does not
+revisit the constant. That row notices; the per-row assertions would all still
+pass against their own updated numbers.
+
+### M32 — swap the branches of `defaultTree`
+
+Reproduces the bug that actually shipped in 9d03e99: `xchainCap` applied to the
+testnet tree instead of the mainnet one. Covers
+`packages/create-float/test/tree.test.mjs`.
+
+- **Edit:** `packages/create-float/bin/tree.mjs`, `return mainnet` →
+  `return !mainnet`.
+- **Predicted:** 4 red — "the mainnet plan renders pre-sized caps", "the testnet
+  plan renders ROUND caps", "mainnet caps are fractional; testnet caps are
+  whole", "planTreeLines takes its colouring injected". 4 of the 8 survive:
+  `notDeepEqual`, the deliverability check, the overcommit check and `flatten`.
+- **Actual:** ✅ **4 failed, 13 passed** — exact match, and the diagnostic
+  earned its wording: `no mainnet cap is fractional — xchainCap is probably not
+  applied to this branch`.
+
+**Why "the two trees are not the same tree" SURVIVES, which is the point of
+writing predictions down.** `notDeepEqual(mainnet, testnet)` guards against the
+two branches collapsing into one. Swapped trees are still different, so it
+passes — a test that looks like it covers "the branches are right" covers only
+"the branches are not identical". The assertion that actually fails under a swap
+is the fractional-vs-whole property, because pre-sized caps are
+`ceil(x * 1.02)` to the cent and round defaults never are.
+
+**Why the rendered text is asserted and not just the data.** A data-only test
+would catch this row. But the thing that caught the real bug was running
+`--dry-run` and reading `102/day, 10.2/tx` where round numbers belonged, so the
+plan's exact lines are pinned too: a tree with correct caps that prints the
+wrong node's numbers is still the first thing a user sees.
+
+**What these tests cannot do.** Nothing, as of M35/M36 — the `--dry-run` gate
+is covered too, via a localhost RPC stub that answers `getBalance()`. The
+earlier claim that it was unreachable assumed the only options were a dead port
+or the real network.
+
+Step ordering and argument parsing, listed here as uncovered when this row was
+written, are now covered — see M33 and M34. A subprocess test turned out to be
+hermetic after all, via two seams that already existed: `NEAR_CREDENTIALS_DIR`
+for the keychain, and `--rpc http://127.0.0.1:1` to make the first network call
+fail instantly on a closed local port rather than depend on DNS or the
+internet. The conclusion that it was untestable was right about `getBalance()`
+and wrong about everything before it.
+
+
+### M33 — remove the unknown-network guard
+
+- **Edit:** `packages/create-float/bin/args.mjs`,
+  `if (!NETWORKS.includes(network))` → `if (false && …)`.
+- **Predicted:** 2 red — the unit row asserting `parseArgs` throws a
+  `UsageError` with `exitCode` 2, and the subprocess row asserting the CLI
+  exits 2 *before any step runs*.
+- **Actual:** ✅ **2 failed, 30 passed** — exact match.
+
+The guard moved out of module scope while being extracted, and that is the
+point of the row. It used to call `process.exit(2)` directly, so importing
+`create-float.mjs` to read one flag could terminate the caller — a test runner
+included. It now throws and the entry point applies `e.exitCode`, which is both
+testable and the same behaviour from outside.
+
+### M34 — preflight stops reporting and starts merely mentioning
+
+- **Edit:** `create-float.mjs` step 0, the missing-credentials
+  `if (!existsSync(credDir))` → `if (false && …)`, so preflight notices nothing
+  and the run continues.
+- **Predicted:** 1 red — "preflight runs FIRST, and a preflight failure stops
+  everything after it". The sibling row uses a VALID scratch keychain, so it is
+  unaffected.
+- **Actual:** ✅ **1 failed, 31 passed** — exact match.
+
+This is f69e9d0's property restated as a test. Those checks used to run at step
+5, AFTER the plan was confirmed and two accounts had been created and funded, so
+discovering there was nothing to deploy left a half-built vault and real NEAR
+spent. "Preflight exists" is not the claim; "preflight GATES" is, and only an
+ordering assertion can carry it.
+
+Both rows run the real CLI as a subprocess. Nothing in `test/steps.test.mjs` can
+send a transaction: the dead RPC guarantees the run dies at step 3, and step 4
+is the first step that spends. The assertions check `[4]` is absent rather than
+trusting that.
+
+One harness note worth keeping, because it failed silently rather than loudly.
+The step headers are printed as `[1m[0][0m Preflight`, so matching
+`/\[(\d)\]\s/` against raw output finds nothing — the `]` is followed by an
+escape sequence, not a space. The first run of these tests reported an empty
+step list, which reads as "no steps ran" rather than "the matcher cannot see
+them". Every assertion now goes through a `plain()` stripper. Same hazard as
+asserting on coloured text anywhere, and the same shape as injecting `dim` into
+`planTreeLines`.
+
+
+### M35 — remove the `--dry-run` gate
+
+- **Edit:** `create-float.mjs`, `if (DRY)` → `if (false && DRY)`.
+- **Predicted:** 1 red — "`--dry-run` stops at the gate". The control already
+  runs past the gate, and the affordability check is upstream of it, so both
+  should survive.
+- **Actual:** ✅ **1 failed, 7 passed** — exact match.
+
+**This row was first recorded as a SURVIVAL, and that was wrong.** The
+`str.replace` that applied it matched nothing, the `grep` meant to confirm it
+printed nothing, and I did not assert on the count — so the suite ran against
+UNMUTATED code and eight greens looked like evidence the gate was untested. It
+is the M1 lesson verbatim, from this same file: *"the edit never landed and the
+suite ran UNMUTATED. Without the count assertion that run's 8 greens would have
+been recorded as 'M1 survives'."* Documented and then repeated.
+
+What caught it was running the wizard by hand with the mutation supposedly
+applied and seeing `dry run — nothing was sent` print anyway. The fix is the
+one M1 already prescribes: assert the occurrence count BEFORE trusting the run,
+and abort if it is not exactly 1.
+
+### M36 — hoist the gate ABOVE the balance read
+
+The more interesting direction, because the gate's POSITION is the claim.
+
+- **Edit:** move the `if (DRY)` block above
+  `console.log(... your balance ...)` and the `available < total` check.
+- **Predicted:** 2 red — "`--dry-run` stops at the gate" (it would still print
+  the dry-run line but no longer the balance) and "an unaffordable plan is
+  refused BEFORE the dry-run gate". The control survives.
+- **Actual:** ✅ **2 failed, 6 passed** — exact match.
+
+The property: a dry run reports what the plan COSTS and whether it is
+affordable. Hoisting the gate would make `--dry-run` answer "fine" on a balance
+too small to proceed, which is worse than having no dry run — it would be a
+confident green. The contract comment now says so, pointing at both rows.
+
+**How the gate became reachable at all.** Two earlier attempts concluded it was
+not: the `--dry-run` check sits after `await ownerAcct.getBalance()`, so the
+dead-port runs die first. The missing option was a localhost HTTP stub speaking
+just enough JSON-RPC — `EXPERIMENTAL_protocol_config` for
+`storage_amount_per_byte`, then `query`/`view_account` — discovered by logging
+what the wizard actually asked for rather than guessing. `available = amount -
+max(locked, storage_usage * rate)`, so the stub controls the reported balance
+and M36's affordability row can be driven with `nearBalance: 1`.
+
+Reordering production code to put the gate before the balance would also have
+made it testable, and was rejected: the balance is part of what a dry run is
+for, so that would have degraded the feature to suit the test.
+
+**One deadlock worth recording.** The stub is created in the test process, and
+`run()` used `execFileSync` — which BLOCKS the event loop, so the stub could
+never answer and the child sat at `getBalance()` until the 60s timeout. The
+symptom reads as "the stub does not work"; the cause is that a synchronous wait
+cannot serve a request. `run()` is now async via `promisify(execFile)`.
+
+**And one guard.** `run()` asserts `--rpc` is present and on `127.0.0.1`. Step 4
+is the first step that spends, and these tests deliberately reach it in the
+control row — against loopback, where the "transaction" goes nowhere. An edit
+that dropped `--rpc` would fall back to the real testnet RPC and spend actual
+NEAR, so that is enforced structurally rather than promised in a comment.
+
+### M37 — `total` charges for the vault unconditionally
+
+`packages/create-float/bin/create-float.mjs`
+
+```js
+-    const total = (vaultExists ? 0n : VAULT_FUNDING) + AGENT_COST * BigInt(agents.length);
++    const total = VAULT_FUNDING + AGENT_COST * BigInt(agents.length);
+```
+
+**Predicted:** the two resume rows go red, the other 43 stay green.
+**Observed:** `ℹ pass 43 / ℹ fail 2` — exactly the two, with
+`a resume was refused for money already in the vault` and
+`did not match /insufficient balance: need 1\.100/`. **KILLED.**
+
+This is the live mainnet failure, re-armed. The mutant is not a hypothetical
+regression: it is the code as shipped, which refused a resume with
+`insufficient balance: need 3.000, have 0.748` after step 6 crashed with the
+vault already created and holding its 3 NEAR.
+
+Worth recording WHY no existing row caught it. The suite had a row for the
+unaffordable case, and it passed both before and after the fix — because
+`rpcStub` answered `view_account` for ANY account id. So `new Account(vault)
+.getState()` succeeded, the vault looked already-created, `total` collapsed to
+0, and the plan was affordable. That row went red the moment the real fix
+landed, which is how the stub was found: a stub that says yes to everything
+cannot distinguish the two branches of the thing being tested, so it reported
+the pre-fix and post-fix code as identical.
+
+`existingAccounts` now defaults to `["me.testnet"]` and everything else gets a
+`UNKNOWN_ACCOUNT` error, which is what a real node returns. The second row is
+the other direction — a resume still bills 0.55 per uncreated agent, so the fix
+is "skip what is already paid for" rather than "skip everything once the vault
+exists". Without it, `vaultExists ? 0n : total` would also pass.
+
+### M38 — the orphaned `#[private]` on `get_node` (found in production, not by mutation)
+
+`contracts/vault/src/lib.rs`
+
+This row is inverted: the "mutation" was the SHIPPED CODE, and it was found by
+calling the deployed mainnet contract, not by the suite.
+
+```rust
+  /// Chain Signatures rail. A successful promise means the MPC network
+  /// returned a SIGNATURE over the Base transaction.
+  #[private]                        // <-- orphan: on_sign_result's, not get_node's
+  // -------------------------------------------------------------- views
+
+  pub fn get_node(&self, node_id: NodeId) -> Node {
+```
+
+`on_sign_result` was deleted when the MPC/Base rail was removed on 2026-10-28.
+Its body went; its doc comment and `#[private]` stayed. Rust binds an attribute
+to the next ITEM, and a comment is not an item, so the attribute landed on
+`get_node`. `#[private]` expands to an assert on `predecessor_account_id()`,
+which the runtime forbids in a view context, so every view call returned:
+
+    HostError(ProhibitedInView { method_name: "predecessor_account_id" })
+
+**Observed on mainnet** against `float.test015.near`, while reading the tree to
+confirm the token id. `get_tree` and `get_node_budget` both answered fine, which
+is what made it visible: one view failing while its neighbours worked.
+
+**Why the whole suite missed it, which is the part worth keeping.** Two
+independent blinds, either of which alone would have been enough:
+
+1. `#[private]` is injected into the generated `extern "C"` wrapper, NOT the
+   inner Rust method. The six internal `self.get_node(..)` call sites are
+   untouched, so no payment path changed behaviour — the bug has no symptom
+   anywhere except the external view surface.
+2. All 15 unit-test call sites are `v.get_node(..)` — the Rust method, direct.
+   They bypass the wrapper entirely and cannot observe `#[private]` even in
+   principle. Only a real node executes that wrapper.
+
+So "the function returns the right value" and "the function can be CALLED" were
+two different claims, and the second one had zero coverage across 100 unit and
+24 sandbox tests.
+
+**Red/green.** With the attribute in place, `tests/views.rs` fails 3/3 and the
+surface test names `get_node` as the only broken view — the other six pass,
+which bounds the blast radius to one method. With it removed, 3/3 pass and the
+tier is 27/27.
+
+The general repair is the surface test, not the deletion: `no_view_asserts_on
+_its_caller` calls all seven public views AS views and reports every failure at
+once, naming `ProhibitedInView` when it sees it.
+
+**Still live on mainnet.** `float.test015.near` is running the affected build.
+No funds or limits are at risk — `#[private]` is strictly MORE restrictive and
+the internal callers are unaffected — but a single-node read is broken until
+the contract is redeployed.

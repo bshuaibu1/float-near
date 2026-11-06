@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  coverageNote,
   explorerBaseFor,
   getAgentKeys,
   getVaultInfo,
@@ -64,7 +65,10 @@ describe("getDashboard", () => {
     // Teams are rows too: they hold the shared pool, which is the thing this
     // product exists to show.
     return getDashboard(stubView(), cfg()).then((d) => {
-      expect(d.agents.map((a) => a.displayName)).toEqual(["root", "└─ research", "   └─ r1"]);
+// Plain strings now: depth left displayName entirely, so there is no
+      // invisible character to build or to get wrong.
+      expect(d.agents.map((a) => a.displayName)).toEqual(["root", "research", "r1"]);
+      expect(d.agents.map((a) => a.depth)).toEqual([0, 1, 2]);
     });
   });
 
@@ -255,14 +259,6 @@ describe("getVaultInfo", () => {
   function view(over: Record<string, unknown> = {}): ViewFn {
     const table: Record<string, unknown> = {
       get_config: cfgView,
-      get_base_config: {
-        mpc_contract: "v1.signer-prod.testnet",
-        usdc_address: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-        chain_id: 84532,
-        derivation_path: "base-1",
-        domain_id: 0,
-        max_tx_fee_wei: "10000000000000000",
-      },
       ...over,
     };
     return async <T>(m: string) => table[m] as T;
@@ -298,27 +294,19 @@ describe("getVaultInfo", () => {
     expect(info.vaultTokenBalance).toBeNull();
   });
 
-  it("reports the base rail as CLOSED on a vault that predates it", async () => {
-    // An older deployment has no get_base_config method at all. Nothing can be
-    // signed on that rail either way, so closed is the honest reading.
+  // The two base-rail tests that stood here are gone with the rail: the
+  // contract no longer has `get_base_config`, so there is nothing to map and
+  // no "closed" state to report. Replaced by the assertion that we no longer
+  // ASK — a stale call would be a wasted RPC round-trip on every dashboard
+  // load, and silently swallowed by the old `.catch(() => null)`.
+  it("does not call the removed get_base_config", async () => {
+    const asked: string[] = [];
     const v: ViewFn = async <T>(m: string) => {
-      if (m === "get_base_config") throw new Error("MethodNotFound");
+      asked.push(m);
       return cfgView as T;
     };
-    const info = await getVaultInfo(v, cfg(), async () => "0");
-    expect(info.baseRail).toBeNull();
-  });
-
-  it("maps the base rail into camelCase for the UI", async () => {
-    const info = await getVaultInfo(view(), cfg(), async () => "0");
-    expect(info.baseRail).toEqual({
-      mpcContract: "v1.signer-prod.testnet",
-      usdcAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-      chainId: 84532,
-      derivationPath: "base-1",
-      domainId: 0,
-      maxTxFeeWei: "10000000000000000",
-    });
+    await getVaultInfo(v, cfg(), async () => "0");
+    expect(asked).toEqual(["get_config"]);
   });
 });
 
@@ -374,6 +362,9 @@ describe("getAgentKeys", () => {
       receiverId: "v.testnet",
       methodNames: ["request_payment"],
       allowanceYocto: "500000000000000000000000",
+      // null here, not absent: this is a plain function-call key, and only a
+      // NEP-611 gas key carries a balance.
+      gasBalanceYocto: null,
     });
   });
 
@@ -488,5 +479,234 @@ describe("refusals recovered from chain", () => {
       {},
     );
     expect(merged).toHaveLength(0);
+  });
+});
+
+describe("getAgentKeys finds VIRTUAL agents", () => {
+  /**
+   * Sub-accounts are retired, so `n.account` is null on every node of every
+   * vault created from now on — and this function filtered on exactly that.
+   * The result was an agent-keys page that rendered an empty list for a
+   * correctly configured vault, which reads as "nothing is authorised here":
+   * the opposite of the truth, and the same failure the `error` field exists
+   * to prevent for unreadable key lists.
+   *
+   * A virtual agent is a gas key ON THE VAULT bound with `bind_virtual_agent`.
+   * The contract leaves `node.account` as None deliberately — that field means
+   * "a real sub-account is bound here" and a virtual agent is the absence of
+   * one — so the only way to enumerate them is the vault's own access keys,
+   * each asked `get_virtual_agent_node`.
+   */
+  const VAULT = "v.testnet";
+  const GAS_PK = "ed25519:gas";
+  const OWNER_PK = "ed25519:owner";
+
+  const viewFor =
+    (bound: Record<string, number | null>): ViewFn =>
+    async <T>(method: string, args?: unknown) => {
+      if (method === "get_tree") return TREE as T;
+      if (method === "get_virtual_agent_node") {
+        const pk = (args as { public_key: string }).public_key;
+        return (bound[pk] ?? null) as T;
+      }
+      throw new Error(`unexpected view ${method}`);
+    };
+
+  // Dispatch on the account id. A stub that returns the same keys for every
+  // account is not a stand-in for the chain — it made the account-bound node
+  // in the shared TREE fixture appear to hold the vault's keys, and a test
+  // then failed for a reason that had nothing to do with the code.
+  const keysFor = (vk: unknown) => async (id: string) => (id === VAULT ? (vk as never) : ([] as never));
+
+  const vaultKeys = [
+    // A gas key. NOTE the variant: GasKeyFunctionCall, not FunctionCall.
+    {
+      public_key: GAS_PK,
+      access_key: {
+        permission: {
+          GasKeyFunctionCall: {
+            allowance: null,
+            balance: "119297352510720700000000",
+            receiver_id: VAULT,
+            method_names: ["request_payment"],
+            num_nonces: 1,
+          },
+        },
+      },
+    },
+    // The owner's key, which the factory installs. Not an agent.
+    { public_key: OWNER_PK, access_key: { permission: "FullAccess" as const } },
+  ];
+
+  it("lists a bound gas key as an agent on its node", async () => {
+    const rows = await getAgentKeys(
+      viewFor({ [GAS_PK]: 0 }),
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    const virt = rows.filter((r) => r.virtual);
+    expect(virt).toHaveLength(1);
+    expect(virt[0]!.nodeId).toBe(0);
+    expect(virt[0]!.accountId).toBe(VAULT);
+    expect(virt[0]!.keys.map((k) => k.publicKey)).toEqual([GAS_PK]);
+  });
+
+  /**
+   * A gas key IS restricted — it names one method on one contract. Reading
+   * `perm.FunctionCall` finds nothing on a `GasKeyFunctionCall` and would
+   * report the key as unrestricted, which is the single most misleading thing
+   * this page could say about an agent.
+   */
+  it("reports a gas key as restricted, with its method list and balance", async () => {
+    const rows = await getAgentKeys(
+      viewFor({ [GAS_PK]: 0 }),
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    const k = rows.find((r) => r.virtual)!.keys[0]!;
+    expect(k.restricted).toBe(true);
+    expect(k.methodNames).toEqual(["request_payment"]);
+    expect(k.receiverId).toBe(VAULT);
+    // For a gas key the BALANCE is the cap; allowance is null by design.
+    expect(k.allowanceYocto).toBeNull();
+    expect(k.gasBalanceYocto).toBe("119297352510720700000000");
+  });
+
+  /** The owner's full-access key is not an agent and must not be listed. */
+  it("does not treat the owner's full-access key as an agent", async () => {
+    const rows = await getAgentKeys(
+      viewFor({ [GAS_PK]: 0 }),
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    const pks = rows.flatMap((r) => r.keys.map((k) => k.publicKey));
+    expect(pks).not.toContain(OWNER_PK);
+  });
+
+  /** An unbound key on the vault is not an agent either. */
+  it("ignores a key on the vault that is not bound to a node", async () => {
+    const rows = await getAgentKeys(
+      viewFor({}), // nothing bound
+      keysFor(vaultKeys),
+      cfg({ vault: VAULT }),
+    );
+    expect(rows.filter((r) => r.virtual)).toEqual([]);
+  });
+
+  /**
+   * Both rails at once. `bind_agent` is kept — it binds an account that
+   * already exists and strands nothing — so a vault can legitimately have
+   * both, and neither may hide the other.
+   */
+  it("lists account-bound and virtual agents together", async () => {
+    const mixed: VaultNode[] = [{ ...TREE[0]! }, { ...TREE[1]! }, { ...TREE[2]!, account: "r1.v.testnet" }];
+    const view: ViewFn = async <T>(method: string, args?: unknown) => {
+      if (method === "get_tree") return mixed as T;
+      if (method === "get_virtual_agent_node") {
+        return ((args as { public_key: string }).public_key === GAS_PK ? 0 : null) as T;
+      }
+      throw new Error(`unexpected view ${method}`);
+    };
+    const rows = await getAgentKeys(
+      view,
+      async (id: string) => (id === VAULT ? (vaultKeys as never) : ([] as never)),
+      cfg({ vault: VAULT }),
+    );
+    expect(rows.filter((r) => !r.virtual).map((r) => r.accountId)).toEqual(["r1.v.testnet"]);
+    expect(rows.filter((r) => r.virtual).map((r) => r.nodeId)).toEqual([0]);
+  });
+
+  /**
+   * A FAILED BINDING LOOKUP IS NOT "NOT AN AGENT".
+   *
+   * The first version of this used `.catch(() => null)`, which gives an RPC
+   * error and a genuine "this key is not bound" the same value — so a
+   * rate-limited chain rendered "no virtual agents" for a vault that has one.
+   * Caught live: two adapters against one RPC produced HTTP 429 and the list
+   * came back empty rather than unknown. Same absent-versus-unreadable
+   * inversion the `error` field exists to prevent for key lists.
+   */
+  it("reports an unreadable binding lookup instead of rendering it as no agents", async () => {
+    const view: ViewFn = async <T>(method: string) => {
+      if (method === "get_tree") return TREE as T;
+      throw new Error("RPC https://test.rpc.fastnear.com returned HTTP 429");
+    };
+    const rows = await getAgentKeys(view, keysFor(vaultKeys), cfg({ vault: VAULT }));
+    const virt = rows.filter((r) => r.virtual);
+    expect(virt).toHaveLength(1);
+    expect(virt[0]!.error).toContain("429");
+    expect(virt[0]!.keys).toEqual([]);
+  });
+
+  /** With no vault configured it must not invent one or crash. */
+  it("degrades to account-only when the vault id is unknown", async () => {
+    const rows = await getAgentKeys(viewFor({ [GAS_PK]: 0 }), async () => [] as never, cfg());
+    expect(rows.every((r) => !r.virtual)).toBe(true);
+  });
+});
+
+describe("coverageNote states what the refusal history actually covers", () => {
+  /**
+   * `blockedCoverage` was already on /v1/dashboard, computed behind a comment
+   * reading "A UI that shows 0 blocked without this cannot distinguish an
+   * honest zero from an unscanned range" — and NO page rendered it. So the
+   * activity page showed four payments and zero refusals with nothing saying
+   * that 95% of the vault's blocks had never been read.
+   *
+   * The sentence is built HERE rather than in the page because this module
+   * owns the distinction, has the tests, and is the thing that knows a hole
+   * from an honest zero. A formatter duplicated in JSX is one that drifts, and
+   * the direction it drifts is always toward claiming more coverage than
+   * exists.
+   */
+  it("says refusals are UNKNOWN when nothing has been scanned", () => {
+    for (const c of [null, undefined]) {
+      const note = coverageNote(c);
+      expect(note.scanned).toBe(false);
+      expect(note.text).toMatch(/not been scanned|unknown/i);
+      // The word that must never appear: it would turn "we did not look" into
+      // "nothing happened".
+      expect(note.text).not.toMatch(/\bnone\b|\bno refusals\b/i);
+    }
+  });
+
+  it("reports the scanned range and block count", () => {
+    const note = coverageNote({ from: 275882255, to: 275883754, holes: [] });
+    expect(note.scanned).toBe(true);
+    expect(note.text).toContain("275882255");
+    expect(note.text).toContain("275883754");
+    expect(note.text).toContain("1,500");
+  });
+
+  /** Outside the range is unknown, and the sentence has to say so. */
+  it("says refusals outside the range are unknown", () => {
+    const note = coverageNote({ from: 100, to: 200, holes: [] });
+    expect(note.text).toMatch(/outside/i);
+    expect(note.text).toMatch(/unknown/i);
+  });
+
+  /**
+   * A hole is the case this whole subsystem exists for: blocks INSIDE the
+   * claimed range that were never actually read. Reporting the range without
+   * them overstates coverage.
+   */
+  it("counts unread blocks inside the range", () => {
+    const note = coverageNote({
+      from: 1000,
+      to: 2000,
+      holes: [
+        { from: 1100, to: 1109 },
+        { from: 1500, to: 1500 },
+      ],
+    });
+    expect(note.unreadBlocks).toBe(11);
+    expect(note.text).toMatch(/11 block/);
+    expect(note.text).toMatch(/unread|not read/i);
+  });
+
+  it("does not mention holes when there are none", () => {
+    const note = coverageNote({ from: 1, to: 10, holes: [] });
+    expect(note.unreadBlocks).toBe(0);
+    expect(note.text).not.toMatch(/unread/i);
   });
 });

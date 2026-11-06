@@ -1,0 +1,610 @@
+# Self-review, 2026-10-29
+
+Adversarial read of the value-moving and authority-moving paths, run as a judge
+rather than as the author. Evidence or it did not happen; severity calibrated to
+reachability x impact x trigger probability, not blast radius.
+
+Three findings, one observation. Two of the three are mine, from today.
+
+---
+
+## F1 — HIGH. The adapter is an unauthenticated spending endpoint on all interfaces
+
+`packages/float-adapter/src/server.ts`
+
+```
+453: server.listen(env.port, () => {
+455:   console.log(`listening on http://127.0.0.1:${env.port}`);   // FALSE
+137:   res.setHeader("access-control-allow-origin", "*");
+139:   res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+140:   if (req.method === "OPTIONS") return res.writeHead(204).end();
+276:   if (url.pathname === "/v1/pay" && req.method === "POST") {   // signs with the agent key
+```
+
+**There is no authentication of any kind.** Grepped for
+`authorization|bearer|apiKey|401|unauthorized`: **0 hits**. Positive control —
+the single match for "auth" in the whole file is the string
+`"content-type, authorization"` inside a CORS header name, which proves the
+grep finds what is there.
+
+Three separate mistakes compound:
+
+1. **`listen(port)` with no host binds `0.0.0.0`**, every interface — not
+   loopback. Anyone who can route to the machine can reach it.
+2. **The log line says `127.0.0.1`.** It is wrong, and it is the kind of wrong
+   that stops someone checking.
+3. **CORS is wildcard and the preflight succeeds** (`204`, `allow-methods`
+   includes POST). `application/json` is not a safelisted content type, so a
+   browser preflights — and this server approves it. **Any website the operator
+   visits can POST to the adapter and spend.** That is drive-by, not merely LAN.
+
+**Impact.** An attacker spends the vault's entire remaining daily budget. Two
+real mitigations keep this out of Critical: the payee allowlist means funds can
+only go to recipients the owner already approved, and the caps bound the value.
+So it is destruction of the day's budget rather than theft — unless an
+allowlisted payee is attacker-controlled, in which case it is theft up to the
+daily cap.
+
+**Why it matters more than the number suggests:** the whole product claim is
+"the agent cannot exceed its budget." An unauthenticated HTTP endpoint that
+spends *on the agent's behalf* means anyone can exhaust that budget without
+holding the agent's key at all.
+
+**Fix:** bind `127.0.0.1` explicitly, require a bearer token from the
+environment on every mutating route, and drop the CORS wildcard to the
+dashboard's exact origin. Smallest version that removes drive-by: bind loopback
+and echo the real bound address instead of a hardcoded string.
+
+---
+
+## F2 — MEDIUM. An agent can drain the vault's NEAR, which no cap governs
+
+`contracts/vault/src/lib.rs`, the `Route::Intents` arm — **introduced today.**
+
+Every cross-chain payment attaches `DEPOSIT_ADDRESS_STORAGE` (0.00125 NEAR) to
+register the quote's one-time deposit address. That cost is **per transaction**.
+The budget tree bounds **token value**. Nothing bounds the NEAR.
+
+Measured live on `float.test015.near`:
+
+| | |
+| --- | --- |
+| NEAR balance | 2.9913 |
+| locked as code storage stake | ~2.8584 |
+| **spendable** | **~0.1329** |
+| registrations that funds | **~106** |
+
+There is **no minimum payment amount** — `amount.0 == 0` is the only rejection
+(lib.rs:1145) — and every node's `cooldown_sec` is **0** on the default tree
+(create-float.mjs:634), confirmed live on all four nodes.
+
+So ~106 payments of 0.01 USDC — **1.06 USDC total, inside the 2.04 daily cap** —
+exhaust the vault's spendable NEAR and kill the cross-chain rail. No dust
+required, no cap exceeded, nothing the contract would call abusive.
+
+**Capability delta: yes.** The agent gains the ability to spend a vault
+resource that no limit covers. That is precisely the class of thing this
+product exists to prevent.
+
+**Not Critical:** recoverable by topping up NEAR, and it destroys availability
+rather than stealing funds. **Not Low:** it is agent-triggerable, cheap, needs
+no privilege, and a retry loop reaches it by accident.
+
+**Why the tests missed it:** `intents_registration.rs` proves ONE payment
+registers correctly. Nothing asserts anything about N payments, and the cost is
+only visible in aggregate. A per-transaction cost is invisible to a
+per-transaction test.
+
+**Candidate fixes**, cheapest first: a minimum amount on the Intents rail; a
+non-zero default `cooldown_sec` in the wizard's tree; or a per-day NEAR-spend
+ceiling in the contract. The first two need no contract change.
+
+---
+
+## F3 — LOW. Cooldown is checked on the paying node only, never its ancestors
+
+`contracts/vault/src/lib.rs:1209-1215`
+
+```rust
+let node = self.get_node(node_id);
+let last = self.last_paid_ns.get(&node_id).copied().unwrap_or(0);
+if node.cooldown_sec > 0 && now < last.saturating_add(...) { blocked(Cooldown) }
+```
+
+Every other check in `dispatch_payment` iterates `chain` — frozen, per-tx cap,
+daily budget, token allowed. **Cooldown alone does not.** An ancestor's
+cooldown is never read, so a rate limit set on a parent is bypassed by paying
+from a child, and with two sibling leaves the parent's intended interval is
+halved.
+
+**Low, not Medium:** cooldown defaults to 0 so most vaults never set one, it is
+a rate limiter rather than a value bound, and it is owner-configured. But it is
+an undocumented asymmetry in a loop whose other four checks are hierarchical —
+exactly the broken-symmetry shape that is worth fixing before someone relies on
+it.
+
+---
+
+## Observation, not a finding
+
+**Agent keys are plaintext on disk** in `.float/` (gitignored). Identical to
+AgentCash's `~/.agentcash/wallet.json`, which this project's own research
+criticised. The difference that makes it defensible here: that key can call
+exactly one method on exactly one contract and cannot attach a deposit, so
+stealing it buys the thief only what the budget already allows. Worth stating
+explicitly somewhere user-facing rather than leaving the comparison implicit.
+
+---
+
+## Checked and found sound
+
+Recorded so a later reader knows these were examined rather than skipped.
+
+- **`resolve_reservation`** — single resolution point for both rails,
+  idempotency gate on `status != TransferPending`, uses `reserved_day` rather
+  than `today()` so a post-midnight callback cannot decrement a zeroed ledger,
+  checked arithmetic both directions.
+- **Two-pass budget check** — pass one mutates nothing, so no chain can be
+  half-charged; pass two only runs if every level passed.
+- **The quote-signature gate** precedes the allowlist-bypassing deposit
+  address, which is what keeps the payee allowlist meaningful on the
+  cross-chain rail. Verified on mainnet by `capedge`: a bad signature registers
+  nothing.
+- **`sweep_stuck_pending`** — the "tokens left but the callback died" window is
+  a real under-count, but it is owner-only, age-floored, explicitly documented
+  with its mitigation, and tagged `SWEPT_STUCK` to stay distinguishable in an
+  audit. A documented tradeoff by a privileged actor is not a finding.
+- **`bind_agent` vs `bind_virtual_agent`** — the many-to-one asymmetry is
+  deliberate and documented; both are owner-gated. `assert_bindable` correctly
+  refuses the owner and the vault itself.
+- **`withdraw`** — owner-gated, deliberately outside the budget hierarchy with
+  stated reasoning; an owner who can rewrite every cap gains nothing by it.
+
+## Not reviewed
+
+- `apps/dashboard` — vendored Next.js app from the Solana product, not written
+  here.
+- The Rust unit tier and the sandbox tier themselves.
+- `packages/mcp` beyond the signing path and env handling.
+
+
+---
+
+# Addendum — PoCs and refutation tests
+
+The first pass of this document shipped F1 as HIGH on a code trace alone. The
+commander skill is explicit that a High does not ship without an executable
+PoC, so this addendum either earns each finding or labels it as reasoned-only.
+
+## F1 — PROVEN, executably, with a precondition
+
+Adapter started on port 8799 with NO agent key, so nothing could be spent.
+
+**1. Bound to every interface**, not loopback:
+
+```
+TCP    0.0.0.0:8799    0.0.0.0:0    LISTENING    30172
+TCP    [::]:8799       [::]:0       LISTENING    30172
+```
+
+IPv4 and IPv6, all interfaces. The server's own log line claims
+`listening on http://127.0.0.1:8799`. That is false.
+
+**2. Cross-origin preflight from a hostile origin is approved:**
+
+```
+curl -X OPTIONS http://127.0.0.1:8799/v1/pay   -H "Origin: https://evil.example"   -H "Access-Control-Request-Method: POST"   -H "Access-Control-Request-Headers: content-type"
+
+HTTP/1.1 204 No Content
+access-control-allow-origin: *
+access-control-allow-methods: GET, POST, OPTIONS
+```
+
+A browser will therefore proceed with the real POST.
+
+**3. There is no auth gate — the NEGATIVE control:**
+
+```
+POST /v1/pay  Origin: https://evil.example  {"amount":"0.01",...}
+HTTP/1.1 400 Bad Request
+```
+
+**400, not 401.** The request reached body validation. A server with
+authentication rejects before parsing the body; this one has nothing to reject
+at. That is the decisive evidence, and it is why the test was run with no agent
+key: a 400 on the body proves reachability without moving money.
+
+**PRECONDITION, found by devil's advocate.** `/v1/pay` can only sign when
+`NEAR_VAULT_AGENT_KEY` is present. The wizard writes it to `.float/adapter.env`
+**only when an agent account was created** (create-float.mjs:772-773); with the
+default `--agents 0` both lines are commented out, which is why this machine's
+file has none. So:
+
+| configuration | exposure |
+| --- | --- |
+| `--agents 0` (default) | GET routes leak vault state to the network and to any website. No spending. |
+| `--agents 1+` (documented, prompted for) | full — anyone reachable can spend the remaining daily budget |
+
+Kept at HIGH rather than downgraded: creating agents is the product's entire
+purpose and the wizard prompts for it, so the vulnerable configuration is the
+intended one. The allowlist and caps are what keep it out of Critical.
+
+**Devil's advocate, answered:** "nobody runs the adapter" is false — the
+wizard's own closing text instructs
+`set -a && . .float/adapter.env && set +a && npx @floatonnear/float-adapter`
+(create-float.mjs:885), which sources exactly the file holding the key.
+
+## F2 — CONFIRMED by refutation test, no executable PoC
+
+The attack needs many small payments. The cheapest thing that could kill it is
+1Click refusing to quote small amounts — then the daily cap would bound the
+payment COUNT, not just the value. Tested live:
+
+```
+deliver 0.010000 -> amountIn 0.012531  QUOTABLE
+deliver 0.020000 -> amountIn 0.022634  QUOTABLE
+deliver 0.050000 -> amountIn 0.052943  QUOTABLE
+```
+
+Not refuted. 106 payments at 0.012531 charge **1.328 USDC against a 2.04 daily
+cap**, so the NEAR is exhausted first and well inside one day.
+
+**Honest label: this has arithmetic plus live measurement, not an executable
+PoC.** A proper one is a sandbox test making N payments and asserting the
+vault's NEAR falls — buildable in the existing tier, not yet built. Treat F2 as
+a well-evidenced MEDIUM, not a proven one.
+
+## F3 — reasoned only
+
+Read from source. No PoC, no live test. Labelled LOW partly for that reason.
+
+## What this addendum changes about the first pass
+
+Nothing about the findings' substance, and that is worth saying plainly: both
+survived the attempt to kill them. What changed is that F1 is now evidence
+rather than argument, and F2 and F3 carry honest labels about how far their
+evidence actually goes.
+
+
+---
+
+# Addendum 2 — F2 now has an executable PoC, and it corrected the arithmetic
+
+`contracts/integration-tests/tests/intents_registration.rs ::
+many_small_payments_drain_near_that_no_cap_bounds`
+
+Five payments of 0.01 USDC, each to a FRESH deposit address (which is what
+1Click mints, so a drain never benefits from an already-registered one):
+
+```
+  5 payments of 10000 base units:
+token charged to the budget : 50000 base units
+NEAR spent by the vault     : 5520368048093700000005 yocto
+                              (1104073609618740000001 per payment)
+```
+
+**0.05 USDC of budget consumed 0.00552 NEAR.** The token cost scales with the
+amount; the NEAR cost does not scale at all.
+
+## The PoC corrected my arithmetic, and not in the product's favour
+
+The first version asserted `>= 0.00125 * 0.9` per payment, reasoning that
+0.00125 NEAR is attached per registration so roughly that much must leave. **It
+failed.** The measured net is ~0.0011 NEAR in the SANDBOX — see addendum 5,
+which retracts this figure for mainnet — about 12% less than the attached
+deposit, some of which evidently returns through refund accounting. The test
+now asserts a measured floor and says so; the exact refund mechanism is not
+claimed, because it was not measured.
+
+That makes the finding slightly **worse**: at ~0.0011 rather than 0.00125, the
+~0.1329 NEAR spendable on the live mainnet vault funds roughly **120**
+payments, not 106.
+
+This is the same mistake the first pass of this document made in a different
+place — asserting a number I reasoned to instead of one I measured. The
+difference is that this time a test caught it before it was published as fact.
+
+## Evidence status, final
+
+| finding | severity | evidence |
+| --- | --- | --- |
+| F1 adapter unauthenticated, all interfaces | HIGH | **executable PoC** — netstat bind, 204 preflight from a hostile origin, 400-not-401 on POST |
+| F2 agent drains vault NEAR | MEDIUM | **executable PoC** — sandbox test, 5 payments, measured balance fall; plus a live refutation test showing 0.01 USDC is quotable |
+| F3 cooldown not hierarchical | LOW | reasoned from source only |
+
+31 sandbox tests (was 30).
+
+
+---
+
+# Addendum 3 — F1 FIXED, verified by re-running its own PoC
+
+The fix is judged by inverting the three facts that proved the finding. Same
+commands, same hostile origin.
+
+| | before | after |
+| --- | --- | --- |
+| bind | `0.0.0.0:8799` **and** `[::]:8799` | `127.0.0.1:8801` only |
+| preflight from `https://evil.example` | `204` + `allow-origin: *` | `204`, **no allow-origin** — browser blocks |
+| `POST /v1/pay`, no credential | **`400`** (reached body validation) | **`401`** `{"error":"missing bearer token"}` |
+| `POST /v1/pay`, correct token | n/a | `400` — authorized, then failed on the empty body |
+
+That last row is the negative control and the one that matters: the gate
+refuses the attack **without** refusing legitimate use. A fix that returned 401
+to everything would pass the first three rows and be useless.
+
+The startup banner now reports what is true:
+
+```
+listening on http://127.0.0.1:8801
+  mutating routes: require a bearer token
+  cors origin    : http://localhost:3000
+```
+
+It prints `server.address()` rather than a hardcoded string, and warns when
+`HOST` has been set to something non-loopback.
+
+## What changed
+
+- `packages/float-adapter/src/gate.ts` — new. `resolveHost`, `corsHeaders`,
+  `authorize`, each a pure function with tests.
+- `server.ts` — binds `env.host` (default loopback), echoes CORS only for an
+  exact-match origin, and runs `authorize` **before any handler**.
+- `create-float` generates a per-vault `FLOAT_API_TOKEN` into
+  `.float/adapter.env`.
+
+## Why this layer was open in the first place
+
+`server.ts` had **no tests**. The 89 adapter tests covered handlers, map,
+keyring and blocked-scan — every module except the one holding the bind, the
+CORS policy and the (absent) auth check. The vulnerable layer was precisely the
+untested one, which is not a coincidence and is the more useful lesson than the
+bug.
+
+13 gate tests now exist. 102 adapter tests, up from 89.
+
+**A missing token is `503`, not `401`.** Those are different problems: 401
+tells a caller to find a credential, and when none is configured there is none
+to find. Conflating them sends an operator hunting for a secret that does not
+exist.
+
+## Still open
+
+- **F2** — MEDIUM, executable PoC exists, unfixed. Needs a product decision:
+  minimum amount, non-zero default cooldown, or a per-day NEAR ceiling in the
+  contract.
+- **F3** — LOW, unfixed.
+
+
+---
+
+# Addendum 4 — F2 fixed: the vault's NEAR is now a budgeted resource
+
+The bug in one line: **the vault had a budget tree for tokens and no budget for
+its own NEAR.** The fix is the product's own idea applied to the resource it
+forgot.
+
+## Why this shape and not the alternatives
+
+- **A minimum payment amount** would be arbitrary and token-dependent — what
+  counts as "too small" differs between a 6-decimal stablecoin and an
+  18-decimal token, and the contract has no price feed to decide.
+- **A non-zero default cooldown** only helps NEW vaults, and cooldown is
+  per-node (F3), so two sibling leaves halve it.
+- **A per-day NEAR ceiling** bounds the actual resource, works on vaults
+  already deployed, and reuses a concept the product already has.
+
+## No migration
+
+`MAX_DAILY_NEAR` and `NEAR_SPENT` live under their own storage keys, the same
+idiom `QUOTE_SIGNER` and `PENDING_OWNER` already use. Adding a field to `Vault`
+would have been a borsh layout change requiring `migrate()` in the same
+transaction as every deploy; a dedicated key needs neither. `ReasonCode::NearBudget`
+is APPENDED, never inserted, because borsh tags variants by position.
+
+The spent counter stores `(day, amount)` together, so a stored day that is not
+today reads as zero and the budget resets without anyone sweeping it.
+
+## Where the check sits
+
+After the quote signature, before anything is charged or sent. A refused
+payment therefore costs nothing, and a bad signature is still rejected first —
+asserted by `a_bad_quote_signature_registers_nothing`, which still passes.
+
+## What it is honestly worth
+
+| | before | after |
+| --- | --- | --- |
+| drain the live vault's 0.1329 spendable NEAR | ~120 payments, one sitting | 45/day — **2.7 days** |
+
+**This rate-limits; it does not prevent.** A determined agent still drains the
+rail over about three days. What changed is that the attack is now slow,
+bounded, and visible: `get_near_budget` reports `day / max_daily / spent /
+available`, so an operator can see it happening instead of discovering a dead
+rail.
+
+Preventing it outright would need a floor on the vault's balance, which the
+runtime already enforces for storage stake — the account cannot brick itself,
+it just stops paying. Rate-limiting plus visibility is proportionate to a
+recoverable availability bug; a stricter default would break legitimate volume.
+
+Default 0.05 NEAR/day is 40 registrations (corrected in addendum 5), well above what
+the default tree can fund (2.04 USDC at a 0.51 per-tx cap is at most 4
+payments). `set_max_daily_near` raises it.
+
+## Tests
+
+- `a_daily_near_ceiling_stops_the_drain` — two payments pass, the third is
+  `BLOCKED` / `NEAR_BUDGET`, the refusal spends nothing, and the NEAR rail
+  still works afterwards.
+- `near_cost_is_per_transaction_not_per_value` — renamed from
+  `many_small_payments_drain_near_that_no_cap_bounds`, which stopped being true
+  the moment a ceiling existed. It still earns its place by proving the
+  per-transaction cost is unchanged, which is *why* the ceiling is needed, but
+  a test whose name asserts something false is worse than no test.
+
+32 sandbox (was 31) / 100 unit / 107 wizard / 102 adapter / 90 MCP.
+
+## Status
+
+| finding | severity | state |
+| --- | --- | --- |
+| F1 adapter unauthenticated | HIGH | **fixed**, verified by re-running its PoC |
+| F2 agent drains vault NEAR | MEDIUM | **bounded**, verified; rate-limited not prevented |
+| F3 cooldown not hierarchical | LOW | open |
+
+**Not deployed.** Both fixes are in the repo; mainnet still runs the build from
+earlier today. The contract change adds no struct field, so it is a
+`NO_MIGRATE=1` redeploy.
+
+
+---
+
+# Addendum 5 — correcting my own arithmetic, twice
+
+Two numbers in this document were wrong, in opposite directions, and both were
+quoted confidently.
+
+## 1. The allowance was off by one
+
+I said a 0.01 ceiling allows **9** payments a day. It allows **8**, exactly.
+
+`charge_near` books `DEPOSIT_ADDRESS_STORAGE` — the **attached** 0.00125 — not
+whatever net cost the token settles on, because the refund is not knowable at
+dispatch. So the allowance is `0.01 / 0.00125 = 8`, and that is a property of
+the contract rather than of any token's storage accounting.
+
+The same error propagated: 0.05 was described as ~45/day and 11x headroom; it
+is **40/day and 10x**. And 0.01 is **2x** the default tree's maximum (4 payments
+booking 0.005 NEAR), not 2.3x.
+
+## 2. The 0.0011 per-registration figure does not apply to mainnet
+
+Addendum 2 reported a measured net of ~0.0011 NEAR, 12% below the attached
+deposit, and used it to revise the drain estimate from 106 payments to ~120.
+
+**That measurement was taken in the sandbox against `mock_ft`**, whose
+`storage_deposit` accepts and ignores any attached deposit. It is not NEP-145
+behaviour and it does not transfer to mainnet, where `storage_balance_bounds`
+reports `min == max == 0.00125` and `registration_only: true` therefore refunds
+nothing.
+
+This is the project's own rule — a synthetic fixture cannot validate a claim
+about real data — applied to a number I generated and then reused three times.
+
+**The true mainnet net is still unmeasured.** The obvious check is
+contaminated: the only "before" balance I have (2.9913 NEAR) predates the
+redeploy, so the 0.00315 difference includes deploy gas and cannot be
+attributed. Rather than substitute a third guess, the documentation now quotes
+the **booked** amount, which is exact and needs no measurement.
+
+## What is unaffected
+
+The ceiling itself. It enforces 8 registrations a day regardless of what the
+token does with the deposit, because it counts what it attaches. The fix works;
+only my description of its generosity was wrong.
+
+## Observed since: the daily reset works on mainnet
+
+Day rolled 20755 → 20756 and both counters reset — `get_near_budget` reports
+`spent: 0`, and node 0's token budget likewise. The `(day, amount)` encoding
+resets without anyone sweeping it, as designed, now seen rather than assumed.
+
+
+---
+
+# Addendum 6 — F3 fixed: the cooldown is hierarchical, like every other check
+
+`dispatch_payment` iterates `chain` for frozen, token-allowed, per-tx cap and
+daily budget. Cooldown alone read `node_id`, so a parent's rate limit was
+bypassed by paying from a child.
+
+**Both halves had to move together, and that is the whole lesson.** The check
+reads the chain now — but so does the record. Fixing only the check would leave
+every ancestor's `last_paid_ns` permanently stale, so its cooldown could never
+fire: the fix would look applied and change nothing.
+
+That half-fix is the realistic future regression — someone sees the check, does
+not see the write 40 lines later — so it is the mutation that was run:
+
+| mutation | predicted | observed |
+| --- | --- | --- |
+| record `node_id` only, keep the chain check | 2 red | **2 red**, and the right two |
+
+`a_nodes_own_cooldown_is_still_reported_as_its_own` and
+`no_cooldown_anywhere_means_no_throttle` stayed green under it, which is what
+makes the result meaningful rather than "everything broke".
+
+`ParentCooldown` is a distinct reason code, following `ParentDailyBudget` and
+`ParentPerTxLimit`: the node to reconfigure is not the one that asked, and an
+agent that cannot tell them apart reports the wrong thing to its human.
+Appended, never inserted — borsh tags variants by position.
+
+**No live impact.** Every node on `float.test015.near` has `cooldown_sec = 0`,
+and the guard only engages above zero, so this changes nothing until an owner
+sets one. The test `no_cooldown_anywhere_means_no_throttle` pins that: the fix
+must not become a rate limit nobody asked for.
+
+**A stale-artifact trap worth recording.** After reverting the mutation in
+source, the full tier came back red — because `wsl-sandbox.sh test` does not
+rebuild the wasm, so it was still running the MUTANT binary. The script warns
+about exactly this ("a contract edit is NOT in the binary under test until the
+wasm is rebuilt") and provides `mut` and `all` for it; I used the mode that
+skips the build. A revert is not verified until the artifact is rebuilt, not
+merely until the source reads correctly.
+
+36 sandbox (was 32) / 100 unit / 107 wizard / 102 adapter / 90 MCP.
+
+## Final status
+
+| finding | severity | state |
+| --- | --- | --- |
+| F1 adapter unauthenticated | HIGH | fixed, verified by re-running its PoC |
+| F2 agent drains vault NEAR | MEDIUM | fixed and **deployed**; rate-limited, not prevented |
+| F3 cooldown not hierarchical | LOW | **fixed**, mutation-validated; not deployed |
+
+F3 is not on mainnet. It has no live effect (all cooldowns are 0), so it can
+ride along with the next deploy rather than justify one.
+
+
+---
+
+# Addendum 7 — F4 (minor): every error was a 500, including the caller's
+
+Found while verifying the agent credentials were wired, not by looking for it.
+A probe with `{"amount":"abc"}` came back:
+
+```
+500 {"error":"invalid amount \"abc\": expected digits ..."}
+```
+
+The catch-all at `server.ts:433` returned `500` for everything, so a caller's
+malformed input was indistinguishable from an RPC outage.
+
+**Why this is not a status-code quibble.** 500 means "the server broke,
+retrying may help"; 400 means "your request is wrong, fix it". An agent reading
+500 on a malformed amount retries the same malformed amount forever. `SKILL.md`
+spends an entire table teaching agents which refusals to retry and which to
+report — and the HTTP layer was contradicting it one level up.
+
+`classifyError` now maps `BadRequest` to 400 and everything else to 500, and
+`fromCaller` wraps the caller-supplied parsing so validation failures arrive
+already classified. It takes `unknown` rather than `Error` deliberately: `throw
+"string"` is legal, and a catch-all assuming `.message` turns a small bug into
+an unhandled one. Only the message is returned, never a stack.
+
+Verified against the rebuilt adapter — the same probe, and the three things
+that must not have changed:
+
+| | before | after |
+| --- | --- | --- |
+| malformed amount | **500** | **400**, message intact |
+| POST, no token | 401 | 401 |
+| GET /v1/dashboard | 200 | 200 |
+
+18 gate tests (was 13). 107 adapter total.
+
+**Severity: LOW.** No funds at risk, no access gained. It is listed because it
+makes an agent behave wrongly in a way the product elsewhere goes to some
+length to prevent, and because it was invisible until something probed the
+layer rather than the handler.

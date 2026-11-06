@@ -1,0 +1,9 @@
+{
+  "artifactSha256": "003568bcea22be807b4ac3c821ed8a5a5278601d34c3ecfd77cf2b03d6aed862",
+  "sourcesDigest": "b044ad32d3fec4d47bdad910299ca638730c90384a01979a486dfcdcd6150332",
+  "sources": [
+    "lib.rs",
+    "types.rs"
+  ],
+  "note": "Written by bundle-wasm.mjs. Lets the freshness guard answer 'was this artifact built from these sources' without relying on mtime, which gets stuck when content is reverted and is meaningless after a fresh clone."
+}

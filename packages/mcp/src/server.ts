@@ -10,13 +10,27 @@
  *   PLAN tools      emit UNSIGNED payloads for the human's wallet; this
  *                   server never signs anything that changes policy
  *
+ *   CREATE tool     needs no key and no vault. It reads the factory, works out
+ *                   the address and the cost, and hands back a URL the user
+ *                   approves in their own wallet.
+ *
  * Configure with:
- *   NEAR_VAULT_CONTRACT        required
+ *   NEAR_VAULT_CONTRACT        required by every tool EXCEPT vault_create
  *   NEAR_VAULT_RPC_URL         default https://test.rpc.fastnear.com
  *   NEAR_VAULT_TOKEN           default token for pay/budget calls
  *   NEAR_VAULT_TOKEN_DECIMALS  default 6
  *   NEAR_VAULT_AGENT_ID        only needed to PAY
  *   NEAR_VAULT_AGENT_KEY       only needed to PAY. The restricted key.
+ *   NEAR_VAULT_NETWORK         mainnet | testnet, default testnet
+ *   NEAR_VAULT_FACTORY         only needed to CREATE. No mainnet default
+ *                              exists on purpose — guessing it wrong would
+ *                              send a real deposit somewhere unverified.
+ *   NEAR_VAULT_APP_URL         only needed to CREATE, default
+ *                              https://app.usefloat.xyz
+ *
+ * A user with NO vault can therefore run this server with nothing configured,
+ * call `vault_create`, and be onboarded — which is the point. Every other tool
+ * reports that NEAR_VAULT_CONTRACT is unset rather than guessing one.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -25,10 +39,11 @@ import { z } from "zod";
 
 import { fromBaseUnits, toBaseUnits } from "./amounts.js";
 import {
-  BASE_GAS_TGAS,
   DEFAULT_GAS_TGAS,
   planAddNode,
-  planCreateAgentAccount,
+  planAddRole,
+  planBindVirtualAgent,
+  planUnbindVirtualAgent,
   planFreezeNode,
   planPurgeSettled,
   planSetCooldown,
@@ -37,9 +52,34 @@ import {
   planSetRecipients,
   toCliCommand,
   type OwnerPayload,
+  planSetApprovalThreshold,
+  planApprovePayment,
+  planRejectPayment,
 } from "./payloads.js";
-import { DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
-import { buildRoute, sendRequestPayment } from "./sign.js";
+import { accountExists, DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
+import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
+import { dirname } from "node:path";
+
+import { listRoles, selectRole } from "./roles.js";
+
+/**
+ * A decimal NEAR string to yoctoNEAR, without floating point.
+ *
+ * `Number("0.12") * 1e24` is 1.2000000000000001e23 — a figure that becomes a
+ * deposit, so the drift lands on chain. Parsed as text instead.
+ */
+function toYoctoNear(n: string): string {
+  const m = /^(\d+)(?:\.(\d{1,24}))?$/.exec(n.trim());
+  if (!m) throw new Error(`"${n}" is not a NEAR amount (digits, optional decimal point)`);
+  return (BigInt(m[1]!) * 10n ** 24n + BigInt((m[2] ?? "").padEnd(24, "0"))).toString();
+}
+import { buildCreatePlan, FACTORY_BY_NETWORK } from "./create.js";
+import { buildRoute, sendRequestPayment, type RouteArg } from "./sign.js";
+import { getQuote, signBinding, toBase64 } from "./quote.js";
+
+/** How long a quote stays valid. Long enough to sign and send, short
+ *  enough that a stale price is not honoured. */
+const QUOTE_TTL_MS = 20 * 60 * 1000;
 
 const cfg = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
@@ -49,6 +89,14 @@ const cfg = {
   agentId: process.env.NEAR_VAULT_AGENT_ID,
   agentKey: process.env.NEAR_VAULT_AGENT_KEY,
   network: process.env.NEAR_VAULT_NETWORK ?? "testnet",
+  // Onboarding only. Both have safe defaults and neither is needed by any
+  // tool that touches an existing vault.
+  factory: process.env.NEAR_VAULT_FACTORY,
+  appUrl: process.env.NEAR_VAULT_APP_URL ?? "https://app.usefloat.xyz",
+  // The fleet keyring. Same default and same file the adapter reads — two
+  // readers disagreeing about where credentials live is how an agent ends up
+  // "configured" and unreachable.
+  agentKeysPath: process.env.NEAR_VAULT_AGENT_KEYS ?? ".float/agent-keys.json",
 };
 
 function requireVault(): string {
@@ -95,7 +143,17 @@ const limitShape = z
   )
   .min(1);
 
-const server = new McpServer({ name: "near-vault", version: "0.1.0" });
+// The name a client displays in its server list, so this string -- not the
+// package name, not the config key -- is the product's label in the one place
+// the product is visible. It was "near-vault": the repo's directory name,
+// leaking outward as the user-facing identity while the config key create-float
+// writes has always been `float`.
+//
+// The version stays a literal rather than being read from package.json at
+// startup: a wrong relative path would break the server outright instead of
+// merely reporting a stale version. server.smoke.test.ts asserts the two agree,
+// so a bump cannot land with only one of them moved.
+const server = new McpServer({ name: "float", version: "0.3.0" });
 
 // ----------------------------------------------------------------- reads
 
@@ -148,6 +206,227 @@ server.tool(
   async () => json(await viewFunction(cfg.rpcUrl, requireVault(), "get_config", {})),
 );
 
+server.tool(
+  "vault_add_role",
+  "Add a NEW departmental agent to an existing vault — e.g. a 'marketing' or 'news' agent with its own budget. Generates the agent's key, files it under the role name, and returns an UNSIGNED payload for the owner to approve. One FunctionCall creates the node, binds the key and installs its funded gas key. This server never signs it.",
+  {
+    role: z
+      .string()
+      .min(1)
+      .max(48)
+      .describe("the agent's name, e.g. \"marketing\". Used as the node label AND as the keyring index you later pass to vault_pay."),
+    dailyCap: z.string().describe("daily spend cap in HUMAN units, e.g. \"25.00\""),
+    perTxCap: z.string().describe("per-payment cap in HUMAN units, e.g. \"5.00\""),
+    recipients: z
+      .array(z.string())
+      .optional()
+      .describe("payee allowlist for this agent. Omitted means it inherits the nearest ancestor's list."),
+    token: z.string().optional(),
+    cooldownSec: z.number().int().min(0).optional(),
+    fundingNear: z
+      .string()
+      .optional()
+      .describe("NEAR for the agent's gas key. Default 0.12 (~160 payments measured). Minimum 0.06, because NEAR reserves prepaid gas up front."),
+  },
+  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear }) => {
+    const vault = requireVault();
+
+    // REFUSE A DUPLICATE ROLE BEFORE GENERATING A KEY. The contract would
+    // happily create a second node with the same label, and the keyring would
+    // index only the last one — so the first agent would still be bound and
+    // funded on chain while becoming unreachable locally.
+    if (listRoles(cfg).some((r) => r.role === role)) {
+      return text(
+        `This vault already has an agent with the role '${role}'. Roles index the ` +
+          `keyring, so a second one would hide the first — which would stay bound and ` +
+          `funded on chain with nothing able to select it. Pick another name, or use ` +
+          `the existing agent.`,
+      );
+    }
+
+    const fundingYocto = toYoctoNear(fundingNear ?? "0.12");
+    // `nodeId: null` — NOT YET KNOWN. `add_role` creates the node inside the
+    // contract, so its id does not exist until the transaction lands.
+    const generated = generateAgentKey({
+      vault,
+      dir: dirname(cfg.agentKeysPath),
+      role,
+      nodeId: null,
+    });
+
+    let payload;
+    try {
+      payload = planAddRole(
+        vault,
+        role,
+        [{ token: tokenFor(token), dailyCap, perTxCap, decimals: cfg.decimals }],
+        cooldownSec ?? 0,
+        recipients ?? null,
+        generated.publicKey,
+        fundingYocto,
+      );
+    } catch (e) {
+      return text(String((e as Error).message));
+    }
+
+    return json({
+      role,
+      agent: {
+        publicKey: generated.publicKey,
+        credentialWrittenTo: generated.keyringPath,
+      },
+      payload,
+      next: [
+        `Have the owner approve this payload in their own wallet.`,
+        `The node id is assigned by the contract and returned by the call; the ` +
+          `credential is filed under the ROLE, so vault_pay({role:"${role}"}) works ` +
+          `without it.`,
+      ],
+      warnings: [
+        `Show the owner this public key and have them confirm it before signing: ${generated.publicKey}`,
+        `The private key is at ${generated.keyringPath}. Do not print it.`,
+      ],
+    });
+  },
+);
+
+server.tool(
+  "vault_roles",
+  "List the agents this server can sign as, by role. Use it before vault_pay when a vault has more than one agent — the signing key decides which budget is charged. No key material is returned.",
+  {},
+  async () =>
+    json(
+      listRoles(cfg).map((r) => ({ role: r.role, nodeId: r.nodeId, agentId: r.agentId })),
+    ),
+);
+
+// ------------------------------------------------------------- onboarding
+
+server.tool(
+  "vault_create",
+  "For a user who has NO vault yet. Works out where their vault will live, exactly what it costs to create, and returns a URL they approve in their own wallet. Needs no key and no existing vault — this is the only tool that works before NEAR_VAULT_CONTRACT is set. This server never signs it.",
+  {
+    owner: z
+      .string()
+      .optional()
+      .describe(
+        "the account that will own the vault, e.g. alice.near. OMIT IT if you do not know the user's NEAR account — the link then derives everything from whichever wallet they connect, which is the normal case when onboarding someone new.",
+      ),
+    network: z.enum(["mainnet", "testnet"]).optional(),
+    factory: z
+      .string()
+      .optional()
+      .describe("override the factory; defaults to the known one for the network"),
+    bindAgent: z
+      .boolean()
+      .optional()
+      .describe(
+        "generate an agent key and bind it in the SAME transaction, so one signature creates the vault and authorises you. Adds 0.12 NEAR of gas-key funding to the deposit. The user is shown the public key and must confirm it before signing. Requires `owner`, because the credential is filed under the vault id and that cannot be derived without one.",
+      ),
+  },
+  async ({ owner, network, factory, bindAgent }) => {
+    const net = network ?? cfg.network;
+    const fac = factory ?? cfg.factory ?? FACTORY_BY_NETWORK[net];
+    if (!fac) {
+      // DELIBERATELY NOT A GUESS. A wrong mainnet default does not fail
+      // safely — it takes a real signature for a real deposit into an account
+      // nobody verified.
+      return text(
+        `No factory is configured for ${net}. Pass one as \`factory\`, or set ` +
+          `NEAR_VAULT_FACTORY. There is deliberately no built-in mainnet default: ` +
+          `guessing it wrong would send a real deposit somewhere unverified.`,
+      );
+    }
+    const rpc = cfg.rpcUrl;
+
+    // Only ask the factory to derive an id when there IS an owner. With none,
+    // the address is decided by whichever wallet signs, and inventing one here
+    // would print a plausible address next to a real deposit figure.
+    const config = await viewFunction<{
+      required_deposit: string;
+      paused: boolean;
+      network: string;
+    }>(rpc, fac, "get_config", {});
+    const vaultId = owner
+      ? await viewFunction<string | null>(rpc, fac, "vault_id_for", { owner })
+      : null;
+
+    const extra: string[] = [];
+    if (config.network !== net) {
+      extra.push(
+        `The factory reports network "${config.network}" but you asked for ${net}; ` +
+          `the vault will be initialised with "${config.network}".`,
+      );
+    }
+
+    const exists = owner && vaultId ? await accountExists(rpc, vaultId) : false;
+
+    // AN AGENT NEEDS A VAULT ID, and not for the transaction — the page
+    // derives that from the connected wallet. It is needed for the CREDENTIAL,
+    // which the adapter files under the account the key signs as. A virtual
+    // agent's key is a gas key ON the vault, so that account is the vault
+    // itself, and without an owner there is nothing to derive it from.
+    //
+    // Refusing beats writing a record with a null account: such a record is
+    // skipped in silence by `loadKeyring`, so the agent would appear set up
+    // and simply never be found.
+    if (bindAgent && !vaultId) {
+      return text(
+        `Binding an agent needs \`owner\`, because the agent's credential is filed ` +
+          `under the vault id and that is derived from the owner. Call vault_create ` +
+          `again with the user's NEAR account, or omit bindAgent and bind afterwards ` +
+          `with vault_plan_bind_agent.`,
+      );
+    }
+
+    let generated: ReturnType<typeof generateAgentKey> | null = null;
+    if (bindAgent && vaultId) generated = generateAgentKey({ vault: vaultId });
+
+    try {
+      const plan = buildCreatePlan({
+        owner: owner ?? "",
+        ownerKnown: !!owner,
+        vaultId,
+        factory: fac,
+        network: net,
+        requiredDepositYocto: String(config.required_deposit),
+        paused: config.paused,
+        appUrl: cfg.appUrl,
+        exists,
+        agentPk: generated?.publicKey ?? null,
+      });
+      return json({
+        ...plan,
+        // THE PUBLIC HALF ONLY. The secret is on disk; a tool response is a
+        // transcript entry forever.
+        agent: generated
+          ? {
+              publicKey: generated.publicKey,
+              nodeId: AGENT_NODE_ID,
+              credentialWrittenTo: generated.keyringPath,
+              envWrittenTo: generated.envPath,
+              ...(generated.backedUpTo ? { previousKeyringMovedTo: generated.backedUpTo } : {}),
+            }
+          : null,
+        warnings: [
+          ...extra,
+          ...plan.warnings,
+          ...(generated
+            ? [
+                `Show the user this agent key and ask them to confirm it matches what ` +
+                  `the page displays before they approve: ${generated.publicKey}`,
+                `The agent's private key is at ${generated.keyringPath}. It can only call ` +
+                  `request_payment on this vault, inside the budget. Do not print it.`,
+              ]
+            : []),
+        ],
+      });
+    } catch (e) {
+      return text(String((e as Error).message));
+    }
+  },
+);
+
 // ------------------------------------------------------------------- pay
 
 server.tool(
@@ -160,39 +439,94 @@ server.tool(
     token: z.string().optional(),
     requestId: z.string().optional().describe("omit to generate one"),
     rail: z
-      .enum(["near", "base"])
+      .enum(["near", "intents"])
       .default("near")
       .describe(
-        "near = NEP-141 transfer, proves settlement. base = Chain Signatures over a Base USDC transfer, proves authorization + signature only (relaying is off-chain and unobserved). BOTH rails run the same hierarchical budget check and the same payee allowlist.",
+        "near = NEP-141 transfer on NEAR, proves settlement. intents = cross-chain: the vault transfers on NEAR to a solver's one-time deposit address and the solver delivers on the destination chain. BOTH run the same hierarchical budget check and the same payee allowlist.",
       ),
-    base: z
-      .object({
-        nonce: z.string(),
-        maxFeePerGas: z.string(),
-        maxPriorityFeePerGas: z.string(),
-        gasLimit: z.string(),
-      })
+    destinationAsset: z
+      .string()
+      .optional()
+      .describe("1Click asset id for rail=intents. Defaults to USDC on Base."),
+    role: z
+      .string()
       .optional()
       .describe(
-        "Required when rail=base. Fee and ordering fields ONLY — the contract builds the ERC-20 calldata and the transaction itself from the amount and recipient it authorized, so these cannot redirect the payment.",
+        "which agent pays, by role name — e.g. \"marketing\". Required once the vault has more than one agent, because the signing key decides which budget is charged. Omit it only when there is exactly one.",
       ),
   },
-  async ({ amount, recipient, memo, token, requestId, rail, base }) => {
-    const creds = requireAgentKey(cfg);
+  async ({ amount, recipient, memo, token, requestId, rail, destinationAsset, role }) => {
+    // WHICH KEY SIGNS *IS* WHICH BUDGET IS CHARGED. The contract resolves the
+    // spending node from the signer, not from anything in the request body,
+    // so picking the wrong key does not fail — it succeeds against someone
+    // else's budget and surfaces later as a confusing balance.
+    const creds = role === undefined ? requireAgentKey(cfg) : selectRole(cfg, role);
+    const id = requestId ?? newRequestId();
+    const vault = requireVault();
+
+    let route: RouteArg = "near_direct";
+    let amountIn = toBaseUnits(amount, cfg.decimals);
+
+    if (rail === "intents") {
+      // The agent cannot build this route. It needs a quote AND a signature
+      // from the key the vault owner registered — and that key deliberately
+      // does not live where agents run, because whoever holds it can bind any
+      // deposit address to any payee. So this path only works when the MCP
+      // server is the operator's own.
+      const signerHex = process.env.FLOAT_QUOTE_SIGNER_KEY;
+      if (!signerHex) {
+        throw new Error(
+          "rail=intents needs FLOAT_QUOTE_SIGNER_KEY (32-byte hex). " +
+            "That key binds a payee to a deposit address, so it belongs to the " +
+            "vault operator, not to an agent. Without it the cross-chain rail is closed.",
+        );
+      }
+      const sk = Uint8Array.from(Buffer.from(signerHex.replace(/^0x/, ""), "hex"));
+
+      // EXACT_OUTPUT: `amount` is what the PAYEE receives. What leaves the
+      // vault is the quote's amountIn, and that is what the budget is charged
+      // — so the tree governs real outflow, not the nominal figure.
+      const deadline = new Date(Date.now() + QUOTE_TTL_MS);
+      const q = await getQuote({
+        amountOut: toBaseUnits(amount, cfg.decimals),
+        payee: recipient,
+        refundTo: vault,
+        destinationAsset,
+        deadline,
+      });
+      amountIn = q.amountIn;
+
+      const signature = signBinding(
+        {
+          vault,
+          requestId: id,
+          token: tokenFor(token),
+          amount: q.amountIn,
+          payee: recipient,
+          depositAddress: q.depositAddress,
+          deadlineNs: q.deadlineNs,
+        },
+        sk,
+      );
+      route = buildRoute("intents", {
+        depositAddress: q.depositAddress,
+        quoteDeadlineNs: q.deadlineNs.toString(),
+        signature: toBase64(signature),
+      });
+    }
+
     const out = await sendRequestPayment({
       rpcUrl: cfg.rpcUrl,
-      vault: requireVault(),
+      vault,
       agentId: creds.agentId,
       agentKey: creds.agentKey,
-      requestId: requestId ?? newRequestId(),
+      requestId: id,
       token: tokenFor(token),
-      amount: toBaseUnits(amount, cfg.decimals),
+      amount: amountIn,
       recipient,
       memo,
-      // The Base rail needs more than the default: the contract rejects it
-      // below 230 Tgas because MPC signing fans out across the signer network.
-      gasTgas: rail === "base" ? BASE_GAS_TGAS : DEFAULT_GAS_TGAS,
-      route: buildRoute(rail, base),
+      gasTgas: DEFAULT_GAS_TGAS,
+      route,
     });
     return json(out);
   },
@@ -222,18 +556,21 @@ server.tool(
 );
 
 server.tool(
-  "vault_plan_create_agent",
-  "Build an UNSIGNED payload to create an agent sub-account with ONE key restricted to request_payment on this vault. Generate the keypair yourself and pass only the public half. Not signed by this server.",
+  "vault_plan_bind_agent",
+  "Build an UNSIGNED payload binding a signing key to a node, so that key may spend from it. Generate the keypair yourself and pass only the public half. Many keys may share one node. Not signed by this server.",
   {
     nodeId: z.number().int().min(0),
-    subLabel: z.string(),
     publicKey: z.string().describe("ed25519:..."),
-    keyAllowanceNear: z.string().default("2").describe("gas allowance in NEAR; floor is 0.5"),
   },
-  async ({ nodeId, subLabel, publicKey, keyAllowanceNear }) =>
-    renderPlan(
-      planCreateAgentAccount(requireVault(), nodeId, subLabel, publicKey, keyAllowanceNear),
-    ),
+  async ({ nodeId, publicKey }) =>
+    renderPlan(planBindVirtualAgent(requireVault(), nodeId, publicKey)),
+);
+
+server.tool(
+  "vault_plan_unbind_agent",
+  "Build an UNSIGNED payload revoking a signing key's authority to spend. Does NOT return any gas left in that key's NEP-611 gas key — withdraw from the gas key separately. Not signed by this server.",
+  { publicKey: z.string().describe("ed25519:...") },
+  async ({ publicKey }) => renderPlan(planUnbindVirtualAgent(requireVault(), publicKey)),
 );
 
 server.tool(
@@ -257,6 +594,48 @@ server.tool(
   { nodeId: z.number().int().min(0), cooldownSec: z.number().int().min(0) },
   async ({ nodeId, cooldownSec }) =>
     renderPlan(planSetCooldown(requireVault(), nodeId, cooldownSec)),
+);
+
+server.tool(
+  "vault_pending_approval",
+  "Look up a payment that is HELD awaiting the owner's approval. Returns null if there is no ticket for that id — already approved, already rejected, or never held.",
+  { requestId: z.string().min(1) },
+  async ({ requestId }) =>
+    json(
+      (await viewFunction(cfg.rpcUrl, requireVault(), "get_pending_approval", {
+        request_id: requestId,
+      })) ?? null,
+    ),
+);
+
+server.tool(
+  "vault_plan_set_approval_threshold",
+  'Build an UNSIGNED payload requiring the owner\'s approval for payments above an amount at this node. A threshold sits INSIDE the caps and can only make the vault more conservative. `amount` is HUMAN units, the same convention as vault_pay — "0.25" is a quarter of a USDC. Pass amount null to remove the threshold. Not signed by this server.',
+  {
+    nodeId: z.number().int().min(0),
+    // HUMAN units, matching vault_pay and vault_plan_set_caps. This took BASE
+    // units until 2026-10-31 and was the only tool here that did — on the one
+    // control that configures a safety gate, where the mistake fails OPEN. See
+    // planSetApprovalThreshold in payloads.ts for the measurement.
+    amount: z.string().min(1).nullable().describe('human units, e.g. "0.25" — NOT base units'),
+    decimals: z.number().int().min(0).max(38).default(6),
+  },
+  async ({ nodeId, amount, decimals }) =>
+    renderPlan(planSetApprovalThreshold(requireVault(), nodeId, amount, decimals)),
+);
+
+server.tool(
+  "vault_plan_approve_payment",
+  "Build an UNSIGNED payload to APPROVE a held payment, which sends it. Every limit is re-checked at approval, so it can still be refused. Not signed by this server.",
+  { requestId: z.string().min(1) },
+  async ({ requestId }) => renderPlan(planApprovePayment(requireVault(), requestId)),
+);
+
+server.tool(
+  "vault_plan_reject_payment",
+  "Build an UNSIGNED payload to REJECT a held payment. Nothing moves and the ticket is discarded. Not signed by this server.",
+  { requestId: z.string().min(1) },
+  async ({ requestId }) => renderPlan(planRejectPayment(requireVault(), requestId)),
 );
 
 server.tool(

@@ -10,15 +10,14 @@
 
 pub mod types;
 
-mod evm;
 
 #[cfg(test)]
 mod tests;
 
-use near_sdk::json_types::{U128, U64};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{
-    assert_one_yocto, env, ext_contract, near, AccountId, Allowance, BorshStorageKey, Gas,
+    assert_one_yocto, env, ext_contract, near, AccountId, BorshStorageKey, Gas,
     NearToken, PanicOnDefault, Promise, PromiseOrValue, PublicKey,
 };
 
@@ -26,50 +25,107 @@ pub use crate::types::*;
 
 pub const GAS_FOR_FT_TRANSFER: Gas = Gas::from_tgas(10);
 pub const GAS_FOR_TRANSFER_CALLBACK: Gas = Gas::from_tgas(10);
+/// Registering the quote's one-time deposit address, on the cross-chain rail.
+pub const GAS_FOR_STORAGE_DEPOSIT: Gas = Gas::from_tgas(10);
+/// What NEP-145 registration costs on the tokens this vault is used with:
+/// 0.00125 NEAR, both the min AND the max of `storage_balance_bounds` on
+/// mainnet USDC (measured 2026-10-28).
+///
+/// Fixed rather than read from the token, which would cost another
+/// cross-contract round trip on every payment. It degrades safely both ways:
+/// `registration_only: true` refunds the excess on a cheaper token, and on a
+/// more expensive one the registration simply fails, the transfer then fails as
+/// it does today, and the reservation is released by the usual path.
+pub const DEPOSIT_ADDRESS_STORAGE: NearToken =
+    NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
+/// How much of the vault's OWN NEAR agents may cause it to spend per day.
+///
+/// The budget tree bounds token VALUE. The deposit-address registration above
+/// costs NEAR per TRANSACTION, so a cap of 2.04 USDC permitted far more
+/// payments than the vault's NEAR could fund: ~120 payments of 0.01 USDC —
+/// 1.2 USDC, well inside the cap — exhausted it and killed the cross-chain
+/// rail. Measured, with an executable PoC in
+/// `intents_registration.rs::near_cost_is_per_transaction_not_per_value`.
+///
+/// 0.01 NEAR is EXACTLY 8 registrations a day.
+///
+/// The ceiling books `DEPOSIT_ADDRESS_STORAGE` — the ATTACHED amount,
+/// 0.00125 — not whatever net cost the token settles on, because the refund
+/// is not knowable at dispatch. So the allowance is 0.01 / 0.00125 = 8,
+/// exactly, and that figure is a property of this code rather than of any
+/// particular token's storage accounting.
+///
+/// An earlier version of this comment said ~9 at ~0.0011 each. That 0.0011
+/// was measured in the SANDBOX against mock_ft, which accepts and ignores any
+/// attached deposit — not NEP-145 behaviour, and not a number that transfers
+/// to mainnet. The true mainnet net is unmeasured: the obvious check is
+/// contaminated because a redeploy sits between the two balance readings.
+/// Quoting the booked amount sidesteps the question entirely.
+///
+/// Sized against what the DEFAULT TREE can actually spend rather than a round
+/// number: root allows 2.04 USDC/day at a 0.51 per-tx cap, so at most 4
+/// cross-chain payments, booking 0.005 NEAR. 0.01 is 2x that — enough that
+/// the shipped configuration never touches the ceiling, tight enough that a
+/// drain takes a fortnight rather than an afternoon.
+///
+/// This was 0.05 (40/day, 10x headroom) for one commit. Lowered deliberately: the
+/// ceiling RATE-LIMITS rather than prevents, so the number decides how long an
+/// operator has to notice. At 0.05 a vault holding 0.13 spendable NEAR drains
+/// in under three days; at 0.01 it takes about thirteen. Higher volume raises
+/// it with `set_max_daily_near`, which is a deliberate act with a visible
+/// consequence.
+pub const DEFAULT_MAX_DAILY_NEAR: NearToken = NearToken::from_millinear(10);
 /// Checked up front so a call cannot reserve budget and then run out of gas
-/// part-way through dispatch.
+/// part-way through dispatch. The ONLY gas floor — both `Route` variants use
+/// it, so this is the number a relay has to clear.
+///
+/// MEASURED on testnet 2026-10-28, not guessed: the signed-payment path burns
+/// 7.85 Tgas at tree depth 1 and 9.28 Tgas at MAX_DEPTH. 50 Tgas prepaid
+/// settles; 49 panics with INSUFFICIENT_GAS. So the floor carries ~5x headroom
+/// over the deepest real burn, and float-relay.mjs's 100 Tgas carries ~10x.
+/// Do not raise this to cover a hypothetical — a floor above what a relay
+/// attaches fails EVERY payment, which is how the removed Base rail's 130 Tgas
+/// came to look like the relay was 30 Tgas under-funded when that constant was
+/// in fact unreachable.
 pub const MIN_GAS_FOR_DISPATCH: Gas = Gas::from_tgas(50);
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 /// `ft_transfer` returns nothing; anything longer is an unexpected token.
 const MAX_PROMISE_RESULT_LEN: usize = 256;
-/// An MPC signature response is a small struct (big_r, s, recovery_id); this
-/// bounds what the signature callback will copy, for the same out-of-gas
-/// reason as MAX_PROMISE_RESULT_LEN.
-const MAX_MPC_RESULT_LEN: usize = 1024;
 
 pub const PRODUCTION_DAY_NS: u64 = 86_400 * NS_PER_SEC;
 
-/// Floor for the agent account's own storage staking, on top of whatever gas
-/// allowance the owner grants its key.
-pub const AGENT_ACCOUNT_STORAGE: NearToken = NearToken::from_millinear(50);
-/// Lower bound on a usable key allowance.
+/// The ONLY method an agent key may call.
 ///
-/// MEASURED, not guessed: an earlier version hardcoded 0.05 NEAR and the key
-/// was dead on arrival — `NotEnoughBalance { balance: 0.2 NEAR, cost: 1.0009
-/// NEAR }`. NEAR reserves the FULL prepaid gas against the signer up front and
-/// refunds the unused part afterwards, so a 300 Tgas call needs ~1 NEAR of
-/// headroom even though it burns a small fraction of that. An allowance sized
-/// to expected burn rather than to prepaid gas produces a key that cannot
+/// Still exactly right after sub-accounts were retired — it is now the method
+/// a virtual agent's NEP-611 GAS KEY is pinned to, rather than the method a
+/// sub-account's key was pinned to. Same boundary, attached to the vault
+/// instead of to an account nobody could empty.
+///
+/// The sizing lesson from the deleted `MIN_AGENT_KEY_ALLOWANCE` still applies
+/// to funding a gas key: NEAR reserves the FULL prepaid gas up front and
+/// refunds the remainder, so a key must hold the RESERVATION (~0.031 at 50
+/// TGas), not the expected burn (~0.0002). Fund it to the burn and it cannot
 /// transact at all.
-pub const MIN_AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_millinear(500);
-/// The ONLY method an agent key may call. Anything added here widens the
-/// agent's authority, so it is a single const rather than a parameter.
 pub const AGENT_ALLOWED_METHOD: &str = "request_payment";
-pub const GAS_FOR_CREATE_CALLBACK: Gas = Gas::from_tgas(10);
 
-/// Gas for the MPC sign call.
+/// Parallel nonce lanes on an agent's gas key. One makes its payments serial,
+/// which is the conservative default. Matches the factory and float-agent.
+pub const AGENT_GAS_KEY_NONCES: u32 = 1;
+
+/// The least a gas key can be funded with and still transact ONCE.
 ///
-/// MEASURED, not guessed: v1.signer-prod.testnet's own `config` reports
-/// `sign_call_gas_attachment_requirement_tera_gas: 15`, and a live sign call
-/// at 100 Tgas returned a real secp256k1 signature. 100 keeps a wide margin
-/// over the stated requirement while leaving room under NEAR's 300 Tgas cap —
-/// an under-funded sign call that runs out of gas never returns to the
-/// callback, which would leave the reservation held at every level.
-pub const GAS_FOR_MPC_SIGN: Gas = Gas::from_tgas(100);
-pub const GAS_FOR_SIGNATURE_CALLBACK: Gas = Gas::from_tgas(10);
-/// The Base rail demands more prepaid gas than the NEAR rail. Checked BEFORE
-/// anything is charged.
-pub const MIN_GAS_FOR_BASE_DISPATCH: Gas = Gas::from_tgas(130);
+/// NEAR reserves `prepaid_gas * 1e9` for an in-flight call and refunds the
+/// remainder, so what a key must HOLD is the reservation, not the burn — and
+/// the two differ by ~350x. The MCP server sends 60 TGas, which reserves
+/// 0.06; the vault's own `MIN_GAS_FOR_DISPATCH` floor of 50 TGas reserves
+/// 0.05, so anything below 0.06 buys a key that cannot complete the call the
+/// tooling actually makes.
+///
+/// A floor, not a default. `add_role` funds the key with the WHOLE attached
+/// deposit, so the owner chooses the runway — 0.12 buys roughly 160 payments
+/// at the 0.000741 measured on testnet 2026-11-03.
+pub const MIN_AGENT_GAS_FUNDING: NearToken = NearToken::from_yoctonear(6 * 10u128.pow(22));
+
 /// Upper bound on a single purge sweep, so one call cannot exhaust gas
 /// part-way and leave an unpredictable amount of work done.
 pub const MAX_PURGE_LIMIT: u32 = 100;
@@ -80,46 +136,16 @@ pub const MAX_PURGE_LIMIT: u32 = 100;
 /// purpose: an owner who could pass zero could sweep a live reservation whose
 /// callback is about to land.
 pub const MIN_SWEEP_AGE_NS: u64 = 3_600 * NS_PER_SEC;
-pub const MAX_SUB_LABEL_LEN: usize = 32;
 pub const MAX_ACCOUNT_ID_LEN: usize = 64;
 
-/// The `sign` entry point of the Chain Signatures MPC contract.
-#[ext_contract(ext_mpc)]
-#[allow(dead_code)]
-trait MpcSigner {
-    fn sign(&mut self, request: SignRequest) -> near_sdk::Promise;
-}
-
-/// What `v1.signer-prod.testnet` actually expects, read off its embedded ABI
-/// and confirmed by a live `sign` call on 2026-10-26.
-///
-/// The older `{payload: [u8;32], key_version}` shape still deserialises there
-/// via a documented backward-compatible alias, but it is DEPRECATED. This uses
-/// the current field names so the rail does not depend on a compatibility path
-/// that may be dropped.
-///
-/// `payload_v2` is the 32-byte hash as hex — and the whole design hinges on the
-/// vault computing that hash itself rather than accepting one.
-#[near(serializers = [json])]
-pub struct SignRequest {
-    pub payload_v2: Payload,
-    pub path: String,
-    pub domain_id: u64,
-}
-
-/// Externally tagged, which serialises to `{"Ecdsa": "<64 hex>"}`.
-///
-/// Only the ECDSA arm exists here: Base verifies secp256k1, and the signer's
-/// Eddsa arm would return a signature no EVM chain can check.
-#[near(serializers = [json])]
-pub enum Payload {
-    Ecdsa(String),
-}
-
+/// The `ft_transfer` entry point of a NEP-141 token contract.
 #[ext_contract(ext_ft)]
 #[allow(dead_code)]
 trait FungibleTokenCore {
     fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>);
+    /// NEP-145. `registration_only: true` refunds anything above the minimum,
+    /// so a fixed attached amount cannot overpay a token with cheaper storage.
+    fn storage_deposit(&mut self, account_id: Option<AccountId>, registration_only: Option<bool>);
 }
 
 #[near(serializers = [borsh])]
@@ -130,6 +156,19 @@ enum StorageKey {
     LastPaid,
     AccountToNode,
     Requests,
+    /// Virtual agents: an authorized signing key -> the node it spends from.
+    /// MANY-TO-ONE on purpose, unlike `AccountToNode` — a swarm shares a pool.
+    PubkeyToNode,
+    /// Virtual agents: signing key -> highest nonce already consumed.
+    ///
+    /// This is the replay guard and it must NEVER be pruned. `request_id`
+    /// dedup cannot serve that role: `sweep_stuck_pending` removes terminal
+    /// requests, which frees the id for reuse. That is harmless for
+    /// `request_payment`, where NEAR's per-transaction nonce makes replay
+    /// impossible at the protocol level, but for a detached signature it would
+    /// be a drain — resubmit an old payload after the purge window and the
+    /// budget is spent again.
+    PubkeyToNonce,
 }
 
 #[near(contract_state)]
@@ -142,15 +181,20 @@ pub struct Vault {
     /// false = overcommit: children contend for a shared parent pool.
     ///         This is the case that races, and the case under test.
     strict_allocation: bool,
-    /// `None` means the Base rail is CLOSED. Default on a fresh deploy, so the
-    /// vault cannot sign a cross-chain transaction until the owner opens the
-    /// rail and names the token contract it is allowed to call.
-    base_config: Option<BaseConfig>,
 
+    // NOTE: a 5th field `base_config: Option<BaseConfig>` sat here until
+    // 2026-10-28. It was REMOVED, which changes this struct's borsh layout —
+    // see `migrate` at the bottom of this impl. Any state written before that
+    // date must pass through `migrate` or it will misparse from this point on.
     nodes: LookupMap<NodeId, Node>,
     /// Bounded by MAX_NODES so `get_tree` stays a single view call.
     node_order: Vec<NodeId>,
     account_to_node: LookupMap<AccountId, NodeId>,
+    /// Virtual agents. Many keys may map to one node; a 100-signer swarm draws
+    /// on a shared pool rather than consuming 100 of the MAX_NODES budget.
+    pubkey_to_node: LookupMap<PublicKey, NodeId>,
+    /// Highest nonce consumed per virtual agent key. Monotonic, never pruned.
+    pubkey_to_nonce: LookupMap<PublicKey, u64>,
     next_node_id: NodeId,
 
     /// THE hot-path map. (node, token, utc_day) -> {executed, pending}.
@@ -167,14 +211,63 @@ pub struct Vault {
 
 #[near]
 impl Vault {
-    /// Must be called by the vault account itself, ideally in the same
-    /// transaction as the deploy, so nobody else can initialize a freshly
-    /// deployed vault with their own owner.
+    /// Must be called by the vault account itself or by its PARENT account,
+    /// ideally in the same transaction as the deploy, so nobody else can
+    /// initialize a freshly deployed vault with their own owner.
+    ///
+    /// The parent is allowed so a FACTORY can create vaults. A factory holds no
+    /// secret, so it cannot sign as the vault the way `create-float` does with
+    /// its temporary setup key, and its promise-batch `function_call` arrives
+    /// with the factory as predecessor.
+    ///
+    /// That grants no new authority. On NEAR a sub-account can only ever be
+    /// created by its immediate parent, so if this account exists its parent
+    /// created it — choosing the code and able to install any key at that
+    /// moment. And `#[init]` panics against existing state, so the window
+    /// closes before the real owner exists.
+    ///
+    /// `split_once`, NOT `ends_with`: for `vault.test.near` the parent is
+    /// exactly `test.near`, and a suffix test would also accept `est.near`,
+    /// which is an unrelated account someone else may own.
     #[init]
-    pub fn new(owner: AccountId, network: String, strict_allocation: bool) -> Self {
+    pub fn new(
+        owner: AccountId,
+        network: String,
+        strict_allocation: bool,
+        root_limits: Vec<TokenLimit>,
+        root_recipients: Option<Vec<AccountId>>,
+        // An agent to bind to the root node, in this same transaction.
+        //
+        // THE BINDING CANNOT HAPPEN ANY OTHER WAY IN A ONE-SIGNATURE FLOW.
+        // A NEAR transaction has a single `receiver_id` and every action
+        // applies to it; the browser signs to the FACTORY, so an appended
+        // `AddKey` would install the agent key on the factory — the account
+        // that creates everyone's vaults and holds the kill switch. And the
+        // vault does not exist yet at signing time, so nothing in that
+        // transaction can name it.
+        //
+        // Routing it through the factory's promise does not work either:
+        // `bind_virtual_agent` begins with `assert_owner`, and a
+        // factory-initiated call arrives with the FACTORY as predecessor, so
+        // it would panic. `new` is the one place with the authority — it
+        // already proves the caller is the vault or its parent, and `#[init]`
+        // panics against existing state, so this window shuts before the
+        // owner exists.
+        //
+        // Optional because the two-transaction path stays valid: a vault
+        // created with no agent is created exactly as before.
+        agent_pk: Option<PublicKey>,
+    ) -> Self {
         let vault_id = env::current_account_id();
-        if env::predecessor_account_id() != vault_id {
-            fail(ReasonCode::InitNotSelf, "initialize from the vault account");
+        let caller = env::predecessor_account_id();
+        if caller != vault_id {
+            let parent = vault_id.as_str().split_once('.').map(|(_, rest)| rest);
+            if parent != Some(caller.as_str()) {
+                fail(
+                    ReasonCode::InitNotSelf,
+                    "initialize from the vault account or its parent",
+                );
+            }
         }
         if owner == vault_id {
             fail(ReasonCode::InvalidConfig, "owner must not be the vault");
@@ -188,22 +281,80 @@ impl Vault {
             fail(ReasonCode::InvalidConfig, "network must be 1-32 chars of [a-z0-9-]");
         }
 
-        Self {
+        // THE ROOT NODE IS PART OF INITIALIZATION, not a follow-up call.
+        //
+        // `new` used to leave `node_order` empty, and create-float covered for
+        // it by calling `add_node` immediately afterwards. A FACTORY cannot:
+        // its whole purpose is one browser signature, so there is no
+        // afterwards, and `add_node` is owner-only so it could not call it in
+        // the batch either. The result was a vault with nothing to spend
+        // against — unusable, and silent about it.
+        //
+        // Validated the limits the same way `add_node` does. A root created
+        // here must be indistinguishable from one created there, or the two
+        // paths produce different vaults.
+        validate_limits(&root_limits);
+        validate_recipients(&root_recipients);
+
+        let mut v = Self {
             owner,
             network,
             paused: false,
             strict_allocation,
-            base_config: None,
             nodes: LookupMap::new(StorageKey::Nodes),
             node_order: Vec::new(),
             account_to_node: LookupMap::new(StorageKey::AccountToNode),
+            pubkey_to_node: LookupMap::new(StorageKey::PubkeyToNode),
+            pubkey_to_nonce: LookupMap::new(StorageKey::PubkeyToNonce),
             next_node_id: ROOT_NODE,
             ledgers: LookupMap::new(StorageKey::Ledgers),
             last_paid_ns: LookupMap::new(StorageKey::LastPaid),
             requests: IterableMap::new(StorageKey::Requests),
             #[cfg(feature = "test-clock")]
             day_len_ns_override: PRODUCTION_DAY_NS,
+        };
+
+        let child_cap_sum: Vec<(AccountId, U128)> =
+            root_limits.iter().map(|l| (l.token.clone(), U128(0))).collect();
+        v.nodes.insert(
+            ROOT_NODE,
+            Node {
+                id: ROOT_NODE,
+                parent: None,
+                path: Vec::new(),
+                label: "root".to_string(),
+                account: None,
+                limits: root_limits,
+                child_cap_sum,
+                child_count: 0,
+                cooldown_sec: 0,
+                frozen: false,
+                recipients: root_recipients,
+            },
+        );
+        v.node_order.push(ROOT_NODE);
+        v.next_node_id = ROOT_NODE + 1;
+
+        // Bind the agent to the root node, with the root's own limits.
+        //
+        // No duplicate check, unlike `bind_virtual_agent`: `pubkey_to_node`
+        // was constructed three statements ago and is provably empty, so
+        // there is nothing to collide with.
+        //
+        // `pubkey_to_nonce` is deliberately NOT written, matching
+        // `bind_virtual_agent`. A fresh key has no entry, reads as 0, and its
+        // first usable nonce is 1. Seeding it here would make a vault created
+        // this way disagree with one bound the ordinary way — and the whole
+        // requirement is that the two paths produce the same vault.
+        if let Some(pk) = agent_pk {
+            v.pubkey_to_node.insert(pk, ROOT_NODE);
+            // Same event the owner-driven path emits, so an indexer cannot
+            // tell the two apart and does not need to.
+            env::log_str(&format!(
+                r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{ROOT_NODE}}}]}}"#
+            ));
         }
+        v
     }
 
     // ------------------------------------------------------- owner methods
@@ -223,6 +374,28 @@ impl Vault {
         recipients: Option<Vec<AccountId>>,
     ) -> NodeId {
         self.assert_owner();
+        self.insert_node(parent, label, limits, cooldown_sec, recipients)
+    }
+
+    /// The node-creation body, SHARED so there is only one of it.
+    ///
+    /// Extracted because `add_role` cannot call `add_node`: `assert_owner`
+    /// demands EXACTLY one yoctoNEAR, and `add_role` must carry a real
+    /// deposit to fund its agent's gas key. Copying the body instead would
+    /// have produced two node creators that drift — which is precisely how
+    /// the factory ended up with `create_vault` silently dropping `agent_pk`
+    /// while `create_vault_with_code` honoured it.
+    ///
+    /// Takes no authorisation of its own. Every caller must check the owner
+    /// FIRST; this is private so the compiler keeps that list short.
+    fn insert_node(
+        &mut self,
+        parent: Option<NodeId>,
+        label: String,
+        limits: Vec<TokenLimit>,
+        cooldown_sec: u32,
+        recipients: Option<Vec<AccountId>>,
+    ) -> NodeId {
         if self.node_order.len() as u32 >= MAX_NODES {
             fail(ReasonCode::MaxNodes, "node limit reached");
         }
@@ -310,6 +483,359 @@ impl Vault {
         id
     }
 
+    // ---- The quote signer.
+    //
+    // An Intents payment sends funds to a one-time deposit address that can
+    // never be on the payee allowlist. Something has to vouch that paying
+    // that address pays the allowlisted payee, and the contract cannot check
+    // it — the correspondence only exists inside the solver's quote.
+    //
+    // So this is an EXPLICIT TRUSTED PRODUCER, named rather than implied.
+    // Whoever holds this key can bind any deposit address to any payee, which
+    // means they can redirect any Intents payment the budget allows. It
+    // should be the operator's key, kept off the machines agents run on. With
+    // no signer registered the Intents rail is simply closed.
+    //
+    // Stored under its own key, like the other additions, so the borsh layout
+    // of `Vault` is untouched.
+
+    /// The vault's own-NEAR budget. Kept OUTSIDE `Vault` for the same reason
+    /// `QUOTE_SIGNER` and `PENDING_OWNER` are: adding a struct field is a borsh
+    /// layout change and every deployed vault would need `migrate()` in the
+    /// same transaction as the deploy. A dedicated storage key needs neither.
+    const MAX_DAILY_NEAR_KEY: &'static [u8] = b"MAX_DAILY_NEAR";
+    /// `(day, spent)` for the CURRENT day. A stored day that is not today reads
+    /// as zero spent, so the counter resets without anyone sweeping it.
+    const NEAR_SPENT_KEY: &'static [u8] = b"NEAR_SPENT";
+    /// Per-node approval threshold, and the held tickets. Both OUTSIDE `Vault`
+    /// for the reason above: a struct field would be a borsh layout change
+    /// requiring `migrate()` in the same transaction as every deploy.
+    ///
+    /// A threshold is a SECOND gate inside the caps, never a way around them.
+    /// amount <= threshold            -> executes immediately, as before
+    /// threshold < amount <= caps     -> held for the owner (APPROVAL_REQUIRED)
+    /// amount > caps                  -> refused, exactly as before
+    /// So approving can never move more than the tree already allows.
+    const APPROVAL_THRESHOLD_PREFIX: &'static [u8] = b"APPROVAL_THRESHOLD:";
+    const APPROVAL_TICKET_PREFIX: &'static [u8] = b"APPROVAL_TICKET:";
+
+    fn threshold_key(node_id: NodeId) -> Vec<u8> {
+        let mut k = Self::APPROVAL_THRESHOLD_PREFIX.to_vec();
+        k.extend_from_slice(&node_id.to_le_bytes());
+        k
+    }
+
+    fn ticket_key(request_id: &str) -> Vec<u8> {
+        let mut k = Self::APPROVAL_TICKET_PREFIX.to_vec();
+        k.extend_from_slice(request_id.as_bytes());
+        k
+    }
+
+    fn node_threshold(node_id: NodeId) -> Option<u128> {
+        env::storage_read(&Self::threshold_key(node_id))
+            .and_then(|b| <[u8; 16]>::try_from(b).ok())
+            .map(u128::from_le_bytes)
+    }
+
+    /// The binding threshold over a chain: the LOWEST any level sets.
+    ///
+    /// Most-restrictive-wins, unlike `effective_recipients`, where a child list
+    /// REPLACES an inherited one. The difference is deliberate: an allowlist is
+    /// a statement about who a specific team may pay, so overriding it is the
+    /// point. A threshold is a statement about how much may move unattended, so
+    /// a parent must be able to tighten a child it does not otherwise control.
+    fn effective_threshold(chain: &[NodeId]) -> Option<u128> {
+        chain.iter().filter_map(|id| Self::node_threshold(*id)).min()
+    }
+
+
+    fn max_daily_near() -> u128 {
+        env::storage_read(Self::MAX_DAILY_NEAR_KEY)
+            .and_then(|b| <[u8; 16]>::try_from(b).ok())
+            .map(u128::from_le_bytes)
+            .unwrap_or(DEFAULT_MAX_DAILY_NEAR.as_yoctonear())
+    }
+
+    fn near_spent_today(day: u64) -> u128 {
+        let Some(raw) = env::storage_read(Self::NEAR_SPENT_KEY) else { return 0 };
+        let Ok(buf) = <[u8; 24]>::try_from(raw) else { return 0 };
+        let stored_day = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        if stored_day != day {
+            return 0;
+        }
+        u128::from_le_bytes(buf[8..24].try_into().unwrap())
+    }
+
+    fn charge_near(day: u64, amount: u128) {
+        let next = Self::near_spent_today(day).saturating_add(amount);
+        let mut buf = [0u8; 24];
+        buf[0..8].copy_from_slice(&day.to_le_bytes());
+        buf[8..24].copy_from_slice(&next.to_le_bytes());
+        env::storage_write(Self::NEAR_SPENT_KEY, &buf);
+    }
+
+    /// Require the owner's approval for payments above `amount` at this node.
+    ///
+    /// `None` removes the threshold, restoring unattended spending up to the
+    /// caps. The threshold is a gate INSIDE the caps: it can only ever make the
+    /// vault more conservative, never less, so there is no configuration of it
+    /// that moves more money than the tree already allows.
+    #[payable]
+    pub fn set_approval_threshold(&mut self, node_id: NodeId, amount: Option<U128>) {
+        self.assert_owner();
+        // Reject an unknown node rather than writing a threshold nothing reads.
+        let _ = self.get_node(node_id);
+        match amount {
+            Some(a) => {
+                env::storage_write(&Self::threshold_key(node_id), &a.0.to_le_bytes());
+            }
+            None => {
+                env::storage_remove(&Self::threshold_key(node_id));
+            }
+        }
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"approval_threshold_set","data":[{{"node_id":{},"amount":{}}}]}}"#,
+            node_id,
+            match amount {
+                Some(a) => format!("\"{}\"", a.0),
+                None => "null".to_string(),
+            }
+        ));
+    }
+
+    pub fn get_approval_threshold(&self, node_id: NodeId) -> Option<U128> {
+        Self::node_threshold(node_id).map(U128)
+    }
+
+    /// The threshold that would actually bind a payment from this node --
+    /// the lowest set anywhere in its chain, which is not necessarily its own.
+    pub fn get_effective_threshold(&self, node_id: NodeId) -> Option<U128> {
+        let n = self.get_node(node_id);
+        let mut chain = n.path.clone();
+        chain.push(node_id);
+        Self::effective_threshold(&chain).map(U128)
+    }
+
+    pub fn get_pending_approval(&self, request_id: String) -> Option<ApprovalTicket> {
+        env::storage_read(&Self::ticket_key(&request_id))
+            .and_then(|b| near_sdk::borsh::from_slice::<ApprovalTicket>(&b).ok())
+    }
+
+    /// Execute a held payment.
+    ///
+    /// Every limit is re-checked NOW, not at request time: caps, cooldown, the
+    /// payee allowlist, the NEAR ceiling, and for a cross-chain payment the
+    /// quote's own deadline. So approving cannot slip past a cap tightened
+    /// while the request waited, and a quote that expired meanwhile is refused
+    /// with QUOTE_EXPIRED rather than sent on a stale price.
+    ///
+    /// The ticket is consumed FIRST. A dispatch that blocks therefore leaves no
+    /// ticket to approve twice -- the agent must ask again, which is the honest
+    /// outcome when the reason it blocked is a limit it has now hit.
+    #[payable]
+    pub fn approve_payment(&mut self, request_id: String) -> PromiseOrValue<PaymentOutcome> {
+        self.assert_owner();
+        let Some(t) = self.get_pending_approval(request_id.clone()) else {
+            fail(ReasonCode::NoSuchApproval, "no payment is awaiting approval under that id")
+        };
+        env::storage_remove(&Self::ticket_key(&request_id));
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"approval_granted","data":[{{"request_id":"{}","node_id":{},"amount":"{}"}}]}}"#,
+            t.request_id, t.node_id, t.amount.0
+        ));
+        self.dispatch_payment(
+            t.node_id,
+            t.request_id,
+            t.token,
+            t.amount,
+            t.recipient,
+            t.memo,
+            t.route,
+            true,
+        )
+    }
+
+    /// Decline a held payment. The ticket is discarded and nothing moves.
+    #[payable]
+    pub fn reject_payment(&mut self, request_id: String) {
+        self.assert_owner();
+        let Some(t) = self.get_pending_approval(request_id.clone()) else {
+            fail(ReasonCode::NoSuchApproval, "no payment is awaiting approval under that id")
+        };
+        env::storage_remove(&Self::ticket_key(&request_id));
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"request_blocked","data":[{{"request_id":"{}","node_id":{},"reason_code":"{}"}}]}}"#,
+            t.request_id,
+            t.node_id,
+            ReasonCode::ApprovalRejected.as_str()
+        ));
+    }
+
+    /// Raise or lower the daily ceiling on the vault's own NEAR spend.
+    /// `None` restores the default.
+    #[payable]
+    pub fn set_max_daily_near(&mut self, amount: Option<U128>) {
+        self.assert_owner();
+        match amount {
+            None => env::storage_remove(Self::MAX_DAILY_NEAR_KEY),
+            Some(a) => {
+                env::storage_write(Self::MAX_DAILY_NEAR_KEY, &a.0.to_le_bytes());
+                true
+            }
+        };
+    }
+
+    /// Today's NEAR budget, so an operator can see the drain coming.
+    pub fn get_near_budget(&self) -> NearBudgetView {
+        let day = self.today();
+        let cap = Self::max_daily_near();
+        let spent = Self::near_spent_today(day);
+        NearBudgetView {
+            day,
+            max_daily: U128(cap),
+            spent: U128(spent),
+            available: U128(cap.saturating_sub(spent)),
+        }
+    }
+
+    const QUOTE_SIGNER_KEY: &'static [u8] = b"QUOTE_SIGNER";
+
+    fn read_quote_signer() -> Option<[u8; 32]> {
+        env::storage_read(Self::QUOTE_SIGNER_KEY).and_then(|b| b.try_into().ok())
+    }
+
+    /// Register (or with `None`, revoke) the ed25519 key that signs quotes.
+    ///
+    /// Revoking closes the Intents rail outright. That is the correct
+    /// response to a suspected key compromise, and it needs no other
+    /// coordination: with no signer, every Intents payment is refused.
+    #[payable]
+    pub fn set_quote_signer(&mut self, public_key: Option<Base64VecU8>) {
+        self.assert_owner();
+        match public_key {
+            None => {
+                env::storage_remove(Self::QUOTE_SIGNER_KEY);
+                env::log_str(
+                    r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"quote_signer_cleared","data":[{}]}"#,
+                );
+            }
+            Some(pk) => {
+                if pk.0.len() != 32 {
+                    fail(ReasonCode::InvalidConfig, "quote signer must be a 32-byte ed25519 key");
+                }
+                env::storage_write(Self::QUOTE_SIGNER_KEY, &pk.0);
+                env::log_str(
+                    r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"quote_signer_set","data":[{}]}"#,
+                );
+            }
+        }
+    }
+
+    /// The registered quote signer, if the Intents rail is open.
+    pub fn get_quote_signer(&self) -> Option<Base64VecU8> {
+        Self::read_quote_signer().map(|k| Base64VecU8(k.to_vec()))
+    }
+
+    /// Reclaim a node, returning its slot to the MAX_NODES budget.
+    ///
+    /// Why this had to exist before anything could spawn children. `add_node`
+    /// did `node_order.push` with no counterpart anywhere in the contract, so
+    /// MAX_NODES was a ONE-WAY budget: every node ever created consumed one of
+    /// sixty-four slots permanently. That is survivable while only the owner
+    /// can create nodes. It is not survivable the moment an agent can, because
+    /// a buggy or compromised agent exhausts the tree and nothing — not
+    /// freezing it, not revoking its key — ever gives those slots back.
+    ///
+    /// The preconditions are deliberately strict, because the failure mode of
+    /// getting this wrong is a wedged reservation rather than an error:
+    ///
+    /// - FROZEN. Freezing is what stops new reservations from forming, and
+    ///   the hot path checks `frozen` on every node in the chain. Without it,
+    ///   a payment could be reserved against this node between the emptiness
+    ///   check and the removal.
+    /// - CHILDLESS. A descendant keeps this node in its `path`, so removing a
+    ///   parent would leave children charging a level that no longer exists.
+    /// - NO PENDING, across today AND yesterday. A reservation outlives the
+    ///   call that made it; `RESERVATION_TTL` is an hour, so one taken before
+    ///   midnight can still be open after it. Checking only today would miss
+    ///   exactly that case.
+    /// - NOT THE ROOT. Removing it would leave a vault no payment can route
+    ///   through, unrecoverably.
+    ///
+    /// Note what is NOT done: the node's ledgers are left in place. They are
+    /// keyed by `(node, token, day)` and `next_node_id` only ever increments,
+    /// so the id can never be reused and the rows are inert. Deleting them
+    /// would be worse than useless — if any reservation did still reference
+    /// this node, its release does `pending.checked_sub(amount)` against a
+    /// ledger that `unwrap_or_default()` would resurrect as zero, underflow,
+    /// and panic in a CALLBACK. That reservation would then be stuck forever
+    /// at every level of its chain. Keeping the rows makes the dangerous case
+    /// merely wasteful instead.
+    #[payable]
+    pub fn remove_node(&mut self, node_id: NodeId) {
+        self.assert_owner();
+
+        let node = self.get_node(node_id);
+
+        let parent = match node.parent {
+            Some(p) => p,
+            None => fail(ReasonCode::InvalidConfig, "cannot remove the root"),
+        };
+        if node.child_count > 0 {
+            fail(ReasonCode::MaxChildren, "node still has children");
+        }
+        if !node.frozen {
+            fail(
+                ReasonCode::InvalidConfig,
+                "freeze the node first: freezing is what stops new reservations",
+            );
+        }
+
+        // Today and yesterday, because a reservation can outlive a day
+        // boundary. `today()` is a fixed window, so yesterday is today - 1.
+        let today = self.today();
+        for l in &node.limits {
+            for day in [today, today.saturating_sub(1)] {
+                let led = self
+                    .ledgers
+                    .get(&(node_id, l.token.clone(), day))
+                    .cloned()
+                    .unwrap_or_default();
+                if led.pending > 0 {
+                    fail(
+                        ReasonCode::LedgerInvariant,
+                        "node has an open reservation; sweep_stuck_pending first",
+                    );
+                }
+            }
+        }
+
+        // Give the parent back the allocation this node was holding, so a
+        // strict-mode tree can re-use the headroom.
+        for l in &node.limits {
+            self.bump_child_sum(parent, &l.token, l.daily_cap.0, 0);
+        }
+        if let Some(p) = self.nodes.get_mut(&parent) {
+            p.child_count = p.child_count.saturating_sub(1);
+        }
+
+        // Free the agent account binding, or the account could never be bound
+        // to another node and the key would be orphaned.
+        if let Some(acct) = node.account.clone() {
+            self.account_to_node.remove(&acct);
+        }
+
+        self.nodes.remove(&node_id);
+        self.node_order.retain(|id| *id != node_id);
+
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"node_removed","data":[{{"node_id":{},"parent":{},"freed_slots":{}}}]}}"#,
+            node_id,
+            parent,
+            MAX_NODES as usize - self.node_order.len()
+        ));
+    }
+
     /// Strict mode re-checks containment in BOTH directions: a node may not
     /// rise above what its parent can cover, and may not fall below what it
     /// has already allocated to its own children.
@@ -374,100 +900,32 @@ impl Vault {
         self.do_bind(node_id, account_id);
     }
 
-    /// Creates `<sub_label>.<vault>` and gives it ONE function-call access key
-    /// pinned to this vault and to `request_payment` alone, then binds it to
-    /// `node_id` once the account actually exists.
-    ///
-    /// The authority this grants is the whole security story, so it is worth
-    /// stating exactly what the resulting key can and cannot do:
-    ///
-    /// - `receiver_id` is this vault, so the key cannot call ANY other
-    ///   contract — including the token itself. That matters: a key that could
-    ///   call `ft_transfer` directly would hold the vault's own transfer
-    ///   authority and every budget check would be moot.
-    /// - `method_names` is exactly `["request_payment"]`, so it cannot reach
-    ///   owner methods.
-    /// - a NEAR function-call key cannot attach a deposit at all, so it cannot
-    ///   move NEAR directly. Every movement of value is contract logic.
-    ///
-    /// Owner-gated by requiring a deposit rather than by `assert_one_yocto`:
-    /// the deposit funds the new account, and requiring one is just as
-    /// effective at excluding a function-call key, which cannot attach any.
-    #[payable]
-    pub fn create_agent_account(
-        &mut self,
-        node_id: NodeId,
-        sub_label: String,
-        public_key: PublicKey,
-        key_allowance: NearToken,
-    ) -> Promise {
-        if env::predecessor_account_id() != self.owner {
-            fail(ReasonCode::NotOwner, "owner only");
-        }
-        if key_allowance < MIN_AGENT_KEY_ALLOWANCE {
-            fail(
-                ReasonCode::InvalidConfig,
-                "key_allowance below the usable floor (see MIN_AGENT_KEY_ALLOWANCE)",
-            );
-        }
-        let required = key_allowance.saturating_add(AGENT_ACCOUNT_STORAGE);
-        let deposit = env::attached_deposit();
-        if deposit < required {
-            fail(
-                ReasonCode::InvalidConfig,
-                "deposit must cover key_allowance plus account storage",
-            );
-        }
-        if sub_label.is_empty()
-            || sub_label.len() > MAX_SUB_LABEL_LEN
-            || !sub_label
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
-        {
-            fail(ReasonCode::InvalidConfig, "sub_label must be 1..=32 chars of [a-z0-9-_]");
-        }
-
-        let vault_id = env::current_account_id();
-        let sub_id = format!("{sub_label}.{vault_id}");
-        if sub_id.len() > MAX_ACCOUNT_ID_LEN {
-            fail(ReasonCode::InvalidConfig, "resulting account id is too long");
-        }
-        let sub: AccountId = sub_id
-            .parse()
-            .unwrap_or_else(|_| fail(ReasonCode::InvalidConfig, "invalid account id"));
-
-        // Validate the binding BEFORE creating anything, so a rejected bind
-        // cannot leave an orphaned funded account behind.
-        self.assert_bindable(node_id, &sub);
-
-        Promise::new(sub.clone())
-            .create_account()
-            .transfer(deposit)
-            .add_access_key_allowance(
-                public_key,
-                Allowance::limited(key_allowance)
-                    .unwrap_or_else(|| fail(ReasonCode::InvalidConfig, "zero key allowance")),
-                vault_id,
-                AGENT_ALLOWED_METHOD.to_string(),
-            )
-            .then(
-                Self::ext(env::current_account_id())
-                    .with_static_gas(GAS_FOR_CREATE_CALLBACK)
-                    .on_agent_created(node_id, sub),
-            )
-    }
-
-    /// Binds only if the account was really created. Binding optimistically
-    /// would leave a node pointing at an account that does not exist.
-    #[private]
-    pub fn on_agent_created(&mut self, node_id: NodeId, account_id: AccountId) -> bool {
-        let created = env::promise_results_count() == 1
-            && env::promise_result_checked(0, MAX_PROMISE_RESULT_LEN).is_ok();
-        if created {
-            self.do_bind(node_id, account_id);
-        }
-        created
-    }
+    // `create_agent_account` AND `on_agent_created` WERE REMOVED HERE.
+    //
+    // They created `<sub_label>.<vault>` with 0.55 NEAR attached and gave it a
+    // single FUNCTION-CALL access key scoped to `request_payment`. Such a key
+    // cannot sign `DeleteAccount`, NEAR requires `actor_id == account_id` for
+    // key and account actions so a parent cannot act for a child, and no
+    // full-access key for an agent account was ever created anywhere. The
+    // result was that every agent ever made stranded its funding permanently.
+    //
+    // Measured, not estimated: 10.7752 NEAR across the 18 agents under
+    // `v3.floatvault-12329.testnet`, and another 0.54434 in
+    // `r1.float.test015.near` on mainnet. All of it unrecoverable, by anyone,
+    // forever. `docs/DEFERRED-agent-key-recovery.md` scoped a fix — add a
+    // full-access key during creation, forward-only — and deferred it.
+    //
+    // This goes further than that fix: the path is gone. Agents are now
+    // VIRTUAL — `bind_virtual_agent` maps a public key to a node for ~168
+    // bytes of vault state (~0.0017 NEAR), and the key's gas comes from a
+    // NEP-611 gas key on the vault, whose balance IS recoverable via
+    // `WithdrawFromGasKey`. Nothing is created, so nothing can be stranded.
+    //
+    // `bind_agent` above is deliberately KEPT. It binds an account that
+    // already exists and that its owner already controls, so it strands
+    // nothing; removing it would also mean dropping `Node.account` and
+    // `account_to_node`, which is a borsh layout change requiring a migration
+    // of live vaults.
 
     #[payable]
     pub fn set_recipients(&mut self, node_id: NodeId, recipients: Option<Vec<AccountId>>) {
@@ -616,6 +1074,127 @@ impl Vault {
         swept
     }
 
+    // ---- Ownership handover, and the owner's way out.
+    //
+    // Both were missing, and the two absences compounded into the worst
+    // failure this contract had. `owner` was written once in `new` and never
+    // again, and the only route tokens could take out of the vault was
+    // `request_payment` to an ALLOWLISTED recipient under a daily cap. So a
+    // lost owner key froze the configuration permanently with the funds still
+    // inside, and even an attentive owner could do no better than drip their
+    // own deposit back to themselves — and only if they had thought to
+    // allowlist themselves in advance.
+    //
+    // A note on where `pending_owner` lives. It sits under its own storage key
+    // rather than as a field on `Vault`, deliberately. Adding a struct field
+    // changes the borsh layout, so the already-deployed vault's state would
+    // fail to deserialize under the new code and would need a migration to
+    // survive. A separately-keyed value leaves the layout untouched, which
+    // means this can be deployed over the live vault with its tree, ledgers
+    // and payment history intact, and with no migration step to get wrong.
+
+    /// Raw storage key for the pending owner. Not a `StorageKey` variant,
+    /// because those derive collection prefixes and this is a single value.
+    const PENDING_OWNER_KEY: &'static [u8] = b"PENDING_OWNER";
+
+    fn read_pending_owner() -> Option<AccountId> {
+        env::storage_read(Self::PENDING_OWNER_KEY)
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok())
+    }
+
+    /// Nominate the next owner, or pass `None` to cancel a nomination.
+    ///
+    /// Two steps rather than one. A single `set_owner` taking effect
+    /// immediately would hand the vault to whatever string was typed, and a
+    /// typo would recreate exactly the unrecoverable state this exists to
+    /// remove — instantly, and with no way back. Requiring the nominee to call
+    /// `accept_ownership` proves the account exists and holds its keys before
+    /// any authority moves.
+    #[payable]
+    pub fn propose_owner(&mut self, new_owner: Option<AccountId>) {
+        self.assert_owner();
+        match new_owner {
+            None => {
+                env::storage_remove(Self::PENDING_OWNER_KEY);
+                env::log_str(
+                    r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"owner_proposal_cancelled","data":[{}]}"#,
+                );
+            }
+            Some(next) => {
+                // The same two rules `new` enforces. A vault that owned itself
+                // would make `assert_owner` unsatisfiable by any external
+                // caller, which is the brick this is here to prevent.
+                if next == env::current_account_id() {
+                    fail(ReasonCode::InvalidConfig, "owner must not be the vault");
+                }
+                if next == self.owner {
+                    fail(ReasonCode::InvalidConfig, "already the owner");
+                }
+                env::storage_write(Self::PENDING_OWNER_KEY, next.as_str().as_bytes());
+                env::log_str(&format!(
+                    r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"owner_proposed","data":[{{"pending_owner":"{next}"}}]}}"#
+                ));
+            }
+        }
+    }
+
+    /// Complete a handover. Callable only by the nominated account.
+    #[payable]
+    pub fn accept_ownership(&mut self) {
+        assert_one_yocto();
+        let caller = env::predecessor_account_id();
+        match Self::read_pending_owner() {
+            Some(pending) if pending == caller => {
+                let previous = self.owner.clone();
+                self.owner = caller;
+                env::storage_remove(Self::PENDING_OWNER_KEY);
+                env::log_str(&format!(
+                    r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"owner_changed","data":[{{"previous_owner":"{}","new_owner":"{}"}}]}}"#,
+                    previous, self.owner
+                ));
+            }
+            _ => fail(ReasonCode::NotOwner, "not the pending owner"),
+        }
+    }
+
+    pub fn get_pending_owner(&self) -> Option<AccountId> {
+        Self::read_pending_owner()
+    }
+
+    /// Move tokens out of the vault on the owner's authority alone.
+    ///
+    /// This deliberately bypasses the budget hierarchy. Caps exist to bound
+    /// what AGENTS may spend; applying them to the owner's own exit is what
+    /// turned a deposit into a hundred-day drip. An owner who can already
+    /// rewrite every cap in the tree gains no new capability by withdrawing
+    /// directly, so there is no escalation here — only a path that should
+    /// have existed from the start.
+    ///
+    /// Not gated on `paused`. Pausing stops agents; an escape hatch a pause
+    /// can close is not an escape hatch.
+    ///
+    /// Interaction with in-flight payments: withdrawing can leave less on hand
+    /// than outstanding reservations expect, in which case those transfers
+    /// fail at the token contract and their reservations are released by the
+    /// existing `resolve_reservation` / `sweep_stuck_pending` machinery. No
+    /// accounting is corrupted; a payment simply does not go through.
+    #[payable]
+    pub fn withdraw(&mut self, token: AccountId, amount: U128, receiver_id: AccountId) -> Promise {
+        self.assert_owner();
+        if amount.0 == 0 {
+            fail(ReasonCode::InvalidConfig, "amount must be positive");
+        }
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"owner_withdrawal","data":[{{"token":"{}","amount":"{}","receiver_id":"{}"}}]}}"#,
+            token, amount.0, receiver_id
+        ));
+        ext_ft::ext(token)
+            .with_attached_deposit(ONE_YOCTO)
+            .with_static_gas(GAS_FOR_FT_TRANSFER)
+            .ft_transfer(receiver_id, amount, Some("vault:owner-withdrawal".to_string()))
+    }
+
     #[payable]
     pub fn set_paused(&mut self, paused: bool) {
         self.assert_owner();
@@ -626,39 +1205,6 @@ impl Vault {
     pub fn set_strict_allocation(&mut self, strict: bool) {
         self.assert_owner();
         self.strict_allocation = strict;
-    }
-
-    /// Opens (or re-points) the Base rail. Owner only.
-    ///
-    /// `usdc_address` is validated here rather than at signing time: it is the
-    /// `to` of every transaction this rail will ever sign, so a malformed value
-    /// would be a vault that signs garbage. Rejecting it at configuration time
-    /// means the hot path cannot fail on it.
-    #[payable]
-    pub fn set_base_config(&mut self, config: Option<BaseConfig>) {
-        self.assert_owner();
-        if let Some(c) = &config {
-            if evm::parse_evm_address(&c.usdc_address).is_none() {
-                fail(ReasonCode::InvalidEvmAddress, "usdc_address must be lowercase 0x + 40 hex");
-            }
-            if c.derivation_path.is_empty() || c.derivation_path.len() > 64 {
-                fail(ReasonCode::InvalidEvmAddress, "derivation_path must be 1..=64 chars");
-            }
-            // A zero ceiling would silently close the rail while the config
-            // still reads as open, so it is rejected rather than accepted as
-            // an accidental kill switch. Use `set_base_config(None)` to close.
-            if c.max_tx_fee_wei.0 == 0 {
-                fail(
-                    ReasonCode::FeeCeilingExceeded,
-                    "max_tx_fee_wei must be > 0; pass config: null to close the rail",
-                );
-            }
-        }
-        self.base_config = config;
-    }
-
-    pub fn get_base_config(&self) -> Option<BaseConfig> {
-        self.base_config.clone()
     }
 
     // ------------------------------------------------------- agent methods
@@ -681,21 +1227,355 @@ impl Vault {
         memo: String,
         route: Option<Route>,
     ) -> PromiseOrValue<PaymentOutcome> {
-        let route = route.unwrap_or_default();
         let caller = env::predecessor_account_id();
-        let node_id = *self
-            .account_to_node
-            .get(&caller)
-            .unwrap_or_else(|| fail(ReasonCode::NotAgent, "caller is not bound to a node"));
+        let node_id = if caller == env::current_account_id() {
+            // ---- SELF-SUBMIT: a key ON THIS VAULT signed the transaction.
+            //
+            // An agent can hold a NEP-611 gas key, or a plain function-call
+            // key, on the vault itself, restricted to `request_payment`. It
+            // then submits its own transactions and pays its own gas — no
+            // sub-account to fund and strand, and no relayer to run. Measured
+            // on mainnet 2026-10-31: the key's own balance pays, the account's
+            // does not move, the float is withdrawable, and two keys do not
+            // contend (docs/SPIKE-gas-keys-2026-10-31.md).
+            //
+            // In that case `predecessor_account_id()` is the VAULT, so the
+            // caller cannot be identified by account. `signer_account_pk()` is
+            // the only thing that distinguishes one agent from another.
+            //
+            // THIS BRANCH IS PURELY ADDITIVE AND NEEDS NO FALLBACK.
+            // `assert_bindable` refuses the owner and the vault — "agent must
+            // not be the owner or the vault" — so `account_to_node` can NEVER
+            // contain the vault. Before this existed, a self-submitted call hit
+            // `account_to_node.get(vault)` -> None -> NOT_AGENT every time, so
+            // there is no prior behaviour to preserve and nothing this branch
+            // could shadow. Pinned by
+            // `the_vault_can_never_be_bound_as_an_agent_account`.
+            //
+            // NOTHING INTERNAL REACHES HERE. `request_payment` is called from
+            // exactly one place in this contract: nowhere. `approve_payment`
+            // and `request_payment_signed` both call `dispatch_payment`
+            // directly, and the callbacks are `#[private]`. So the only way the
+            // predecessor can be this vault is a transaction signed by a key on
+            // it, which only a full-access key holder can install. No
+            // unprivileged actor gains anything.
+            //
+            // The map reused is `pubkey_to_node`, the same one
+            // `bind_virtual_agent` writes. Deliberate: a new map on `Vault`
+            // would change its borsh layout and so require a migration, and the
+            // capability is identical either way — this path needs the owner to
+            // BOTH bind the pubkey AND install it as a key on the vault, and
+            // either action alone does nothing.
+            let pk = env::signer_account_pk();
+            *self.pubkey_to_node.get(&pk).unwrap_or_else(|| {
+                // A panic, not a `blocked` outcome, matching
+                // `request_payment_signed` and for its reason: there is no node
+                // to attribute a `blocked` event to.
+                fail(ReasonCode::NotVirtualAgent, "signing key is not bound to a node")
+            })
+        } else {
+            *self
+                .account_to_node
+                .get(&caller)
+                .unwrap_or_else(|| fail(ReasonCode::NotAgent, "caller is not bound to a node"))
+        };
+        self.dispatch_payment(
+            node_id,
+            request_id,
+            token,
+            amount,
+            recipient,
+            memo,
+            route.unwrap_or_default(),
+            false,
+        )
+    }
 
+    /// Authorize a virtual agent: a signing key that may spend from `node_id`
+    /// without owning a NEAR account.
+    ///
+    /// MANY-TO-ONE, unlike `create_agent_account`. Several keys may share one
+    /// node, so a swarm draws on a shared pool instead of consuming one of the
+    /// 64 MAX_NODES per member. The node's `account` field stays `None`: that
+    /// field means "a real sub-account is bound here" and a virtual agent is
+    /// precisely the absence of one.
+    ///
+    /// Costs ~0.001 NEAR of state rather than the 0.55 NEAR a real sub-account
+    /// locks. Unbinding reclaims the `pubkey_to_node` mapping (82 bytes); the
+    /// `pubkey_to_nonce` entry (86 bytes, roughly half the total) is retained
+    /// on purpose and is never reclaimed — see `unbind_virtual_agent` for why
+    /// dropping it would reopen the replay guard.
+    #[payable]
+    /// Add a whole departmental agent in ONE call: node, binding, gas key.
+    ///
+    /// WHY THIS IS A CONTRACT METHOD AND NOT THREE CLIENT CALLS.
+    ///
+    /// Installing a gas key is an `AddKey` action, and NEAR requires
+    /// `signer_id == receiver_id` for it. The owner signing a transaction TO
+    /// this vault therefore cannot carry one — only the vault can key itself.
+    /// A browser wallet signs as the connected account and cannot sign as the
+    /// vault, so without this method fleet expansion would be CLI-only, and
+    /// the one-signature property that makes onboarding work would be lost
+    /// the moment a second agent was wanted.
+    ///
+    /// The node id is the other reason. `add_node` returns it, but a client
+    /// cannot read one action's return value inside the same transaction, and
+    /// predicting it from `next_node_id` races any concurrent `add_node`.
+    /// Doing all three here means the id never leaves the contract.
+    ///
+    /// THE DEPOSIT IS THE AUTHORISATION. This cannot use `assert_owner`,
+    /// which demands exactly one yocto, because the gas key needs real
+    /// funding. The deposit check gives the same guarantee for free: a NEAR
+    /// function-call key cannot attach a deposit at all, so an attached
+    /// balance proves a full-access key — a wallet confirmation — signed
+    /// this. An agent's own key could never reach here.
+    ///
+    /// The new node is a CHILD OF ROOT, deliberately. Root's caps then bound
+    /// the whole fleet's combined spend: adding a tenth agent cannot raise
+    /// what the vault can lose in a day, only divide it differently.
+    #[payable]
+    pub fn add_role(
+        &mut self,
+        label: String,
+        limits: Vec<TokenLimit>,
+        cooldown_sec: u32,
+        recipients: Option<Vec<AccountId>>,
+        public_key: PublicKey,
+    ) -> NodeId {
+        if env::predecessor_account_id() != self.owner {
+            fail(ReasonCode::NotOwner, "owner only");
+        }
+        let funding = env::attached_deposit();
+        if funding < MIN_AGENT_GAS_FUNDING {
+            fail(
+                ReasonCode::InvalidConfig,
+                "attach at least MIN_AGENT_GAS_FUNDING to fund the agent's gas key",
+            );
+        }
+        // Checked BEFORE the node is created. `bind_virtual_agent` rejects a
+        // key that is already bound, and discovering that after inserting the
+        // node would leave an orphan node behind on a panic — except panics
+        // revert state, so the real cost is a confusing error. Checking first
+        // makes the message name the actual problem.
+        if self.pubkey_to_node.contains_key(&public_key) {
+            fail(ReasonCode::InvalidConfig, "key already bound to a node");
+        }
+
+        let id = self.insert_node(Some(ROOT_NODE), label, limits, cooldown_sec, recipients);
+        self.pubkey_to_node.insert(public_key.clone(), id);
+
+        // THE KEY IS ADDED TO THIS ACCOUNT, BY THIS ACCOUNT. That is the only
+        // way an `AddKey` can reach the vault from a browser signature.
+        //
+        // Funded with the WHOLE attached deposit, which arrived in this
+        // account's balance a moment ago — so the vault nets zero rather than
+        // paying for the agent out of its own stake. The factory got this
+        // wrong in the mirror-image way and would have bled 0.12 per vault.
+        //
+        // `Allowance::Unlimited` is not a loophole: a gas key's allowance is
+        // null by design and its BALANCE is the cap. The restriction that
+        // matters is receiver + method, which confine this key to
+        // `request_payment` on this vault and nothing else anywhere.
+        // THE DROP IS THE MECHANISM, not a discarded value. near-sdk's
+        // `impl Drop for Promise` calls `construct_recursively`, so letting
+        // this binding fall out of scope is what schedules the actions. Bound
+        // explicitly rather than left as a bare expression: `Promise` is
+        // `must_use`, and a warning is the only thing that would distinguish
+        // "scheduled" from "silently never happened".
+        let _install = Promise::new(env::current_account_id())
+            .add_gas_key_allowance_function_call(
+                public_key.clone(),
+                AGENT_GAS_KEY_NONCES,
+                near_sdk::Allowance::Unlimited,
+                env::current_account_id(),
+                AGENT_ALLOWED_METHOD.to_string(),
+            )
+            .transfer_to_gas_key(public_key, funding);
+
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{id}}}]}}"#
+        ));
+        id
+    }
+
+    pub fn bind_virtual_agent(&mut self, node_id: NodeId, public_key: PublicKey) {
+        self.assert_owner();
+        // The node must exist. Unlike assert_bindable we do NOT reject a node
+        // that already has signers; that is the point.
+        let _ = self.get_node(node_id);
+        if self.pubkey_to_node.contains_key(&public_key) {
+            fail(ReasonCode::InvalidConfig, "key already bound to a node");
+        }
+        self.pubkey_to_node.insert(public_key.clone(), node_id);
+        // The nonce counter is NOT initialised here, and must not be: a fresh
+        // key starts with no entry, read as 0, so its first usable nonce is 1.
+        // Re-binding a previously used key keeps its old counter, which is
+        // what stops unbind/rebind from resetting the replay guard.
+        env::log_str(&format!(
+            r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{node_id}}}]}}"#
+        ));
+    }
+
+    /// Revoke a virtual agent's key.
+    ///
+    /// Deliberately keeps the nonce entry. Dropping it would let an owner
+    /// unbind and rebind a key to reset the replay guard, making every
+    /// signature that key ever produced valid again.
+    #[payable]
+    pub fn unbind_virtual_agent(&mut self, public_key: PublicKey) {
+        self.assert_owner();
+        if self.pubkey_to_node.remove(&public_key).is_none() {
+            fail(ReasonCode::NotVirtualAgent, "key is not bound");
+        }
+        env::log_str(
+            r#"EVENT_JSON:{"standard":"vault","version":"1.0.0","event":"virtual_agent_unbound","data":[{}]}"#,
+        );
+    }
+
+    /// The next nonce a virtual agent must use. Relayers and SDKs read this.
+    pub fn get_virtual_agent_nonce(&self, public_key: PublicKey) -> u64 {
+        self.pubkey_to_nonce.get(&public_key).copied().unwrap_or(0) + 1
+    }
+
+    /// Which node a virtual agent key spends from, if any.
+    pub fn get_virtual_agent_node(&self, public_key: PublicKey) -> Option<NodeId> {
+        self.pubkey_to_node.get(&public_key).copied()
+    }
+
+    /// Spend on behalf of a virtual agent, authorized by its signature.
+    ///
+    /// Anyone may call this — the caller is only a relayer paying the gas and
+    /// is not trusted for anything. Authority comes entirely from the
+    /// signature over `VirtualAgentBinding`, which covers every field the
+    /// relayer could otherwise tamper with.
+    ///
+    /// The relayer DOES choose whether to submit at all, so it can censor but
+    /// not forge or redirect. An agent that wants no relayer dependency can
+    /// still own a real sub-account and call `request_payment`; both paths
+    /// remain open and land in the same budget logic.
+    pub fn request_payment_signed(
+        &mut self,
+        request_id: String,
+        token: AccountId,
+        amount: U128,
+        recipient: AccountId,
+        memo: String,
+        route: Option<Route>,
+        public_key: PublicKey,
+        nonce: u64,
+        deadline_ns: U64,
+        signature: Base64VecU8,
+    ) -> PromiseOrValue<PaymentOutcome> {
+        let route = route.unwrap_or_default();
+
+        // ---- authenticate, in the order that leaks least work to an attacker
+        let node_id = match self.pubkey_to_node.get(&public_key) {
+            Some(n) => *n,
+            // No node to attribute a `blocked` outcome to, so this is a hard
+            // failure rather than a recorded rejection.
+            None => fail(ReasonCode::NotVirtualAgent, "signing key is not bound to a node"),
+        };
+
+        if env::block_timestamp() > deadline_ns.0 {
+            return blocked(&request_id, node_id, ReasonCode::AgentSignatureExpired);
+        }
+
+        // Strictly greater. Equal would permit one replay.
+        let last = self.pubkey_to_nonce.get(&public_key).copied().unwrap_or(0);
+        if nonce <= last {
+            return blocked(&request_id, node_id, ReasonCode::NonceNotFresh);
+        }
+
+        let binding = VirtualAgentBinding {
+            vault: env::current_account_id(),
+            nonce,
+            deadline_ns: deadline_ns.0,
+            request_id: request_id.clone(),
+            token: token.clone(),
+            amount,
+            recipient: recipient.clone(),
+            memo: memo.clone(),
+            route: route.clone(),
+        };
+        let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+        let Ok(sig) = <[u8; 64]>::try_from(signature.0.as_slice()) else {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        };
+        // `PublicKey` carries a curve-type prefix byte; ed25519_verify wants
+        // the raw 32. Slicing past the prefix is only correct for ed25519, so
+        // a non-ed25519 key is refused rather than mis-sliced.
+        let raw = public_key.as_bytes();
+        if raw.len() != 33 || raw[0] != 0 {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        }
+        let Ok(pk32) = <[u8; 32]>::try_from(&raw[1..]) else {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        };
+        if !env::ed25519_verify(&sig, &msg, &pk32) {
+            return blocked(&request_id, node_id, ReasonCode::BadAgentSignature);
+        }
+
+        // ---- the nonce is burned BEFORE dispatch.
+        //
+        // Not after, and not in the callback. `dispatch_payment` may return a
+        // `blocked` outcome or yield a Promise, and a nonce consumed only on
+        // the success path would leave a rejected-but-validly-signed payload
+        // replayable. Burning here means one signature is worth at most one
+        // attempt *that reaches dispatch*, which is the guarantee a
+        // relayer-submitted payload needs.
+        //
+        // Scoped deliberately: a path that PANICS rather than returning —
+        // notably `dispatch_payment`'s `InsufficientGas` floor — reverts this
+        // insert along with the rest of the receipt, so the nonce survives and
+        // the payload stays replayable. That is the behaviour we want. If an
+        // under-gassed submission burned the nonce, a malicious relayer could
+        // destroy an agent's signed payloads by deliberately under-gassing
+        // them. A panic means nothing happened, so a retry is correct.
+        self.pubkey_to_nonce.insert(public_key, nonce);
+
+        self.dispatch_payment(node_id, request_id, token, amount, recipient, memo, route, false)
+    }
+
+    /// The one budget-and-dispatch implementation.
+    ///
+    /// Both entry points — account-authenticated `request_payment` and
+    /// signature-authenticated `request_payment_signed` — resolve a `node_id`
+    /// their own way and then land here. Deliberately ONE body: two copies of
+    /// hierarchical reservation, allowlist, cooldown and freeze logic would
+    /// drift, and the copy that drifts is the one with the money in it.
+    ///
+    /// Everything below this line is caller-agnostic. Authentication is the
+    /// caller's job and is finished by the time we are called.
+    fn dispatch_payment(
+        &mut self,
+        node_id: NodeId,
+        request_id: String,
+        token: AccountId,
+        amount: U128,
+        recipient: AccountId,
+        memo: String,
+        route: Route,
+        // Set ONLY by approve_payment, which is owner-only. An agent cannot
+        // reach the gate below with this true.
+        approved: bool,
+    ) -> PromiseOrValue<PaymentOutcome> {
         let gas_floor = match route {
             Route::NearDirect => MIN_GAS_FOR_DISPATCH,
-            Route::BaseUsdc { .. } => MIN_GAS_FOR_BASE_DISPATCH,
+            // A NEP-141 transfer; the cross-chain half is off-contract.
+            Route::Intents { .. } => MIN_GAS_FOR_DISPATCH,
         };
         if env::prepaid_gas() < gas_floor {
             // Checked before anything is charged. An under-funded dispatch that
             // ran out of gas mid-flight would never reach the callback, and the
             // reservation would stay held at every level of the chain.
+            //
+            // `<`, NOT `<=`: a submission at EXACTLY MIN_GAS_FOR_DISPATCH is
+            // adequately funded and must dispatch, or the real floor would be
+            // one gas unit above the constant that documents it. Measured on
+            // testnet 2026-10-28 against the deployed vault: 50 Tgas prepaid
+            // settles, 49 panics. Pinned from both sides by
+            // `a_signed_payload_at_exactly_the_gas_floor_dispatches` and
+            // `an_under_gassed_signed_payload_panics_rather_than_consuming_its_nonce`.
             fail(ReasonCode::InsufficientGas, "not enough prepaid gas for this rail");
         }
 
@@ -730,53 +1610,104 @@ impl Vault {
         // `0x…` string, which is a valid NEAR account id, so the cross-chain
         // rail inherits the allowlist with no new field and no second code
         // path that could drift from it.
-        if !self.effective_recipients(&chain).iter().any(|r| r == &recipient) {
+        let allowed = self.effective_recipients(&chain);
+        if allowed.is_empty() {
+            // Distinct from RecipientNotAllowed on purpose: the owner's fix
+            // differs. There is no list to add a payee to, and an empty list
+            // matches nothing — so this path refuses EVERY payment. That is
+            // correct fail-closed behaviour, but it previously reported itself
+            // as "that payee is not approved", which sent people hunting for a
+            // list that did not exist.
+            //
+            // Reachable from a hand-built tree: add_node takes
+            // `recipients: Option<Vec<AccountId>>` at every level and the
+            // vault_plan_* tools expose that. create-float does NOT hit it — it
+            // sets root.recipients = [owner] so funds can always come back out.
+            return blocked(&request_id, node_id, ReasonCode::NoRecipientsSet);
+        }
+        if !allowed.iter().any(|r| r == &recipient) {
             return blocked(&request_id, node_id, ReasonCode::RecipientNotAllowed);
         }
 
         // Rail-specific shape checks, AFTER the allowlist so an address that
         // is merely not allowed never reports as malformed.
-        let base_target = match &route {
-            Route::NearDirect => None,
-            Route::BaseUsdc { nonce: _, max_priority_fee_per_gas, max_fee_per_gas, gas_limit } => {
-                let Some(cfg) = self.base_config.clone() else {
-                    return blocked(&request_id, node_id, ReasonCode::BaseRailClosed);
-                };
-
-                // EIP-1559 validity: a transaction whose priority fee exceeds
-                // its max fee is malformed and Base would reject it. Refusing
-                // here means the vault never spends a signature on it.
-                if max_priority_fee_per_gas.0 > max_fee_per_gas.0 {
-                    return blocked(&request_id, node_id, ReasonCode::InvalidFeeFields);
-                }
-
-                // THE GAS CEILING. See BaseConfig::max_tx_fee_wei.
+        // Not a value any more: with the MPC rail gone there is nothing to
+        // resolve here, only a gate to pass.
+        match &route {
+            Route::NearDirect => {}
+            Route::Intents { deposit_address, quote_deadline_ns, signature } => {
+                // THE GATE THAT KEEPS THE ALLOWLIST MEANINGFUL.
                 //
-                // `checked_mul` and not `*`: `gas_limit` is caller-supplied and
-                // `max_fee_per_gas` is a u128, so the product can overflow. A
-                // wrapping multiply would turn an enormous fee into a small
-                // number and sail past the ceiling — the overflow IS the
-                // attack, so it is treated as exceeding the ceiling rather
-                // than as an arithmetic detail.
-                let worst_case_fee = u128::from(gas_limit.0).checked_mul(max_fee_per_gas.0);
-                match worst_case_fee {
-                    Some(fee) if fee <= cfg.max_tx_fee_wei.0 => {}
-                    _ => return blocked(&request_id, node_id, ReasonCode::FeeCeilingExceeded),
+                // The allowlist was checked above against `recipient` — the
+                // final payee on the far chain. But the money is about to go
+                // to `deposit_address`, a one-time address from a quote that
+                // can never appear on that list, and which the contract has
+                // no way to connect back to the payee.
+                //
+                // If an agent could choose it, the allowlist would be
+                // decorative: quote a swap paying yourself, and the vault
+                // funds it with every other check passing. So a key the OWNER
+                // registered must have signed the binding between the two.
+                let Some(signer) = Self::read_quote_signer() else {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteSignerUnset);
+                };
+                if env::block_timestamp() > quote_deadline_ns.0 {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteExpired);
+                }
+                let binding = QuoteBinding {
+                    vault: env::current_account_id(),
+                    request_id: request_id.clone(),
+                    token: token.clone(),
+                    amount,
+                    payee: recipient.to_string(),
+                    deposit_address: deposit_address.clone(),
+                    deadline_ns: quote_deadline_ns.0,
+                };
+                let msg = near_sdk::borsh::to_vec(&binding).expect("borsh");
+                let Ok(sig) = <[u8; 64]>::try_from(signature.0.as_slice()) else {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteBadSignature);
+                };
+                if !env::ed25519_verify(&sig, &msg, &signer) {
+                    return blocked(&request_id, node_id, ReasonCode::QuoteBadSignature);
                 }
 
-                match evm::parse_evm_address(recipient.as_str()) {
-                    Some(addr) => Some((cfg, addr)),
-                    None => return blocked(&request_id, node_id, ReasonCode::InvalidEvmAddress),
+                // THE VAULT'S OWN NEAR IS A BUDGETED RESOURCE TOO.
+                //
+                // Registering the deposit address below costs NEAR per
+                // TRANSACTION while the tree bounds token VALUE, so without
+                // this an agent drains the vault's NEAR with payments that
+                // never approach any cap. Checked HERE — after the signature,
+                // before anything is charged or sent — so a refusal costs
+                // nothing and a bad signature is still rejected first.
+                let spend_day = self.today();
+                let cost = DEPOSIT_ADDRESS_STORAGE.as_yoctonear();
+                if Self::near_spent_today(spend_day).saturating_add(cost) > Self::max_daily_near() {
+                    return blocked(&request_id, node_id, ReasonCode::NearBudget);
                 }
             }
-        };
+        }
 
         let now = env::block_timestamp();
-        let last = self.last_paid_ns.get(&node_id).copied().unwrap_or(0);
-        if node.cooldown_sec > 0
-            && now < last.saturating_add(u64::from(node.cooldown_sec) * NS_PER_SEC)
-        {
-            return blocked(&request_id, node_id, ReasonCode::Cooldown);
+        // HIERARCHICAL, like every other check in this function.
+        //
+        // This read `node_id` alone, while frozen, token-allowed, per-tx and
+        // daily budget all iterate `chain`. So a cooldown set on a parent was
+        // bypassed by paying from a child, and two sibling leaves halved the
+        // interval the owner thought they had set.
+        for id in &chain {
+            let n = self.get_node(*id);
+            if n.cooldown_sec == 0 {
+                continue;
+            }
+            let last = self.last_paid_ns.get(id).copied().unwrap_or(0);
+            if now < last.saturating_add(u64::from(n.cooldown_sec) * NS_PER_SEC) {
+                let code = if *id == node_id {
+                    ReasonCode::Cooldown
+                } else {
+                    ReasonCode::ParentCooldown
+                };
+                return blocked(&request_id, node_id, code);
+            }
         }
 
         let day = self.today();
@@ -817,6 +1748,41 @@ impl Vault {
             }
         }
 
+        // ---- THE APPROVAL GATE.
+        //
+        // Placed here deliberately: after every limit has passed, before
+        // anything is charged. So an over-cap request still reports the cap that
+        // bound it rather than APPROVAL_REQUIRED, and a held payment costs the
+        // budget nothing while it waits.
+        //
+        // `approved` is set only by `approve_payment`, which is owner-only. An
+        // agent cannot reach this with it true.
+        if !approved {
+            if let Some(limit) = Self::effective_threshold(&chain) {
+                if amount.0 > limit {
+                    let ticket = ApprovalTicket {
+                        request_id: request_id.clone(),
+                        node_id,
+                        token: token.clone(),
+                        amount,
+                        recipient: recipient.clone(),
+                        memo: memo.clone(),
+                        route: route.clone(),
+                        requested_at_ns: U64(now),
+                    };
+                    env::storage_write(
+                        &Self::ticket_key(&request_id),
+                        &near_sdk::borsh::to_vec(&ticket).expect("ticket"),
+                    );
+                    env::log_str(&format!(
+                        r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"approval_required","data":[{{"request_id":"{}","node_id":{},"amount":"{}","threshold":"{}","recipient":"{}"}}]}}"#,
+                        request_id, node_id, amount.0, limit, recipient
+                    ));
+                    return blocked(&request_id, node_id, ReasonCode::ApprovalRequired);
+                }
+            }
+        }
+
         // ---- PASS TWO: charge every level. Reached only if ALL levels passed.
         for id in &chain {
             let key = (*id, token.clone(), day);
@@ -827,7 +1793,13 @@ impl Vault {
                 .unwrap_or_else(|| fail(ReasonCode::LedgerInvariant, "pending overflow"));
             self.ledgers.insert(key, led);
         }
-        self.last_paid_ns.insert(node_id, now);
+        // Every level, not just the payer. Checking the chain while recording
+        // only `node_id` would leave an ancestor's timestamp permanently
+        // stale, so its cooldown could never fire — the fix would look applied
+        // and change nothing.
+        for id in &chain {
+            self.last_paid_ns.insert(*id, now);
+        }
 
         self.requests.insert(
             request_id.clone(),
@@ -865,64 +1837,57 @@ impl Vault {
                     ),
             ),
 
-            Route::BaseUsdc { nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit } => {
-                // `base_target` was resolved during validation, so both the
-                // config and the parsed address are already known good.
-                let (cfg, payee) = base_target.expect("validated above");
-
-                // THE POINT OF THIS WHOLE BRANCH.
+            // A cross-chain payment is an ordinary NEP-141 transfer to the
+            // quote's one-time deposit address. A solver delivers the far-chain
+            // asset to `recipient` and prices that chain's gas into the quote.
+            //
+            // No MPC signature, no derived address, no ETH to keep topped up,
+            // no nonce to allocate. It resolves through the same callback as
+            // the NEAR rail, so a failed transfer releases the reservation by
+            // exactly the same path.
+            Route::Intents { deposit_address, .. } => PromiseOrValue::Promise({
+                // Charged at dispatch, not in the callback: the deposit is
+                // attached whether or not the transfer later succeeds, so
+                // booking it on success would under-count every failure.
+                Self::charge_near(day, DEPOSIT_ADDRESS_STORAGE.as_yoctonear());
+                // REGISTER THE DEPOSIT ADDRESS FIRST.
                 //
-                // The contract does not accept a payload to sign. It builds
-                // the ERC-20 calldata and the EIP-1559 transaction from
-                // `payee` and `amount` — the exact values it just checked
-                // against every level of the budget tree and the allowlist —
-                // and signs the hash of its OWN construction.
+                // 1Click mints a fresh IMPLICIT account per quote, which has no
+                // storage balance on the token, and NEP-141 refuses an
+                // unregistered receiver. That killed the first real mainnet
+                // cross-chain payment (KNOWN-TRADEOFFS 13).
                 //
-                // Accepting an opaque hash would make all of that decorative:
-                // a compromised agent would pass the hash of a transfer to its
-                // own address, or of `approve(attacker, MAX)`, and the budget
-                // check and the allowlist would both pass while the signature
-                // authorized something else entirely. `to`, `value` and `data`
-                // are therefore never caller-supplied.
-                let fields = evm::Eip1559Fields {
-                    chain_id: cfg.chain_id,
-                    nonce: nonce.0,
-                    max_priority_fee_per_gas: max_priority_fee_per_gas.0,
-                    max_fee_per_gas: max_fee_per_gas.0,
-                    gas_limit: gas_limit.0,
-                    // `to` is the TOKEN contract from owner-set config, not the
-                    // payee — for an ERC-20 transfer the payee lives in the
-                    // calldata. A caller cannot redirect this.
-                    to: evm::parse_evm_address(&cfg.usdc_address)
-                        .expect("validated in set_base_config"),
-                    data: evm::erc20_transfer_calldata(payee, amount.0),
-                };
-
-                PromiseOrValue::Promise(
-                    ext_mpc::ext(cfg.mpc_contract)
-                        // `sign` is PAYABLE: the signer asks for a deposit per
-                        // request to stop the network being spammed. Measured
-                        // on v1.signer-prod.testnet — 1 yocto is accepted. It
-                        // comes from the VAULT's balance, not the caller's,
-                        // because a function-call agent key cannot attach a
-                        // deposit at all. Omitting it made every live Base
-                        // payment fail, and the mock could not show that.
-                        .with_attached_deposit(ONE_YOCTO)
-                        .with_static_gas(GAS_FOR_MPC_SIGN)
-                        .sign(SignRequest {
-                            payload_v2: Payload::Ecdsa(evm::hex32(
-                                &evm::eip1559_sighash(&fields),
-                            )),
-                            path: cfg.derivation_path,
-                            domain_id: cfg.domain_id,
-                        })
-                        .then(
-                            Self::ext(env::current_account_id())
-                                .with_static_gas(GAS_FOR_SIGNATURE_CALLBACK)
-                                .on_signature_result(request_id),
-                        ),
-                )
-            }
+                // The vault pays because nothing else can. An operator daemon
+                // cannot get ahead of it: the transfer is built HERE, in the
+                // same transaction as the request, so the address is not
+                // observable until it is already in flight. And a restricted
+                // function-call key cannot attach a deposit at all, so an
+                // operator-side registrar would need a full-access key living in
+                // a long-running service.
+                //
+                // It cannot be used to drain the vault's NEAR: this arm is
+                // reached only AFTER the quote-signature gate above, so every
+                // registration costs the owner's own signature.
+                //
+                // If registration fails the chain still proceeds, the transfer
+                // fails exactly as it does today, and the callback releases the
+                // reservation by the usual path.
+                ext_ft::ext(token.clone())
+                    .with_attached_deposit(DEPOSIT_ADDRESS_STORAGE)
+                    .with_static_gas(GAS_FOR_STORAGE_DEPOSIT)
+                    .storage_deposit(Some(deposit_address.clone()), Some(true))
+                    .then(
+                        ext_ft::ext(token)
+                            .with_attached_deposit(ONE_YOCTO)
+                            .with_static_gas(GAS_FOR_FT_TRANSFER)
+                            .ft_transfer(deposit_address, amount, Some(format!("vault:{request_id}"))),
+                    )
+                    .then(
+                        Self::ext(env::current_account_id())
+                            .with_static_gas(GAS_FOR_TRANSFER_CALLBACK)
+                            .on_transfer_result(request_id),
+                    )
+            }),
         }
     }
 
@@ -1008,27 +1973,23 @@ impl Vault {
         )
     }
 
-    /// Chain Signatures rail. A successful promise means the MPC network
-    /// returned a SIGNATURE over the Base transaction.
-    ///
-    /// Read that precisely: this proves the vault obtained authority to move
-    /// the funds on Base. It does NOT prove the transaction was relayed or
-    /// included. Relaying is off-chain and the contract cannot observe it, so
-    /// `Signed` is deliberately a distinct reason code from `Settled` — a
-    /// reader of the ledger can tell which guarantee they have.
-    #[private]
-    pub fn on_signature_result(&mut self, request_id: String) -> PaymentOutcome {
-        let succeeded = env::promise_results_count() == 1
-            && env::promise_result_checked(0, MAX_MPC_RESULT_LEN).is_ok();
-        self.resolve_reservation(
-            &request_id,
-            succeeded,
-            ReasonCode::Signed,
-            ReasonCode::SignatureFailed,
-        )
-    }
-
     // ---------------------------------------------------------------- views
+    //
+    // Nothing between this banner and the first view. There used to be an
+    // orphaned `#[private]` here — the leftover of `on_sign_result`, the Chain
+    // Signatures callback deleted when the MPC/Base rail was removed. Its body
+    // went; its doc comment and attribute stayed. Rust binds an attribute to
+    // the next ITEM and a comment is not an item, so `#[private]` landed on
+    // `get_node` and expanded to an assert on `predecessor_account_id()`, which
+    // the runtime forbids in a view context. `get_node` shipped to mainnet
+    // answering every view call with
+    // `HostError(ProhibitedInView { method_name: "predecessor_account_id" })`.
+    //
+    // It stayed invisible because `#[private]` is injected into the generated
+    // `extern "C"` wrapper, not the inner method: the six internal
+    // `self.get_node(..)` calls below were unaffected, and the 15 unit-test
+    // call sites invoke the Rust method directly, so neither could observe it.
+    // Only a real node can. tests/views.rs now calls every view AS a view.
 
     pub fn get_node(&self, node_id: NodeId) -> Node {
         self.nodes
@@ -1107,6 +2068,117 @@ impl Vault {
             strict_allocation: self.strict_allocation,
             node_count: self.node_order.len() as u32,
             clock_mode: self.clock_mode(),
+        }
+    }
+}
+
+// --------------------------------------------------------------- migration
+//
+// `base_config: Option<BaseConfig>` was the 5th field of `Vault` until
+// 2026-10-28, when the MPC/Base rail was removed. Deleting a field from a
+// borsh struct shifts every byte after it, so a vault deployed before that
+// date cannot read its own state under this code: the `Option`'s tag byte
+// would be consumed as the start of `nodes`' storage prefix, and every field
+// after it would misparse.
+//
+// MEASURED on testnet 2026-10-28, which is why this is a migration and not a
+// plain delete:
+//   v4.floatv4.testnet           `get_base_config` -> null    (1 byte, 0x00)
+//   v3.floatvault-12329.testnet  `get_base_config` -> {..}    (~130 bytes)
+// A populated config is not hypothetical. v3 was configured while the setter
+// still existed, so the shifted region is a whole struct there, not one byte.
+//
+// `migrate` MUST be called in the same transaction as the deploy. A deploy
+// without it leaves a vault whose every method panics on state read.
+
+/// The pre-removal `BaseConfig`, retained ONLY so `migrate` can consume the
+/// bytes it has to read past. Field ORDER is the layout — do not reorder, and
+/// do not "tidy" these types.
+// `dead_code` is correct here and the point: these fields are DESERIALISED
+// and never read. Borsh needs them declared to know how many bytes to consume
+// before `nodes`; discarding the value is the migration. Deleting them to
+// silence the warning would resize the struct and corrupt every field after
+// it.
+#[allow(dead_code)]
+#[derive(near_sdk::borsh::BorshDeserialize)]
+#[cfg_attr(test, derive(near_sdk::borsh::BorshSerialize))]
+#[borsh(crate = "near_sdk::borsh")]
+pub(crate) struct LegacyBaseConfig {
+    mpc_contract: AccountId,
+    usdc_address: String,
+    chain_id: u64,
+    derivation_path: String,
+    max_tx_fee_wei: U128,
+    domain_id: u64,
+}
+
+/// The pre-removal `Vault` layout, field for field — including the
+/// `test-clock` cfg, so each build migrates the layout that same build would
+/// have written. The deploy script refuses to ship a test-clock wasm, so live
+/// state is the `not(test-clock)` shape.
+// Same reason as above: `base_config` is read to be thrown away.
+#[allow(dead_code)]
+#[derive(near_sdk::borsh::BorshDeserialize)]
+#[cfg_attr(test, derive(near_sdk::borsh::BorshSerialize))]
+#[borsh(crate = "near_sdk::borsh")]
+pub(crate) struct LegacyVault {
+    pub(crate) owner: AccountId,
+    pub(crate) network: String,
+    pub(crate) paused: bool,
+    pub(crate) strict_allocation: bool,
+    pub(crate) base_config: Option<LegacyBaseConfig>,
+    pub(crate) nodes: LookupMap<NodeId, Node>,
+    pub(crate) node_order: Vec<NodeId>,
+    pub(crate) account_to_node: LookupMap<AccountId, NodeId>,
+    pub(crate) pubkey_to_node: LookupMap<PublicKey, NodeId>,
+    pub(crate) pubkey_to_nonce: LookupMap<PublicKey, u64>,
+    pub(crate) next_node_id: NodeId,
+    pub(crate) ledgers: LookupMap<(NodeId, AccountId, u64), DailyLedger>,
+    pub(crate) last_paid_ns: LookupMap<NodeId, u64>,
+    pub(crate) requests: IterableMap<String, PaymentRequest>,
+    #[cfg(feature = "test-clock")]
+    pub(crate) day_len_ns_override: u64,
+}
+
+#[near]
+impl Vault {
+    /// Reads the pre-2026-10-28 layout and rewrites state without
+    /// `base_config`. Owner-agnostic but `#[private]`: only the vault account
+    /// itself can call it, which is the account doing the deploy.
+    ///
+    /// The collections move across by handle. Their entries live under their
+    /// own storage prefixes, not inside this struct — only the prefix is a
+    /// struct field — so no key/value pair is rewritten, copied, or charged
+    /// for again. That is what keeps this O(1) rather than O(nodes).
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        // Panics with "Cannot deserialize the contract state." if the bytes
+        // are not the OLD layout, which is the correct outcome: running this
+        // against already-migrated state must fail loudly rather than
+        // overwrite it with a half-read struct.
+        let old: LegacyVault = match env::state_read() {
+            Some(v) => v,
+            None => fail(ReasonCode::InvalidConfig, "no existing state to migrate"),
+        };
+
+        Self {
+            owner: old.owner,
+            network: old.network,
+            paused: old.paused,
+            strict_allocation: old.strict_allocation,
+            // old.base_config is read and DROPPED here. That is the migration.
+            nodes: old.nodes,
+            node_order: old.node_order,
+            account_to_node: old.account_to_node,
+            pubkey_to_node: old.pubkey_to_node,
+            pubkey_to_nonce: old.pubkey_to_nonce,
+            next_node_id: old.next_node_id,
+            ledgers: old.ledgers,
+            last_paid_ns: old.last_paid_ns,
+            requests: old.requests,
+            #[cfg(feature = "test-clock")]
+            day_len_ns_override: old.day_len_ns_override,
         }
     }
 }

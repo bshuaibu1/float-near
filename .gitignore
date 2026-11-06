@@ -19,3 +19,36 @@ apps/dashboard/git
 
 # testnet demo agent keys - never commit
 .demo/
+
+# Secret-bearing. `.float/` holds agent private keys and the quote-signer
+# secret written by create-float. It also carries its own `.gitignore`, but
+# that file is only created when the wizard runs and can be deleted — this
+# entry is the one that does not depend on anything else being present.
+.float/
+.tmpcreds/
+packages/create-float/SKILL.md
+
+# MCP server config. UNTRACKED ON PURPOSE, for two independent reasons:
+#
+#   1. It holds an ABSOLUTE machine-specific path (`C:\Users\<name>\...`),
+#      because relative paths in `args` are not supported — they go straight to
+#      the OS process launcher rather than being resolved against the project
+#      root. So it was never shareable between machines regardless.
+#
+#   2. Enabling `vault_pay` means putting NEAR_VAULT_AGENT_KEY in it, and that
+#      is a private key. This repo already carries a scar from a CLI that
+#      echoed one into a terminal and a chat transcript — which is why every
+#      script here signs with `sign-with-access-key-file` rather than a
+#      plaintext key. A TRACKED file that users are told to paste a key into is
+#      a leak waiting to happen.
+#
+# Regenerate with: node scripts/print-mcp-command.mjs
+.mcp.json
+
+# Scratch build dir for a second dev server (see next.config.ts)
+.next-preview/
+
+# Local agent state, not project source.
+# .claude/worktrees holds a FULL COPY of this repository - 1.2 GB measured -
+# so committing this directory would add the repo to itself.
+.claude/

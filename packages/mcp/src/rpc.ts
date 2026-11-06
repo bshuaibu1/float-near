@@ -88,6 +88,42 @@ export async function viewFunction<T = unknown>(
   return decodeViewResult<T>(json.result ?? ({} as RawViewResponse));
 }
 
+/**
+ * Does this account exist on chain?
+ *
+ * Used before offering to CREATE a vault at a derived address. Getting this
+ * wrong is not cosmetic: the create batch's first action is `CreateAccount`,
+ * so offering an address that is already taken sends the user to a wallet,
+ * takes their signature, and fails only after they have committed.
+ *
+ * Distinguishes "does not exist" from "could not tell". An RPC timeout that
+ * returned `false` would read as a free address, so ONLY the specific
+ * UNKNOWN_ACCOUNT answer counts as absent and anything else throws.
+ */
+export async function accountExists(rpcUrl: string, accountId: string): Promise<boolean> {
+  const r = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "near-vault-mcp",
+      method: "query",
+      params: { request_type: "view_account", finality: "final", account_id: accountId },
+    }),
+  });
+  if (!r.ok) throw new Error(`RPC ${r.status} checking whether ${accountId} exists`);
+  const j = (await r.json()) as {
+    result?: unknown;
+    error?: { cause?: { name?: string }; message?: string };
+  };
+  if (j.result) return true;
+  const name = j.error?.cause?.name;
+  if (name === "UNKNOWN_ACCOUNT") return false;
+  throw new Error(
+    `could not determine whether ${accountId} exists: ${name ?? j.error?.message ?? "unknown error"}`,
+  );
+}
+
 /** One access key as NEAR reports it. */
 export interface AccessKeyInfo {
   public_key: string;
@@ -100,6 +136,24 @@ export interface AccessKeyInfo {
             allowance: string | null;
             receiver_id: string;
             method_names: string[];
+          };
+        }
+      // NEP-611. A DISTINCT variant, and this type omitted it while gas keys
+      // were already in use — so anything reading `permission` was told a gas
+      // key could not appear, when every virtual agent is one. Code that
+      // checked `"FunctionCall" in p` then reported a key restricted to a
+      // single method on a single contract as UNRESTRICTED.
+      //
+      // `allowance` is null here by design: for a gas key the BALANCE is the
+      // cap, and it sits at the TOP LEVEL of the variant rather than under
+      // `gas_key_info` where near-api-js's own typings suggest.
+      | {
+          GasKeyFunctionCall: {
+            allowance: string | null;
+            balance: string;
+            receiver_id: string;
+            method_names: string[];
+            num_nonces?: number;
           };
         };
   };
@@ -154,7 +208,7 @@ export function requireAgentKey(env: { agentId?: string; agentKey?: string }): A
     throw new Error(
       "Paying requires NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY, and neither is set. " +
         "Reads and payload planning work without them; only paying needs them. " +
-        "The key must be the restricted one issued by create_agent_account — never a " +
+        "The key must be a RESTRICTED one, from a VIRTUAL AGENT — never a " +
         "full-access key.",
     );
   }
@@ -165,8 +219,8 @@ export function requireAgentKey(env: { agentId?: string; agentKey?: string }): A
   }
   if (!env.agentKey) {
     throw new Error(
-      "NEAR_VAULT_AGENT_KEY is not set. This must be the restricted key issued by " +
-        "create_agent_account — it can call only request_payment on the vault, cannot " +
+      "NEAR_VAULT_AGENT_KEY is not set. This must be a VIRTUAL AGENT's key, bound " +
+        "with bind_virtual_agent and installed as a NEP-611 gas key on the vault — it can call only request_payment on the vault, cannot " +
         "call other contracts, and cannot attach a deposit. Never put a full-access key here.",
     );
   }

@@ -1,0 +1,65 @@
+diff --git a/packages/create-float/test/wasm-imports.test.mjs b/packages/create-float/test/wasm-imports.test.mjs
+index 1d0010f..c92d4f7 100644
+--- a/packages/create-float/test/wasm-imports.test.mjs
++++ b/packages/create-float/test/wasm-imports.test.mjs
+@@ -85,6 +85,60 @@ test("importsHostFn is false once the IMPORT is gone, on a real 278 KB module",
+   assert.equal(importsHostFn(withoutPanicImport(), "panic_utf8"), false);
+ });
+ 
++/**
++ * The same real module, still not importing panic_utf8, but CARRYING the name
++ * in a custom section — where a name table or debug info would put it in a
++ * build that kept them. Valid wasm; custom sections are ignored by runtimes.
++ */
++function carryingNameWithoutImport() {
++  const base = withoutPanicImport();
++  const name = Buffer.from(".debug_str");
++  const payload = Buffer.from("panic_utf8");
++  const content = Buffer.concat([Buffer.from([name.length]), name, payload]);
++  return Buffer.concat([base, Buffer.from([0x00, content.length]), content]);
++}
++
++test("importsHostFn is false for a module that CARRIES the name without importing it", () => {
++  // The ONLY input that tells "reads the import section" apart from "searches
++  // the bytes", and the reason it is worth a test: every other probe in this
++  // file has the name absent from the bytes too (withoutPanicImport renames it
++  // to panic_utf7), so a byte search answers all of them correctly.
++  //
++  // MEASURED 2026-10-30: with importsHostFn changed to keep the parse but
++  // return `buf.includes(field)`, the other 11 tests here stay GREEN. The
++  // apparent catch is incidental — removing the importsHostFn CALL also removes
++  // the parse, which fires the "cannot PARSE" test instead, so that one proves
++  // the parse happens, not that the answer comes from the import section.
++  const probe = carryingNameWithoutImport();
++  assert.equal(probe.includes(Buffer.from("panic_utf8")), true, "probe lost the bytes");
++  assert.equal(funcImports(probe).some((i) => i.field === "panic_utf8"), false, "probe imports it");
++  assert.equal(importsHostFn(probe, "panic_utf8"), false);
++});
++
++test("REACHABILITY: bundle-wasm REFUSES a contract that only MENTIONS panic_utf8", () => {
++  // And the same input through the real publish guard, so the call site is
++  // pinned as well as the function.
++  const tmp = join(mkdtempSync(join(tmpdir(), "float-mentions-")), "vault.wasm");
++  writeFileSync(tmp, carryingNameWithoutImport());
++
++  let code = 0;
++  let output = "";
++  try {
++    output = execFileSync(process.execPath, [join(HERE, "..", "scripts", "bundle-wasm.mjs"), "--check"], {
++      cwd: join(HERE, ".."),
++      encoding: "utf8",
++      stdio: ["ignore", "pipe", "pipe"],
++      env: { ...process.env, BUNDLE_WASM_SRC: tmp },
++    });
++  } catch (e) {
++    code = e.status ?? 1;
++    output = `${e.stdout ?? ""}${e.stderr ?? ""}`;
++  }
++
++  assert.notEqual(code, 0, `bundle-wasm accepted a wasm that only mentions panic_utf8:\n${output}`);
++  assert.match(output, /does not import panic_utf8/, output);
++});
++
+ test("importsHostFn is false for a host function no NEAR contract imports", () => {
+   // Negative control: without this, a function hardcoded to return true would
+   // pass both tests above.

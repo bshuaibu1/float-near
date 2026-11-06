@@ -1,5 +1,5 @@
 [workspace]
-members = ["contracts/vault", "contracts/mock-ft", "contracts/mock-mpc", "contracts/integration-tests"]
+members = ["contracts/vault", "contracts/factory", "contracts/mock-ft", "contracts/integration-tests"]
 resolver = "2"
 
 [workspace.package]
@@ -16,16 +16,39 @@ overflow-checks = true
 #
 # WHY THIS MATTERS, and it is not the profile: the wasm must be built with
 # `cargo near build`, never plain `cargo build --target wasm32-unknown-unknown`.
-# near-sdk selects its host-function implementation by cfg:
-#   #[cfg(near)]                 -> real on-chain host functions (cargo-near)
-#   #[cfg(target_family="wasm")] -> pure-Rust fallbacks, "not for on-chain use"
-# Built the plain way, `env::panic_str` never reaches the host `panic_utf8`, so
-# every contract panic arrives as
+# Built the plain way, every contract panic arrives as
 #   FunctionCallError(ExecutionError("WebAssembly trap: An `unreachable`
 #   opcode was executed."))
 # and the message — i.e. this contract's stable reason code — is gone. A caller
-# would see "unreachable opcode" instead of INVALID_CONFIG.
+# sees "unreachable opcode" instead of INVALID_CONFIG.
 #
-# The unit tier cannot catch this: unit tests run natively and panic normally
-# with the message intact. Pinned by the sandbox test
-# `reason_code_panics_reach_the_receipt_outcome`.
+# MEASURED 2026-10-28, not reasoned about. Both artifacts built from the same
+# source, toolchain and profile, differing only in the build command, then both
+# deployed into one sandbox and given the same panic:
+#   cargo near build  -> "Smart contract panicked: INVALID_CONFIG: label ..."
+#   plain cargo build -> "WebAssembly trap: An `unreachable` opcode ..."
+# Reproduce with scripts/m21-plain-vs-cargo-near.sh. Pinned differentially by
+# contracts/integration-tests/tests/panic_reason_codes.rs; the single-artifact
+# test `reason_code_panics_reach_the_receipt_outcome` is the absolute control.
+#
+# THE MECHANISM IS IN near-sdk-env, NOT near-sdk. Grepping near-sdk for the cfg
+# finds only a `compile_error!` gate and a doc line, which is easy to misread as
+# "there is no such mechanism" — that misreading is on record in commit c732cbe,
+# which removed this warning as unsupported. near-sdk re-exports `panic_str`
+# from near-sdk-env 0.1.7, which gates `use near_sys as sys` on
+# `all(near, target_arch = "wasm32")` and branches:
+#   host:  sys::panic_utf8(..)       <- only with --cfg near, which only cargo-near sets
+#   local: eprintln!(..); panic!()   <- otherwise
+# On wasm the local branch's eprintln! goes nowhere and panic!() lowers to an
+# `unreachable` opcode. `sha256` is substituted the same way — those are the
+# "pure-Rust fallbacks" near-sdk's own docs warn are "not for on-chain use".
+#
+# Verifying it: compare the IMPORT SECTIONS, not grep output.
+#   cargo near build  -> 40 env imports (incl. panic_utf8, sha256)
+#   plain cargo build -> 38 env imports (panic_utf8, sha256 absent)
+# `scripts/wasm-imports.mjs` does this. `grep -c panic_utf8 <wasm>` is the trap:
+# it also matches the name section and string data, so it can report a function
+# that is not imported at all.
+#
+# The unit tier cannot catch any of this: unit tests run natively and panic
+# normally with the message intact.

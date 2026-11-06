@@ -46,8 +46,17 @@ type WalletContextValue = {
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
+// `/api/float`, NOT the adapter directly. The browser talks only to this
+// origin; `app/api/float/[...path]/route.ts` forwards to the adapter over
+// loopback and adds the bearer token server-side, so the adapter never needs
+// to be reachable from the internet and the token never enters a bundle.
+//
+// This file was missed when the ten page-level copies were repointed, because
+// the sweep globbed `app/**` and `lib/**` and `components/` is neither. It is
+// the one that renders "Could not reach the vault", so it was also the only
+// one the user ever saw fail.
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "http://127.0.0.1:8787";
+  process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
 interface SettingsResponse {
   ownerWallet: string;
@@ -85,7 +94,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setOwner(null);
       setError(
         `Could not reach the vault via ${API_BASE_URL}: ${(e as Error).message}. ` +
-          `Start the adapter (npm -w @near-vault/float-adapter start) and check ` +
+          `Start the adapter (npm -w @floatonnear/float-adapter start) and check ` +
           `NEAR_VAULT_CONTRACT.`,
       );
     } finally {

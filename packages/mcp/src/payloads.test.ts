@@ -1,15 +1,15 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   ONE_YOCTO,
-  AGENT_ACCOUNT_STORAGE_YOCTO,
-  MIN_AGENT_KEY_ALLOWANCE_YOCTO,
   OWNER_PLANNERS,
   planSetNodeCaps,
   planAddNode,
-  planCreateAgentAccount,
   planFreezeNode,
   planPurgeSettled,
   planSetPaused,
+  planSetApprovalThreshold,
   toCliCommand,
 } from "./payloads.js";
 
@@ -106,40 +106,25 @@ describe("summaries", () => {
   });
 });
 
-describe("create_agent_account", () => {
-  it("funds the deposit as allowance + account storage", () => {
-    const p = planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", "2");
-    expect(p.depositYocto).toBe(
-      (2n * 10n ** 24n + BigInt(AGENT_ACCOUNT_STORAGE_YOCTO)).toString(),
-    );
-  });
+// The `create_agent_account` describe block lived here — FIVE tests pinning
+// the deposit arithmetic, the allowance floor, the sub_label charset and the
+// derived account id.
+//
+// All five guarded a method that funded an account nobody could ever empty:
+// its only key was a function-call key, which cannot sign `DeleteAccount`,
+// and NEAR requires `actor_id == account_id` so no parent could do it either.
+// 10.7752 NEAR is stranded that way across 18 testnet agents, plus 0.54434 on
+// mainnet. The method is gone, so its tests went with it.
+//
+// Worth recording how they behaved once the function was deleted: FOUR went
+// red, and the fifth — `rejects a sub_label the contract would reject` —
+// stayed GREEN. It asserted `.toThrow()`, and calling a function that no
+// longer exists throws, so it passed against a feature that had ceased to
+// exist. A test whose assertion is satisfied by the absence of the thing it
+// tests is not evidence of anything.
+//
+// `virtual-agent.test.ts` covers what replaced it.
 
-  it("rejects an allowance below the floor CLIENT-SIDE, before anything is signed", () => {
-    // The contract rejects it too, but failing here costs no gas and no
-    // wallet round-trip, and the error can explain why the floor exists.
-    expect(() => planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", "0.01")).toThrow(
-      /allowance/i,
-    );
-  });
-
-  it("accepts exactly the floor", () => {
-    const floorNear = (BigInt(MIN_AGENT_KEY_ALLOWANCE_YOCTO) / 10n ** 22n).toString();
-    expect(() =>
-      planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", `0.${floorNear.padStart(2, "0")}`),
-    ).not.toThrow();
-  });
-
-  it("rejects a sub_label the contract would reject, before signing", () => {
-    for (const bad of ["", "Agent", "a.b", "a".repeat(33), "a b", "a!"]) {
-      expect(() => planCreateAgentAccount(VAULT, 2, bad, "ed25519:aaa", "2")).toThrow();
-    }
-  });
-
-  it("shows the derived account id so the human can check it", () => {
-    const p = planCreateAgentAccount(VAULT, 2, "a0", "ed25519:aaa", "2");
-    expect(p.summary).toContain(`a0.${VAULT}`);
-  });
-});
 
 describe("the planner surface", () => {
   // The test clock lets the owner shrink the budget window to 100ms. It is
@@ -152,21 +137,38 @@ describe("the planner surface", () => {
     }
   });
 
+  /**
+   * READ FROM THE CONTRACT, not from a list kept by hand.
+   *
+   * This compared against a hardcoded Set, which only asserted that the
+   * planners match a list someone remembered to update — so the way to make
+   * it pass was always to edit the list, and a planner naming a method the
+   * contract had REMOVED would have survived that edit untouched. A guard
+   * whose failure mode is "add it to the list" is not a guard.
+   *
+   * The failure it exists to prevent is expensive and silent: an owner is
+   * handed a payload, signs it in their wallet, pays gas, gets
+   * MethodNotFound.
+   */
   it("exposes only methods the contract actually has", () => {
-    const CONTRACT_OWNER_METHODS = new Set([
-      "add_node",
-      "set_node_caps",
-      "bind_agent",
-      "create_agent_account",
-      "set_recipients",
-      "set_cooldown",
-      "freeze_node",
-      "set_paused",
-      "set_strict_allocation",
-      "purge_settled",
-    ]);
+    const LIB = resolve(
+      import.meta.dirname, "..", "..", "..", "contracts", "vault", "src", "lib.rs",
+    );
+    if (!existsSync(LIB)) {
+      console.warn(`SKIPPED: ${LIB} not present, cannot check planners against the contract`);
+      return;
+    }
+    const src = readFileSync(LIB, "utf8");
+    const methods = new Set([...src.matchAll(/pub fn (\w+)\s*\(/g)].map((m) => m[1]));
+
+    // POSITIVE CONTROL. A regex that matched nothing would make every planner
+    // valid by vacuity, and the test would pass hardest exactly when it had
+    // stopped working.
+    expect(methods.has("add_node"), "the extractor found no known method").toBe(true);
+    expect(methods.size).toBeGreaterThan(10);
+
     for (const m of Object.values(OWNER_PLANNERS)) {
-      expect(CONTRACT_OWNER_METHODS.has(m.methodName)).toBe(true);
+      expect(methods.has(m.methodName), `${m.methodName} is not a pub fn on the vault`).toBe(true);
     }
   });
 });
@@ -186,5 +188,82 @@ describe("toCliCommand", () => {
     const cmd = toCliCommand(planFreezeNode(VAULT, 1, true));
     expect(cmd).toContain(VAULT);
     expect(cmd).toContain("freeze_node");
+  });
+});
+
+// ---- the approval threshold takes HUMAN units, like every tool beside it
+//
+// THE BUG THIS PINS, found 2026-10-31 by walking the real schemas rather than
+// reading the docs. `vault_plan_set_approval_threshold` was the ONLY tool in the
+// set that took BASE units, and it is the one that configures a safety gate:
+//
+//   vault_pay.amount                   human  "12.50"
+//   vault_plan_set_caps.dailyCap       human  (schema even says so)
+//   vault_plan_set_approval_threshold  BASE   <- the odd one out
+//
+// It FAILS OPEN, which is why this is not cosmetic. An owner thinking in human
+// units who passes a figure at or above the per-tx cap in base units gets a
+// threshold ABOVE the caps, so the gate never fires and silently does nothing —
+// on the one control whose entire purpose is to not fail open.
+//
+// Measured against the live mainnet vault, whose per-tx cap is 510000 base
+// (0.51 USDC): "1000000" meaning "a million" yields a 1.0 USDC threshold, which
+// is above every cap in the tree. Nothing is ever held. The owner sees a
+// successful transaction and believes the gate is on.
+//
+// Breaking change to a tool published the same day with no users — the cheapest
+// time this fix will ever be available.
+describe("planSetApprovalThreshold", () => {
+  it("converts human units to base, like its neighbours", () => {
+    const p = planSetApprovalThreshold(VAULT, 2, "0.25", 6);
+    expect(p.args).toEqual({ node_id: 2, amount: "250000" });
+  });
+
+  it("a whole number is not read as base units", () => {
+    // The fail-open direction. "1" must mean 1 USDC = 1000000 base, never
+    // 1 base unit (0.000001) and never a bare "1" passed through.
+    const p = planSetApprovalThreshold(VAULT, 0, "1", 6);
+    expect(p.args.amount).toBe("1000000");
+  });
+
+  it("honours the token's decimals rather than assuming six", () => {
+    expect(planSetApprovalThreshold(VAULT, 0, "1", 18).args.amount).toBe("1000000000000000000");
+    expect(planSetApprovalThreshold(VAULT, 0, "7", 0).args.amount).toBe("7");
+  });
+
+  it("refuses to truncate more precision than the token has", () => {
+    // Inherited from toBaseUnits, and it matters here: silently truncating
+    // 0.1234567 to 0.123456 would set a threshold the owner did not choose.
+    expect(() => planSetApprovalThreshold(VAULT, 0, "0.1234567", 6)).toThrow(/decimal places/i);
+  });
+
+  it("rejects a base-unit-looking string with no decimal point ONLY by value, not by shape", () => {
+    // "250000" is a legitimate human amount (250 thousand USDC). It must not be
+    // special-cased — the fix is a consistent convention, not a heuristic that
+    // guesses which units the caller meant.
+    expect(planSetApprovalThreshold(VAULT, 0, "250000", 6).args.amount).toBe("250000000000");
+  });
+
+  it("null removes the threshold and says what that means", () => {
+    const p = planSetApprovalThreshold(VAULT, 2, null, 6);
+    expect(p.args).toEqual({ node_id: 2, amount: null });
+    expect(p.warnings.join(" ")).toMatch(/only the caps apply/i);
+  });
+
+  it("the summary quotes HUMAN units, because that is what the owner typed", () => {
+    // The old summary read "Payments above 1000000 (base units)", which is
+    // unreadable in exactly the moment the owner is checking the plan before
+    // signing it.
+    const s = planSetApprovalThreshold(VAULT, 2, "0.25", 6).summary;
+    expect(s).toContain("0.25");
+    expect(s).not.toContain("250000");
+    expect(s).not.toMatch(/base units/i);
+  });
+
+  it("MOVES MONEY is not claimed — setting a threshold spends nothing", () => {
+    const p = planSetApprovalThreshold(VAULT, 2, "0.25", 6);
+    expect(p.depositYocto).toBe(ONE_YOCTO);
+    expect(p.methodName).toBe("set_approval_threshold");
+    expect(p.receiverId).toBe(VAULT);
   });
 });

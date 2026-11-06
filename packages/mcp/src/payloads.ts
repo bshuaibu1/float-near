@@ -14,24 +14,41 @@
 
 import { toBaseUnits, fromBaseUnits } from "./amounts.js";
 
-export const ONE_YOCTO = "1";
-/** Mirrors `AGENT_ACCOUNT_STORAGE` in the contract: 0.05 NEAR. */
-export const AGENT_ACCOUNT_STORAGE_YOCTO = (5n * 10n ** 22n).toString();
-/** Mirrors `MIN_AGENT_KEY_ALLOWANCE` in the contract: 0.5 NEAR. */
-export const MIN_AGENT_KEY_ALLOWANCE_YOCTO = (5n * 10n ** 23n).toString();
 
-export const DEFAULT_GAS_TGAS = 100;
+/** A node id must be a non-negative integer; there is no node -1. */
+function assertNodeId(nodeId: number): void {
+  if (!Number.isInteger(nodeId) || nodeId < 0) {
+    throw new Error(`node id must be a non-negative integer, got ${nodeId}`);
+  }
+}
 
 /**
- * Gas for a Base-routed payment.
+ * Shape-check a public key before it reaches a wallet.
  *
- * The contract demands MIN_GAS_FOR_BASE_DISPATCH (230 Tgas) for this rail
- * because MPC signing fans out across the signer network — the default 100
- * would make EVERY Base payment fail with INSUFFICIENT_GAS. That floor is
+ * Deliberately not a full base58 decode — the contract does that and rejects
+ * a malformed key. This catches the empty string and the obvious typo locally,
+ * where it costs nothing instead of a wallet round-trip.
+ */
+function assertPublicKey(publicKey: string): void {
+  if (!/^(ed25519|secp256k1):[1-9A-HJ-NP-Za-km-z]{32,}$/.test(publicKey)) {
+    throw new Error(
+      `not a public key: ${JSON.stringify(publicKey)}. ` +
+        `Expected "ed25519:<base58>" or "secp256k1:<base58>".`,
+    );
+  }
+}
+
+export const ONE_YOCTO = "1";
+
+/**
+ * Gas attached to a payment, for every route.
+ *
+ * Clears the contract's only floor — MIN_GAS_FOR_DISPATCH, 50 Tgas — with ~10x
+ * headroom over the ~9.3 Tgas a MAX_DEPTH payment actually burns. That floor is
  * mirrored in shared/contract-constants.json and asserted on both sides, so a
  * change to the contract's requirement cannot silently leave this too low.
  */
-export const BASE_GAS_TGAS = 280;
+export const DEFAULT_GAS_TGAS = 100;
 
 // Mirrors of the contract's bounds. Duplicated so a bad call fails here rather
 // than costing gas — and pinned against shared/contract-constants.json by
@@ -40,7 +57,6 @@ export const BASE_GAS_TGAS = 280;
 export const MAX_TOKENS = 4;
 export const MAX_RECIPIENTS = 32;
 export const MAX_LABEL_LEN = 48;
-export const MAX_SUB_LABEL_LEN = 32;
 export const MAX_COOLDOWN_SEC = 7 * 24 * 60 * 60;
 export const MAX_PURGE_LIMIT = 100;
 
@@ -100,7 +116,6 @@ function describeLimits(limits: HumanTokenLimit[]): string {
     .join("; ");
 }
 
-const SUB_LABEL = new RegExp(`^[a-z0-9_-]{1,${MAX_SUB_LABEL_LEN}}$`);
 
 function assertRecipients(recipients: string[] | null): void {
   if (recipients === null) return;
@@ -184,59 +199,135 @@ export function planBindAgent(vault: string, nodeId: number, accountId: string):
     summary: `Let ${accountId} spend from node ${nodeId}`,
     warnings: [
       `${accountId} is an EXISTING account whose keys you do not control. ` +
-        `Prefer create_agent_account, which issues a key restricted to request_payment.`,
+        `It can call request_payment with the full authority of node ${nodeId}.`,
+      `Prefer a VIRTUAL agent (bind_virtual_agent): it binds one key you generate ` +
+        `rather than a whole account, costs ~168 bytes, and strands nothing.`,
     ],
   };
 }
 
-export function planCreateAgentAccount(
+/**
+ * A whole departmental agent in ONE owner signature: node, binding, gas key.
+ *
+ * WHY THIS IS NOT `add_node` + `bind_virtual_agent` + an AddKey.
+ *
+ * Installing a gas key is an `AddKey` action, and NEAR requires
+ * `signer_id == receiver_id` for one. The owner signing a transaction TO the
+ * vault cannot carry it — only the vault can key itself. A browser wallet
+ * signs as the connected account and cannot sign as the vault, so composing
+ * this client-side would make fleet expansion CLI-only.
+ *
+ * And the node id cannot be threaded: `add_node` returns it, but no client
+ * can read one action's return value inside the same transaction, and
+ * predicting it from `next_node_id` races a concurrent `add_node`.
+ *
+ * So the contract does all three. This is one plain FunctionCall.
+ *
+ * THE DEPOSIT IS THE GAS KEY'S ENTIRE BALANCE, and that balance is its
+ * spending cap — a gas key's `allowance` is null by design. It is not a fee:
+ * the owner can reclaim it, because `WithdrawFromGasKey` is account-signed
+ * and the vault carries the owner's full-access key.
+ */
+export function planAddRole(
   vault: string,
-  nodeId: number,
-  subLabel: string,
+  label: string,
+  limits: HumanTokenLimit[],
+  cooldownSec: number,
+  recipients: string[] | null,
   publicKey: string,
-  keyAllowanceNear: string,
+  fundingYocto: string,
 ): OwnerPayload {
-  if (!SUB_LABEL.test(subLabel)) {
+  if (!label || label.length > MAX_LABEL_LEN) {
+    throw new Error(`label must be 1..=${MAX_LABEL_LEN} characters (MAX_LABEL_LEN)`);
+  }
+  assertCooldown(cooldownSec);
+  assertRecipients(recipients);
+  assertPublicKey(publicKey);
+  // Mirrors MIN_AGENT_GAS_FUNDING in the vault. Below this the key is
+  // installed and cannot complete a single call: NEAR reserves
+  // `prepaid_gas * 1e9` and the tooling sends 60 TGas, which reserves 0.06.
+  // The contract refuses too; refusing here means the owner is not sent to a
+  // wallet to sign something that will revert.
+  if (BigInt(fundingYocto) < 6n * 10n ** 22n) {
     throw new Error(
-      `invalid sub_label ${JSON.stringify(subLabel)}: 1..=32 chars of [a-z0-9_-]. ` +
-        `A dot in particular is refused — the account id is DERIVED as ` +
-        `<label>.${vault} so the new account cannot be aimed outside this vault's subtree.`,
+      `the agent's gas key needs at least 0.06 NEAR to make one 60 TGas call — ` +
+        `NEAR reserves prepaid gas up front, so a key funded to the expected ` +
+        `burn (~0.0007) cannot transact at all.`,
     );
   }
-  if (!publicKey.startsWith("ed25519:") && !publicKey.startsWith("secp256k1:")) {
-    throw new Error("publicKey must be in NEAR form, e.g. ed25519:...");
-  }
-  const allowance = toBaseUnits(keyAllowanceNear, NEAR_DECIMALS);
-  if (allowance < BigInt(MIN_AGENT_KEY_ALLOWANCE_YOCTO)) {
-    throw new Error(
-      `key allowance ${keyAllowanceNear} NEAR is below the usable floor of ` +
-        `${fromBaseUnits(BigInt(MIN_AGENT_KEY_ALLOWANCE_YOCTO), NEAR_DECIMALS)} NEAR. ` +
-        `NEAR reserves the FULL prepaid gas of each call against the key up front and ` +
-        `refunds the remainder, so an allowance sized to expected burn produces a key ` +
-        `that cannot transact at all.`,
-    );
-  }
-  const deposit = allowance + BigInt(AGENT_ACCOUNT_STORAGE_YOCTO);
-  const derived = `${subLabel}.${vault}`;
   return {
     receiverId: vault,
-    methodName: "create_agent_account",
+    methodName: "add_role",
     args: {
-      node_id: nodeId,
-      sub_label: subLabel,
+      label,
+      limits: limitsToArgs(limits),
+      cooldown_sec: cooldownSec,
+      recipients,
       public_key: publicKey,
-      key_allowance: allowance.toString(),
     },
     gasTgas: DEFAULT_GAS_TGAS,
-    depositYocto: deposit.toString(),
-    summary:
-      `Create agent account ${derived}, bind it to node ${nodeId}, and give it ONE key ` +
-      `that can call only request_payment on ${vault} — it cannot call other methods, ` +
-      `cannot call other contracts, and cannot attach a deposit. ` +
-      `Funding ${fromBaseUnits(deposit, NEAR_DECIMALS)} NEAR ` +
-      `(${keyAllowanceNear} gas allowance + ` +
-      `${fromBaseUnits(BigInt(AGENT_ACCOUNT_STORAGE_YOCTO), NEAR_DECIMALS)} account storage).`,
-    warnings: [],
+    depositYocto: fundingYocto,
+    summary: `Add the "${label}" agent with its own budget, under root`,
+    warnings: [
+      `The ${(Number(fundingYocto) / 1e24).toFixed(3)} NEAR deposit funds the agent's ` +
+        `gas key. It is recoverable, not a fee.`,
+      `The new node is a CHILD OF ROOT, so root's caps still bound the whole ` +
+        `fleet: this divides what the vault can spend in a day, it does not raise it.`,
+      `Check the public key matches the one your agent reported before signing.`,
+    ],
+  };
+}
+
+export function planBindVirtualAgent(
+  vault: string,
+  nodeId: number,
+  publicKey: string,
+): OwnerPayload {
+  assertNodeId(nodeId);
+  assertPublicKey(publicKey);
+  return {
+    receiverId: vault,
+    methodName: "bind_virtual_agent",
+    args: { node_id: nodeId, public_key: publicKey },
+    gasTgas: DEFAULT_GAS_TGAS,
+    // ONE YOCTO, not a funding amount. `bind_virtual_agent` calls
+    // `assert_owner()` -> `assert_one_yocto()`. Nothing is funded here, which
+    // is the whole point of moving off sub-accounts.
+    depositYocto: ONE_YOCTO,
+    summary: `Let the key ${publicKey.slice(0, 22)}… spend from node ${nodeId}`,
+    warnings: [
+      `A node may hold more than one key — binding another does not replace this one.`,
+      `This grants spending authority only. The key still needs gas: install it as ` +
+        `a NEP-611 gas key on the vault and fund it. That balance is recoverable.`,
+    ],
+  };
+}
+
+/**
+ * Revoke a virtual agent's authority.
+ *
+ * Frees the 82-byte `pubkey_to_node` entry. The 86-byte `pubkey_to_nonce`
+ * entry is RETAINED deliberately and never reclaimed — confirmed live, where
+ * next_nonce stayed at 2 instead of resetting to 1. Dropping it would let
+ * unbind-then-rebind reset the nonce and reopen the replay window, so about
+ * half the binding's storage is intentionally unrecoverable.
+ */
+export function planUnbindVirtualAgent(vault: string, publicKey: string): OwnerPayload {
+  assertPublicKey(publicKey);
+  return {
+    receiverId: vault,
+    methodName: "unbind_virtual_agent",
+    args: { public_key: publicKey },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    summary: `Revoke the key ${publicKey.slice(0, 22)}…`,
+    warnings: [
+      `The replay nonce for this key is kept forever, on purpose: resetting it ` +
+        `would let an unbind/rebind replay old signed payloads. About half the ` +
+        `binding's storage is therefore not reclaimed.`,
+      `Gas still sitting in this key's NEP-611 gas key is NOT returned by ` +
+        `unbinding. Withdraw from the gas key first, or it stays there.`,
+    ],
   };
 }
 
@@ -344,7 +435,9 @@ export const OWNER_PLANNERS = {
   add_node: { methodName: "add_node", fn: planAddNode },
   set_node_caps: { methodName: "set_node_caps", fn: planSetNodeCaps },
   bind_agent: { methodName: "bind_agent", fn: planBindAgent },
-  create_agent_account: { methodName: "create_agent_account", fn: planCreateAgentAccount },
+  add_role: { methodName: "add_role", fn: planAddRole },
+  bind_virtual_agent: { methodName: "bind_virtual_agent", fn: planBindVirtualAgent },
+  unbind_virtual_agent: { methodName: "unbind_virtual_agent", fn: planUnbindVirtualAgent },
   set_recipients: { methodName: "set_recipients", fn: planSetRecipients },
   set_cooldown: { methodName: "set_cooldown", fn: planSetCooldown },
   freeze_node: { methodName: "freeze_node", fn: planFreezeNode },
@@ -361,4 +454,96 @@ export function toCliCommand(p: OwnerPayload, network = "testnet"): string {
     `attached-deposit '${p.depositYocto} yoctoNEAR' ` +
     `sign-as <YOUR-OWNER-ACCOUNT> network-config ${network} sign-with-keychain send`
   );
+}
+
+/**
+ * Require the owner to approve payments above `amount` at this node.
+ *
+ * A threshold is a gate INSIDE the caps: it can only make the vault more
+ * conservative, never less, so there is no value of it that moves more money
+ * than the budget tree already allowed. `null` removes it.
+ *
+ * ---- `amount` IS HUMAN UNITS, and it used to be base units.
+ *
+ * Breaking change, 2026-10-31, made the same day the tool was published and
+ * before anyone used it. The parameter was `amountBase` and took raw base
+ * units, which made it the ONLY tool in this module on that convention:
+ *
+ *   vault_pay.amount                   human   "12.50"
+ *   planSetNodeCaps dailyCap/perTxCap  human   (the zod schema says so)
+ *   planSetApprovalThreshold           BASE    <- the odd one out
+ *
+ * And it is the one that configures a safety gate, so it FAILED OPEN. An owner
+ * thinking in human units who passed a figure at or above the per-tx cap in
+ * base units got a threshold ABOVE every cap in the tree: the gate never fires,
+ * nothing is ever held, and the transaction succeeds — so the owner believes the
+ * control is on. Measured against the live mainnet vault (per-tx cap 510000
+ * base = 0.51 USDC): "1000000" meaning "a million" yields a 1.0 USDC threshold,
+ * above every cap.
+ *
+ * The other direction fails closed and is merely annoying ("1" meaning 1 USDC
+ * became 0.000001, so everything got held), which is why only one direction is
+ * dangerous and why this is worth a breaking change rather than a doc fix.
+ *
+ * `toBaseUnits` throws rather than truncating excess precision — correct here:
+ * silently rounding 0.1234567 would set a threshold the owner did not choose.
+ */
+export function planSetApprovalThreshold(
+  vault: string,
+  nodeId: number,
+  amount: string | null,
+  decimals: number,
+): OwnerPayload {
+  const base = amount === null ? null : toBaseUnits(amount, decimals).toString();
+  return {
+    receiverId: vault,
+    methodName: "set_approval_threshold",
+    args: { node_id: nodeId, amount: base },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    // Human units in the summary too. The old line read "Payments above
+    // 1000000 (base units)", which is unreadable in precisely the moment the
+    // owner is checking the plan before signing it.
+    summary: amount
+      ? `Payments above ${amount} from node ${nodeId} will need your approval`
+      : `Remove the approval threshold on node ${nodeId} — payments up to the caps run unattended`,
+    warnings: amount
+      ? []
+      : ["After this, nothing at this node waits for a human: only the caps apply."],
+  };
+}
+
+/**
+ * Execute a held payment.
+ *
+ * Every limit is re-checked at approval time, so this can still be refused --
+ * by a cap tightened while it waited, or by an Intents quote that expired. That
+ * is the honest outcome and the warning says so.
+ */
+export function planApprovePayment(vault: string, requestId: string): OwnerPayload {
+  return {
+    receiverId: vault,
+    methodName: "approve_payment",
+    args: { request_id: requestId },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    summary: `Approve and send held payment ${requestId}`,
+    warnings: [
+      "This MOVES MONEY. Check the amount and payee with vault_pending_approval first.",
+      "Limits are re-checked now, so it can still be refused — a cap lowered since the request, or a cross-chain quote that has expired.",
+    ],
+  };
+}
+
+/** Decline a held payment. The ticket is discarded and nothing moves. */
+export function planRejectPayment(vault: string, requestId: string): OwnerPayload {
+  return {
+    receiverId: vault,
+    methodName: "reject_payment",
+    args: { request_id: requestId },
+    gasTgas: DEFAULT_GAS_TGAS,
+    depositYocto: ONE_YOCTO,
+    summary: `Reject held payment ${requestId}`,
+    warnings: ["The agent must request again if it still needs the money."],
+  };
 }

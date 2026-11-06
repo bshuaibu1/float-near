@@ -1,15 +1,28 @@
 {
-  "name": "@near-vault/float-adapter",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@floatonnear/float-adapter",
+  "version": "0.2.1",
   "type": "module",
   "description": "Serves the existing Float dashboard's /v1 API from NEAR vault views, so the Float UI runs unchanged against the NEAR hierarchical vault.",
+  "license": "MIT",
+  "bin": {
+    "float-adapter": "dist/server.js"
+  },
+  "files": [
+    "dist/"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "start": "node dist/server.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": { "@near-vault/mcp": "*" },
-  "devDependencies": { "typescript": "^5.9.0", "vitest": "^5.0.5", "@types/node": "^24.0.0" }
+  "dependencies": {
+    "@floatonnear/mcp": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.5"
+  }
 }

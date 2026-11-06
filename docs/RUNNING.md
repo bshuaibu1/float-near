@@ -27,20 +27,66 @@ calls, reading from NEAR vault views.
 | `GET /v1/settings` | `get_config().owner` |
 | `POST /v1/pay` | signs `request_payment` with the restricted agent key |
 
+## Which vault is the demo
+
+| vault | code | state | role |
+| --- | --- | --- | --- |
+| `v4.floatv4.testnet` | **current** | 24 nodes, 16 virtual agents | the demo. Deployed 2026-10-28, migrated past the `BaseConfig` removal, and the virtual-agent round trip is proven on it. |
+| `v3.floatvault-12329.testnet` | pre-virtual-agent | 21 nodes, 15 requests | **still running, deliberately.** Left serving on the old code it matches. |
+
+v3 is not broken and was not replaced in place. It runs code that matches its
+own state, so it answers every view call today. What it cannot do is accept an
+upgrade: its 284 state bytes have no `pubkey_to_node`/`pubkey_to_nonce`, so
+`migrate` cannot read them and `scripts/upgrade-vault.sh` will abort
+atomically rather than brick it. Retiring it is a redeploy, not an upgrade, and
+needs its own full-access key — which is held by whoever created it, not by the
+`floatv4` keys the rest of this doc assumes.
+
+The two trees are the same shape on purpose, so the cost difference is the only
+variable:
+
+```
+root
+├── research ── r1, r2          r1+r2 caps (500) > research pool (250)
+└── swarm ───── s0 .. s15       16 siblings, each capped at the whole 250 pool
+```
+
+v3's 16 swarm members are real sub-accounts at 0.55 NEAR each — **8.8 NEAR**,
+and per `DEFERRED-agent-key-recovery.md` that NEAR is stranded, because an
+agent's only key is function-call scoped and cannot sign `DeleteAccount`. v4's
+16 are keypairs bound with `bind_virtual_agent`: **~0.016 NEAR** of contract
+state, most of it reclaimable by unbinding.
+
+Rebuild or extend the tree with `node scripts/seed-demo.mjs` (idempotent —
+existing labels are skipped, so an interrupted run can be finished rather than
+duplicating the tree). `--dry-run` prints the plan; `--prove` demonstrates the
+shared pool binding on chain:
+
+```
+s0   spend  50 -> SETTLED             | s0 own avail    0 | SWARM POOL avail    0   (x5)
+s5   spend  50 -> PARENT_DAILY_BUDGET | s5 own avail  250 | SWARM POOL avail    0
+```
+
+s5 has spent nothing and its own cap is fully available, yet it is refused —
+by `PARENT_DAILY_BUDGET`, not `DAILY_BUDGET`. That distinction is the hierarchy
+being load-bearing rather than decorative, and the dashboard renders the two as
+deliberately different sentences. `--prove` can only run once per UTC day; the
+pool is genuinely spent afterwards.
+
 ## Run it
 
 ```sh
-# 1. the adapter
-export NEAR_VAULT_CONTRACT=your-vault.testnet
-export NEAR_VAULT_TOKEN=usdc.testnet          # the NEP-141 the vault pays in
+# 1. the adapter — pointed at the demo vault above
+export NEAR_VAULT_CONTRACT=v4.floatv4.testnet
+export NEAR_VAULT_TOKEN=ft.floatv4.testnet    # the NEP-141 the vault pays in
 export NEAR_VAULT_TOKEN_DECIMALS=6
 # only needed for the pay flow - the RESTRICTED key from create_agent_account:
 export NEAR_VAULT_AGENT_ID=a0.your-vault.testnet
 export NEAR_VAULT_AGENT_KEY=ed25519:...
 
-npm -w @near-vault/mcp run build
-npm -w @near-vault/float-adapter run build
-npm -w @near-vault/float-adapter start
+npm -w @floatonnear/mcp run build
+npm -w @floatonnear/float-adapter run build
+npm -w @floatonnear/float-adapter start
 
 curl -s http://127.0.0.1:8787/healthz
 
@@ -93,3 +139,51 @@ a live deployed vault, because that needs a funded testnet account:
 Solana onboarding flows. They build and are unreachable in the NEAR flow. Left
 in place rather than deleted, since removing screens is outside a data-layer
 swap.
+
+## Refusals: where they come from
+
+A blocked payment is never stored in contract state, only emitted as a
+NEP-297 event. The adapter therefore follows the chain head and recovers them
+itself — on by default, no configuration needed.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BLOCKED_FOLLOW` | on | set `0` to disable following |
+| `BLOCKED_FOLLOW_INTERVAL_MS` | `10000` | seconds between ticks |
+| `BLOCKED_LOG` | `.demo/blocked-log.json` | where recovered refusals are kept |
+
+`GET /v1/dashboard` returns `blockedCoverage` with the block range examined
+**and** any gaps inside it. A gap means "nobody has looked here", which is not
+the same as "nothing happened" — do not render them identically.
+
+To fill a gap:
+
+```sh
+# into a SEPARATE file: the adapter is writing the live one, and both doing
+# load/modify/save against it loses records to a last-writer-wins race
+BLOCKED_LOG=.demo/backfill.json node scripts/scan-blocked.mjs --from <height>
+node scripts/merge-blocked.mjs .demo/backfill.json
+```
+
+Backfilling is slow by nature — roughly 2 RPC calls per block, and public
+endpoints throttle a sustained scan. The script paces itself, backs off on
+`429`, and checkpoints every 500 blocks, so an interrupted run resumes instead
+of starting over. See KNOWN-TRADEOFFS §12 for measured numbers.
+
+## Paying as a specific agent
+
+`POST /v1/pay` signs as whichever agent you name. The contract resolves the
+spending node from the **signer**, so this chooses which budget is charged:
+
+```jsonc
+{ "amount": "1.5", "recipient": "payee.testnet", "nodeId": 4 }
+{ "amount": "1.5", "recipient": "payee.testnet", "agent": "r2.float.me.testnet" }
+```
+
+Keys come from `NEAR_VAULT_AGENT_KEYS` (default `.float/agent-keys.json`, which
+`create-float` writes) and/or the single `NEAR_VAULT_AGENT_ID` /
+`NEAR_VAULT_AGENT_KEY` pair, which remains the default for requests that name
+no agent. If several agents are loaded and a request names none, the adapter
+returns `400` rather than guessing — picking arbitrarily would charge a budget
+nobody chose, and the payment would *succeed*, surfacing later as an
+inexplicable balance instead of an error.

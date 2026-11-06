@@ -1,4 +1,4 @@
-use near_sdk::json_types::{U128, U64};
+use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::{near, AccountId};
 
 // ---------------------------------------------------------------- bounds
@@ -7,7 +7,12 @@ use near_sdk::{near, AccountId};
 // and predictable. MAX_DEPTH in particular is what lets the hot path walk a
 // fixed-length ancestor array instead of recursing.
 
-pub const MAX_DEPTH: usize = 3; // root -> team -> agent
+pub const MAX_DEPTH: usize = 4; // root -> team -> agent -> sub-agent
+// Raised from 3 so an agent can have sub-agents beneath it. The cost is
+// real and lands on the hot path: `chain` is path+self, and every payment
+// loops it three times (frozen check, cap check, charge). A fourth level
+// is therefore ~3 extra map reads and 1 extra write per payment. It stays
+// a fixed-length walk, which is the property that actually matters.
 pub const MAX_NODES: u32 = 64;
 pub const MAX_CHILDREN: u32 = 16;
 pub const MAX_TOKENS: usize = 4;
@@ -80,6 +85,20 @@ pub struct DailyLedger {
     pub pending: u128,
 }
 
+/// Today's ceiling on the vault's OWN NEAR spend, and how much is left.
+///
+/// Separate from BudgetView, which is per-node and denominated in a token.
+/// This one is vault-wide and denominated in NEAR, because the resource it
+/// bounds is the vault's balance rather than an agent's allowance.
+#[near(serializers = [json])]
+#[derive(Debug, Clone)]
+pub struct NearBudgetView {
+    pub day: u64,
+    pub max_daily: U128,
+    pub spent: U128,
+    pub available: U128,
+}
+
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BudgetView {
@@ -94,30 +113,43 @@ pub struct BudgetView {
 
 /// Which rail settles a payment.
 ///
-/// - `NearDirect`: the NEP-141 transfer callback proves SETTLEMENT.
-/// - `BaseUsdc`: the Chain Signatures callback proves the vault obtained a
-///   SIGNATURE over a Base transaction it BUILT ITSELF. It does NOT prove that
-///   transaction landed on Base — relaying is off-chain and unobserved.
+/// - `NearDirect`: the NEP-141 transfer callback proves SETTLEMENT on NEAR.
+/// - `Intents`: a NEP-141 transfer to a solver's one-time deposit address.
+///   The callback proves the vault PAID THE SOLVER; it does not prove the
+///   solver delivered on the far chain, which is off-chain and unobserved.
 ///
 /// Both rails run the SAME hierarchical check and the SAME reservation
 /// lifecycle, so the cross-chain path cannot be used to step around the budget
 /// tree or the payee allowlist.
 ///
-/// The `BaseUsdc` fields are fee and ordering parameters ONLY. Everything that
-/// determines WHERE value goes — the token contract, the payee, the amount —
-/// is derived by the contract from what it already authorized, never taken
-/// from the caller. A caller who lies about `max_fee_per_gas` wastes its own
-/// gas; it cannot move the payment.
+/// Nothing in either variant determines WHERE value goes. The payee is checked
+/// against the allowlist, and for `Intents` the deposit address is bound to
+/// that payee by a signature from a key the owner registered — so a caller who
+/// substitutes an address of its own is refused rather than funded.
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Route {
     NearDirect,
-    BaseUsdc {
-        nonce: U64,
-        max_priority_fee_per_gas: U128,
-        max_fee_per_gas: U128,
-        gas_limit: U64,
+    /// Cross-chain via NEAR Intents. The vault performs an ordinary NEP-141
+    /// transfer on NEAR to a one-time deposit address, and a solver delivers
+    /// the destination asset to `recipient` on the far chain, pricing that
+    /// chain's gas into the quote.
+    ///
+    /// No MPC signature, no derived address, no gas to fund, no nonce. A
+    /// cross-chain payment is a NEAR transfer that the budget tree already
+    /// knows how to check.
+    ///
+    /// Borsh tags enum variants by position. `NearDirect` must therefore stay
+    /// first, and any future variant must be appended rather than inserted:
+    /// renumbering would silently reinterpret every request already stored.
+    Intents {
+        /// The one-time NEAR address from the quote.
+        deposit_address: AccountId,
+        /// Nanosecond deadline after which the quote is refused.
+        quote_deadline_ns: U64,
+        /// Ed25519 over borsh(QuoteBinding), from the registered signer.
+        signature: Base64VecU8,
     },
 }
 
@@ -133,50 +165,11 @@ impl Route {
     pub fn rail(&self) -> &'static str {
         match self {
             Route::NearDirect => "near",
-            Route::BaseUsdc { .. } => "base",
+            // The dashboard already filters on this label; an Intents payment
+            // lands on the far chain, so it must not render as a NEAR one.
+            Route::Intents { .. } => "intents",
         }
     }
-}
-
-/// Owner-set parameters for the Base rail.
-///
-/// `None` on the vault means the rail is CLOSED, which is the default: a
-/// freshly deployed vault cannot sign a cross-chain anything until the owner
-/// explicitly opens it and names the token contract.
-#[near(serializers = [borsh, json])]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BaseConfig {
-    /// The MPC signer, e.g. `v1.signer-prod.testnet`.
-    pub mpc_contract: AccountId,
-    /// The ERC-20 USDC contract on Base, lowercase `0x` + 40 hex.
-    pub usdc_address: String,
-    /// 8453 mainnet, 84532 Sepolia. Signed over, so a signature for one chain
-    /// is not valid on the other.
-    pub chain_id: u64,
-    /// MPC derivation path. Fixes which Base address the vault controls.
-    pub derivation_path: String,
-    /// HARD CEILING on the gas cost of a single signed transaction, in wei.
-    ///
-    /// This closes the one hole through which an agent could move value
-    /// OUTSIDE the ERC-20 budget. The budget tree constrains USDC; it says
-    /// nothing about the native ETH the vault's derived Base address holds to
-    /// pay for gas. Since the agent supplies `max_fee_per_gas` and
-    /// `gas_limit`, an inflated pair would produce a validly-signed
-    /// transaction that burns that ETH — the leash would hold on the token and
-    /// leak on the fee.
-    ///
-    /// The bound is on the PRODUCT, not on each field: the maximum a 1559
-    /// transaction can ever cost is `gas_limit * max_fee_per_gas` (the network
-    /// charges `gas_used * (base_fee + min(priority, max_fee - base_fee))`,
-    /// which is always <= that). Capping the two fields independently would
-    /// leave their product unbounded in combination, which is the mistake this
-    /// comment exists to prevent.
-    pub max_tx_fee_wei: U128,
-    /// Which MPC root key signs. Measured on v1.signer-prod.testnet
-    /// 2026-10-26: domain 0 is CaitSith/secp256k1 — the ECDSA curve an EVM
-    /// chain needs. Domain 1 is Frost/Ed25519 and would produce a signature
-    /// Base cannot verify, which is why this is owner-set and not guessed.
-    pub domain_id: u64,
 }
 
 #[near(serializers = [borsh, json])]
@@ -209,6 +202,16 @@ pub enum ReasonCode {
     VaultPaused,
     NodeFrozen,
     NotAgent,
+    /// An Intents payment was attempted with no quote signer registered.
+    /// Refusing is the safe direction: without one, nothing binds the
+    /// deposit address to the allowlisted payee.
+    QuoteSignerUnset,
+    /// The quote's deadline has passed. Prices move and deposit addresses
+    /// expire, so a stale quote must not be honoured.
+    QuoteExpired,
+    /// The signature did not verify against the registered signer, or was
+    /// not 64 bytes.
+    QuoteBadSignature,
     DuplicateRequest,
     InvalidRequestId,
     InvalidAmount,
@@ -243,6 +246,49 @@ pub enum ReasonCode {
     UnknownNode,
     InsufficientGas,
     LedgerInvariant,
+    /// The vault's own NEAR budget for the day is exhausted.
+    ///
+    /// APPENDED, never inserted: borsh tags enum variants by POSITION, so
+    /// adding this anywhere but the end would silently reinterpret every
+    /// reason code already stored in a PaymentRequest.
+    NearBudget,
+    /// An ANCESTOR's cooldown is still running. Distinct from `Cooldown` for
+    /// the same reason `ParentDailyBudget` is distinct from `DailyBudget`:
+    /// the node to reconfigure is not the one that asked.
+    ///
+    /// APPENDED, never inserted — borsh tags variants by position.
+    ParentCooldown,
+    // virtual agents
+    //
+    // APPENDED, not inserted. Borsh tags enum variants by position and a
+    // ReasonCode is stored inside every PaymentRequest, so renumbering would
+    // silently reinterpret the reason on every request already on chain.
+    /// The signing key is not bound to any node.
+    NotVirtualAgent,
+    /// The signature did not verify against the bound key, or was not 64 bytes.
+    BadAgentSignature,
+    /// The nonce is not strictly greater than the highest already consumed by
+    /// this key. This is the replay guard; see StorageKey::PubkeyToNonce.
+    NonceNotFresh,
+    /// The signed payload's deadline has passed.
+    AgentSignatureExpired,
+    /// No node in the chain sets a recipient allowlist, so there is nothing
+    /// a payment could match. Distinct from RecipientNotAllowed on purpose:
+    /// that one means "not on the list", this one means "there is no list",
+    /// and the owner fixes them differently. APPENDED, never inserted -- see
+    /// persisted_reason_code_tags_are_pinned.
+    NoRecipientsSet,
+    /// The amount is inside every cap but above the node's approval threshold,
+    /// so it is held for the owner rather than refused. NOTHING is charged and
+    /// no reservation is held -- the ticket is a note, not a pending payment.
+    /// APPENDED, never inserted -- see persisted_reason_code_tags_are_pinned.
+    ApprovalRequired,
+    /// The owner declined a held payment. The ticket is gone; the agent must
+    /// request again if it still wants the money.
+    ApprovalRejected,
+    /// `approve_payment`/`reject_payment` named a request with no ticket --
+    /// already approved, already rejected, or never held.
+    NoSuchApproval,
 }
 
 impl ReasonCode {
@@ -252,6 +298,9 @@ impl ReasonCode {
             VaultPaused => "VAULT_PAUSED",
             NodeFrozen => "NODE_FROZEN",
             NotAgent => "NOT_AGENT",
+            QuoteSignerUnset => "QUOTE_SIGNER_UNSET",
+            QuoteExpired => "QUOTE_EXPIRED",
+            QuoteBadSignature => "QUOTE_BAD_SIGNATURE",
             DuplicateRequest => "DUPLICATE_REQUEST",
             InvalidRequestId => "INVALID_REQUEST_ID",
             InvalidAmount => "INVALID_AMOUNT",
@@ -284,6 +333,16 @@ impl ReasonCode {
             UnknownNode => "UNKNOWN_NODE",
             InsufficientGas => "INSUFFICIENT_GAS",
             LedgerInvariant => "LEDGER_INVARIANT",
+            NearBudget => "NEAR_BUDGET",
+            ParentCooldown => "PARENT_COOLDOWN",
+            NotVirtualAgent => "NOT_VIRTUAL_AGENT",
+            BadAgentSignature => "BAD_AGENT_SIGNATURE",
+            NonceNotFresh => "NONCE_NOT_FRESH",
+            AgentSignatureExpired => "AGENT_SIGNATURE_EXPIRED",
+            NoRecipientsSet => "NO_RECIPIENTS_SET",
+            ApprovalRequired => "APPROVAL_REQUIRED",
+            ApprovalRejected => "APPROVAL_REJECTED",
+            NoSuchApproval => "NO_SUCH_APPROVAL",
         }
     }
 }
@@ -331,4 +390,116 @@ pub struct ConfigView {
     pub strict_allocation: bool,
     pub node_count: u32,
     pub clock_mode: String,
+}
+
+/// What a quote signer attests to.
+///
+/// A 1Click quote hands back a ONE-TIME deposit address. Money sent there is
+/// swapped and delivered to the payee named in the quote — but that address is
+/// unpredictable, so it can never appear on the vault's payee allowlist. The
+/// vault therefore checks the allowlist against the Base payee and then sends
+/// the funds somewhere else entirely, to an address it has no way to connect
+/// back to that payee.
+///
+/// If the agent supplied that address, the allowlist would be decorative: a
+/// compromised agent quotes a swap paying itself and the vault funds it, in
+/// budget, with every check passing. This struct is what closes that hole. A
+/// key the OWNER registered signs the binding between payee and deposit
+/// address, and the contract refuses any Intents payment without it.
+///
+/// Serialised with borsh for the signed message rather than concatenated as
+/// text. Borsh is length-prefixed, so no two different field sets can produce
+/// the same bytes; a plain concatenation would let `("alic", "ebob")` and
+/// `("alice", "bob")` sign the same message.
+/// What a VIRTUAL AGENT signs to authorize one payment.
+///
+/// A virtual agent has no NEAR account. It holds only a keypair, signs this
+/// struct off-chain, and hands the signature to a relayer that submits it. The
+/// relayer pays the gas and is NOT trusted: every field it could tamper with
+/// is covered here.
+///
+/// Borsh, not text concatenation, for the same reason as QuoteBinding: borsh
+/// is length-prefixed, so no two different field sets produce the same bytes.
+///
+/// WHY EACH FIELD IS PRESENT — every one of these closes an attack:
+///
+/// * `vault` — without it a signature is replayable against any other vault
+///   that has bound the same key.
+/// * `nonce` — THE replay guard. Must be strictly greater than the highest
+///   this key has consumed. `request_id` cannot serve this role: terminal
+///   requests are purged by `sweep_stuck_pending`, which frees the id for
+///   reuse. Under `request_payment` that is harmless because NEAR's
+///   per-transaction nonce prevents replay in the protocol; for a detached
+///   signature it is a repeatable drain.
+/// * `deadline_ns` — bounds how long a leaked or withheld signature is worth
+///   anything. A relayer that sits on a payload cannot fire it next month.
+/// * `route` — a relayer could otherwise take a signature authorizing a cheap
+///   on-NEAR transfer and resubmit it as a cross-chain Intents payment.
+/// * `token`, `amount`, `recipient`, `memo` — the payment itself.
+#[near(serializers = [borsh])]
+#[derive(Clone, Debug)]
+pub struct VirtualAgentBinding {
+    pub vault: AccountId,
+    pub nonce: u64,
+    pub deadline_ns: u64,
+    pub request_id: String,
+    pub token: AccountId,
+    pub amount: U128,
+    pub recipient: AccountId,
+    pub memo: String,
+    pub route: Route,
+}
+
+#[near(serializers = [borsh])]
+#[derive(Clone, Debug)]
+pub struct QuoteBinding {
+    /// This vault. Without it, a signature is replayable against any other
+    /// vault that trusts the same signer.
+    pub vault: AccountId,
+    /// Ties the signature to one payment. `request_id` is already rejected as
+    /// a duplicate, so this makes each quote single-use for free.
+    pub request_id: String,
+    pub token: AccountId,
+    /// What leaves the vault on NEAR.
+    pub amount: U128,
+    /// The FINAL destination on the far chain, as checked against the
+    /// allowlist. The whole point of the signature is to bind this to the
+    /// deposit address below.
+    pub payee: String,
+    /// Where the vault actually sends the tokens — the one-time address the
+    /// quote returned.
+    pub deposit_address: AccountId,
+    /// Quotes go stale: prices move and deposit addresses expire. Past this,
+    /// the signature is refused.
+    pub deadline_ns: u64,
+}
+
+/// A payment the owner has been asked to approve.
+///
+/// Held under its OWN raw storage key, not inside `Vault`, so adding this
+/// feature changes no borsh layout and needs no migration. That is the same
+/// pattern the NEAR spending ceiling uses (MAX_DAILY_NEAR_KEY), and it matters
+/// here because this contract has already been bitten once by positional
+/// encoding -- see persisted_reason_code_tags_are_pinned.
+///
+/// NOTHING IS RESERVED while a ticket exists. Every limit is re-checked when
+/// the owner approves, so:
+///   - a held payment does not block other spending from the same budget
+///   - an approval cannot slip past a cap that was tightened while it waited
+///   - an Intents quote that expired in the meantime is refused at approval
+///     time with QUOTE_EXPIRED, which is the honest answer
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug)]
+pub struct ApprovalTicket {
+    pub request_id: String,
+    pub node_id: NodeId,
+    pub token: AccountId,
+    pub amount: U128,
+    pub recipient: AccountId,
+    pub memo: String,
+    pub route: Route,
+    /// When the agent asked. The owner sees how long it has waited; nothing in
+    /// the contract expires a ticket, because a silent expiry would look like a
+    /// rejection nobody made.
+    pub requested_at_ns: U64,
 }

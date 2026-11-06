@@ -1,19 +1,26 @@
 {
-  "name": "@near-vault/mcp",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@floatonnear/mcp",
+  "version": "0.3.0",
   "type": "module",
   "description": "MCP server for the hierarchical budget vault. The agent key signs request_payment only; owner methods emit unsigned payloads for wallet approval.",
+  "license": "MIT",
   "bin": {
-    "near-vault-mcp": "./dist/server.js"
+    "mcp": "dist/server.js",
+    "float-mcp": "dist/server.js"
   },
+  "files": [
+    "dist/"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "near-api-js": "^7.4.0",
     "zod": "^4.6.7"
   },
@@ -26,6 +33,10 @@
     ".": "./dist/index.js",
     "./amounts": "./dist/amounts.js",
     "./sign": "./dist/sign.js",
-    "./payloads": "./dist/payloads.js"
+    "./payloads": "./dist/payloads.js",
+    "./quote": {
+      "types": "./dist/quote.d.ts",
+      "import": "./dist/quote.js"
+    }
   }
 }

@@ -2,19 +2,33 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCheck, Copy, ExternalLink } from "lucide-react";
+import { CANVAS, DANGER, DANGER_BG, LINE, MUTED, SUCCESS, SUCCESS_BG } from "@/lib/colors";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "http://127.0.0.1:8787";
-const border = { border: "1px solid #EAEAEA" };
+const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
+const border = { border: `1px solid ${LINE}` };
 
 /**
  * Agent keys on NEAR.
  *
  * The Solana-era page listed a FLOAT_KEY API secret per agent, with a reveal
  * button, a copy-secret flow, and a "run npx @usefloat/cli install" empty
- * state. None of it applies: an agent here is a NEAR sub-account whose
- * authority is a FUNCTION-CALL ACCESS KEY on chain. The public half is public,
- * and the private half must never reach a browser — so there is deliberately
- * nothing to reveal.
+ * state. None of it applies: an agent's authority here is an ACCESS KEY on
+ * chain. The public half is public, and the private half must never reach a
+ * browser — so there is deliberately nothing to reveal.
+ *
+ * TWO KINDS, and this page listed only the first for a while:
+ *
+ *   ACCOUNT   `bind_agent` binds an existing account; its keys live there.
+ *   VIRTUAL   `bind_virtual_agent` binds a public key to a node, and the key
+ *             is a NEP-611 GAS KEY on the vault itself — no sub-account at
+ *             all. This is the only kind new vaults create, because the old
+ *             `create_agent_account` funded sub-accounts that nobody could
+ *             ever empty (10.7752 NEAR is stranded across 18 of them).
+ *
+ * Because the adapter filtered on `node.account`, which a virtual agent
+ * deliberately leaves null, this page rendered an EMPTY LIST for a correctly
+ * configured vault — reading as "nothing is authorised here", the exact
+ * inversion of the truth.
  *
  * Every field below is read from the chain via /v1/agent-keys, which calls
  * `view_access_key_list`. That matters: "restricted to request_payment" is this
@@ -33,8 +47,12 @@ type AgentKey = {
     receiverId: string | null;
     methodNames: string[];
     allowanceYocto: string | null;
+    /** NEP-611 gas keys only. For these the BALANCE is the spending cap. */
+    gasBalanceYocto: string | null;
   }[];
   error?: string;
+  /** True for a virtual agent: a gas key on the VAULT, not a sub-account. */
+  virtual?: boolean;
 };
 
 type VaultInfo = { vaultId: string; explorerBase: string; network: string };
@@ -89,15 +107,14 @@ export default function AgentKeysPage() {
     <div className="px-8 py-8 max-w-6xl mx-auto">
       <div className="mb-8">
         <p
-          className="text-[11px] font-medium uppercase tracking-widest mb-1"
-          style={{ color: "#787774" }}
+          className="text-[11px] font-medium uppercase tracking-widest mb-1 text-muted"
         >
           Agent Console
         </p>
-        <h2 className="text-[22px] font-semibold tracking-tight" style={{ color: "#111111" }}>
+        <h2 className="text-[22px] font-semibold tracking-tight text-ink">
           Agent keys
         </h2>
-        <p className="text-[13px] mt-1.5 max-w-2xl" style={{ color: "#787774" }}>
+        <p className="text-[13px] mt-1.5 max-w-2xl text-muted">
           Each agent has its own account and its own key. A key can only ask this vault to send
           money — nothing else. Checked against the chain every time this page loads.
         </p>
@@ -110,7 +127,7 @@ export default function AgentKeysPage() {
           <Panel tone="error">{error}</Panel>
         ) : rows.length === 0 ? (
           <Panel>
-            <span className="font-medium" style={{ color: "#111111" }}>
+            <span className="font-medium text-ink">
               No agents bound yet.
             </span>
             <br />
@@ -130,23 +147,23 @@ export default function AgentKeysPage() {
                   {/* Header: the account, and the node it draws from */}
                   <div
                     className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5"
-                    style={{ borderBottom: "1px solid #EAEAEA" }}
+                    style={{ borderBottom: `1px solid ${LINE}` }}
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <p className="text-[13px] font-semibold" style={{ color: "#111111" }}>
+                        <p className="text-[13px] font-semibold text-ink">
                           {row.label}
                         </p>
                         <span
                           className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
-                          style={{ background: "#F5F5F4", color: "#787774" }}
+                          style={{ background: "#F5F5F4", color: MUTED }}
                         >
                           node {row.nodeId}
                         </span>
                         {row.frozen && (
                           <span
                             className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
-                            style={{ background: "#FDEBEC", color: "#9F2F2D" }}
+                            style={{ background: DANGER_BG, color: DANGER }}
                           >
                             Frozen
                           </span>
@@ -154,8 +171,7 @@ export default function AgentKeysPage() {
                       </div>
                       <button
                         onClick={() => copy(row.accountId, row.accountId)}
-                        className="mt-1 inline-flex items-center gap-1.5 font-mono text-[11px] transition-opacity hover:opacity-70"
-                        style={{ color: "#787774" }}
+                        className="mt-1 inline-flex items-center gap-1.5 font-mono text-[11px] transition-opacity hover:opacity-70 text-muted"
                       >
                         {row.accountId}
                         {copied === row.accountId ? <CheckCheck size={11} /> : <Copy size={11} />}
@@ -167,8 +183,7 @@ export default function AgentKeysPage() {
                         href={`${info.explorerBase}/address/${row.accountId}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium transition-opacity hover:opacity-70"
-                        style={{ color: "#787774" }}
+                        className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium transition-opacity hover:opacity-70 text-muted"
                       >
                         Explorer
                         <ExternalLink size={11} />
@@ -182,11 +197,11 @@ export default function AgentKeysPage() {
                       // Unreadable is NOT "no keys". Rendering an empty list
                       // would read as "nothing is authorised here", which is a
                       // different claim from "we could not look".
-                      <p className="text-[12px]" style={{ color: "#9F2F2D" }}>
+                      <p className="text-[12px]" style={{ color: DANGER }}>
                         Could not read the key list for this account: {row.error}
                       </p>
                     ) : row.keys.length === 0 ? (
-                      <p className="text-[12px]" style={{ color: "#9F2F2D" }}>
+                      <p className="text-[12px]" style={{ color: DANGER }}>
                         This account has no access keys, so the agent cannot pay at all.
                       </p>
                     ) : (
@@ -197,21 +212,32 @@ export default function AgentKeysPage() {
                               {k.restricted ? (
                                 <span
                                   className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
-                                  style={{ background: "#EDF3EC", color: "#346538" }}
+                                  style={{ background: SUCCESS_BG, color: SUCCESS }}
                                 >
-                                  Function-call key
+                                  {k.gasBalanceYocto !== null ? "Gas key" : "Function-call key"}
                                 </span>
                               ) : (
                                 <span
                                   className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
-                                  style={{ background: "#FDEBEC", color: "#9F2F2D" }}
+                                  style={{ background: DANGER_BG, color: DANGER }}
                                 >
                                   <AlertTriangle size={10} />
                                   Full access
                                 </span>
                               )}
-                              {k.restricted && (
-                                <span className="text-[11px]" style={{ color: "#787774" }}>
+                              {/* A GAS KEY HAS NO ALLOWANCE, and rendering its
+                                  null one read "gas allowance unlimited" —
+                                  describing a key whose spend is strictly
+                                  bounded by its balance as unbounded. For
+                                  NEP-611 the balance IS the cap, so that is
+                                  what gets shown. */}
+                              {k.restricted && k.gasBalanceYocto !== null && (
+                                <span className="text-[11px] text-muted">
+                                  gas balance {yoctoToNear(k.gasBalanceYocto)} — its spending cap
+                                </span>
+                              )}
+                              {k.restricted && k.gasBalanceYocto === null && (
+                                <span className="text-[11px] text-muted">
                                   gas allowance {yoctoToNear(k.allowanceYocto)}
                                 </span>
                               )}
@@ -219,14 +245,14 @@ export default function AgentKeysPage() {
 
                             <div
                               className="rounded-lg px-3.5 py-2.5 font-mono text-[11px] break-all"
-                              style={{ background: "#FBFBFA", ...border, color: "#787774" }}
+                              style={{ background: CANVAS, ...border, color: MUTED }}
                             >
                               {k.publicKey}
                             </div>
 
                             {k.restricted ? (
                               <div>
-                                <p className="text-[12px] leading-5" style={{ color: "#787774" }}>
+                                <p className="text-[12px] leading-5 text-muted">
                                   This key can only ask the vault to send money. It cannot change
                                   rules, cannot send money by itself, and cannot talk to any other
                                   contract.
@@ -237,7 +263,7 @@ export default function AgentKeysPage() {
                                     from the chain. Dropping it would leave the
                                     page asserting a restriction without showing
                                     what was actually read. */}
-                                <p className="mt-1 text-[11px] leading-4" style={{ color: "#A0A09A" }}>
+                                <p className="mt-1 text-[11px] leading-4 text-faint">
                                   On chain:{" "}
                                   {k.methodNames.map((m, i) => (
                                     <span key={m}>
@@ -249,7 +275,7 @@ export default function AgentKeysPage() {
                                 </p>
                               </div>
                             ) : (
-                              <p className="text-[12px] leading-5" style={{ color: "#9F2F2D" }}>
+                              <p className="text-[12px] leading-5" style={{ color: DANGER }}>
                                 This key is NOT restricted — it can call any method on any contract
                                 as this account. The vault&apos;s budget tree still bounds what{" "}
                                 <span className="font-mono">request_payment</span> pays out, but the
@@ -265,7 +291,7 @@ export default function AgentKeysPage() {
                   {anyUnrestricted && (
                     <div
                       className="px-6 py-2.5 text-[11px]"
-                      style={{ background: "#FDEBEC", color: "#9F2F2D" }}
+                      style={{ background: DANGER_BG, color: DANGER }}
                     >
                       An unrestricted key on an agent account defeats the key-level guarantee.
                       Remove it with <span className="font-mono">near account delete-key</span>.
@@ -277,8 +303,8 @@ export default function AgentKeysPage() {
 
             {/* Why there is nothing to copy on this page. */}
             <div className="bg-white rounded-lg px-6 py-4" style={border}>
-              <p className="text-[12px] leading-5" style={{ color: "#787774" }}>
-                <span className="font-medium" style={{ color: "#111111" }}>
+              <p className="text-[12px] leading-5 text-muted">
+                <span className="font-medium text-ink">
                   To let an agent spend, put its private key where the agent runs.
                 </span>{" "}
                 For the MCP server that means the{" "}
@@ -287,8 +313,8 @@ export default function AgentKeysPage() {
                 already restricted, so it needs no extra guarding beyond the usual care with
                 secrets.
               </p>
-              <p className="mt-2 text-[12px] leading-5" style={{ color: "#787774" }}>
-                <span className="font-medium" style={{ color: "#111111" }}>
+              <p className="mt-2 text-[12px] leading-5 text-muted">
+                <span className="font-medium text-ink">
                   Private keys are never shown here, and this dashboard does not hold them.
                 </span>{" "}
                 An agent&apos;s private key lives wherever that agent runs — in the MCP server&apos;s{" "}
@@ -308,7 +334,7 @@ function Panel({ children, tone }: { children: React.ReactNode; tone?: "error" }
   return (
     <div className="bg-white rounded-lg overflow-hidden" style={border}>
       <div className="px-6 py-16 text-center">
-        <p className="text-[12px] leading-5" style={{ color: tone === "error" ? "#9F2F2D" : "#787774" }}>
+        <p className="text-[12px] leading-5" style={{ color: tone === "error" ? DANGER : MUTED }}>
           {children}
         </p>
       </div>

@@ -87,7 +87,6 @@ pub struct Env {
     pub worker: Worker<Sandbox>,
     pub vault: Contract,
     pub ft: Contract,
-    pub mpc: Contract,
     pub owner: Account,
     pub payee: Account,
     pub agents: Vec<Account>,
@@ -113,10 +112,8 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
     let worker = near_workspaces::sandbox().await?;
     let vault = worker.dev_deploy(&wasm("vault_test_clock.wasm")?).await?;
     let ft = worker.dev_deploy(&wasm("mock_ft.wasm")?).await?;
-    let mpc = worker.dev_deploy(&wasm("mock_mpc.wasm")?).await?;
 
     ft.call("new").transact().await?.into_result()?;
-    mpc.call("new").transact().await?.into_result()?;
 
     let owner = worker.dev_create_account().await?;
     let payee = worker.dev_create_account().await?;
@@ -189,7 +186,7 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
         accounts.push(a);
     }
 
-    Ok(Env { worker, vault, ft, mpc, owner, payee, agents: accounts })
+    Ok(Env { worker, vault, ft, owner, payee, agents: accounts })
 }
 
 pub async fn add_node(
@@ -326,29 +323,18 @@ pub async fn purge(e: &Env, before_day: u64, limit: u32) -> Result<u32> {
 
 /// Opens the Base rail. Left CLOSED by `setup`, so a test that forgets this
 /// gets `BASE_RAIL_CLOSED` rather than an accidental pass.
-pub async fn open_base_rail(e: &Env) -> Result<()> {
-    e.owner
-        .call(e.vault.id(), "set_base_config")
-        .args_json(json!({
-            "config": {
-                "mpc_contract": e.mpc.id(),
-                "usdc_address": BASE_USDC,
-                "chain_id": 84532,
-                "derivation_path": "base-1",
-                // domain 0 = CaitSith/secp256k1 on the real signer.
-                "domain_id": 0,
-                // 0.01 ETH. A normal transfer is 100_000 gas * 20 gwei =
-                // 0.002 ETH, so this leaves headroom for a fee spike while
-                // bounding the worst case well below any sane gas balance.
-                "max_tx_fee_wei": "10000000000000000",
-            }
-        }))
-        .deposit(ONE_YOCTO)
-        .transact()
-        .await?
-        .into_result()?;
-    Ok(())
-}
+// ---- Base / MPC rail helpers: REMOVED.
+//
+// `open_base_rail` called `set_base_config`, and `pay_base` built a
+// `base_usdc` route. Neither exists any more: a cross-chain payment is an
+// ordinary NEP-141 transfer to a NEAR Intents solver's deposit address.
+// Leaving these would have stopped the whole integration package compiling.
+//
+// NOT replaced with Intents equivalents here, deliberately. Intents is
+// mainnet-only — there is no testnet solver for a sandbox to talk to — so
+// the rail is covered by unit tests over the quote-signer gate instead, in
+// contracts/vault/src/tests.rs. An integration test that mocked the solver
+// would prove only that the mock behaves.
 
 /// Allowlists an EVM destination on a node.
 ///
@@ -366,63 +352,8 @@ pub async fn allow_recipients(e: &Env, node: u32, who: Vec<String>) -> Result<()
     Ok(())
 }
 
-pub async fn pay_base(
-    agent: &Account,
-    e: &Env,
-    request_id: &str,
-    amount: u128,
-    recipient: &str,
-) -> Result<near_workspaces::result::ExecutionFinalResult> {
-    Ok(agent
-        .call(e.vault.id(), "request_payment")
-        .args_json(json!({
-            "request_id": request_id,
-            "token": e.ft.id(),
-            "amount": amount.to_string(),
-            "recipient": recipient,
-            "memo": "",
-            "route": { "base_usdc": {
-                "nonce": "0",
-                "max_priority_fee_per_gas": "1000000",
-                "max_fee_per_gas": "20000000",
-                "gas_limit": "100000",
-            }},
-        }))
-        .max_gas()
-        .transact()
-        .await?)
-}
 
-pub async fn sign_count(e: &Env) -> Result<u32> {
-    Ok(e.mpc.view("sign_count").await?.json()?)
-}
 
-/// The exact bytes the vault asked to have signed.
-pub async fn payload_hex(e: &Env, index: u32) -> Result<Option<String>> {
-    Ok(e.mpc
-        .view("payload_hex")
-        .args_json(json!({ "index": index }))
-        .await?
-        .json()?)
-}
-
-pub async fn signed_path(e: &Env, index: u32) -> Result<Option<String>> {
-    Ok(e.mpc
-        .view("path_at")
-        .args_json(json!({ "index": index }))
-        .await?
-        .json()?)
-}
-
-pub async fn set_fail_signing(e: &Env, fail: bool) -> Result<()> {
-    e.mpc
-        .call("set_fail_signing")
-        .args_json(json!({ "fail": fail }))
-        .transact()
-        .await?
-        .into_result()?;
-    Ok(())
-}
 
 /// Sends `request_payment` with an EXPLICIT route value, as a raw JSON literal.
 ///
@@ -453,38 +384,3 @@ pub async fn pay_raw_route(
         .await?)
 }
 
-/// The gas ceiling `open_base_rail` sets, in wei (0.01 ETH).
-pub const FEE_CEILING_WEI: u128 = 10_000_000_000_000_000;
-
-/// A Base payment with caller-chosen fee fields, so a test can push on the gas
-/// ceiling rather than only on the budget tree.
-#[allow(clippy::too_many_arguments)]
-pub async fn pay_base_fees(
-    agent: &Account,
-    e: &Env,
-    request_id: &str,
-    amount: u128,
-    recipient: &str,
-    gas_limit: u64,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-) -> Result<near_workspaces::result::ExecutionFinalResult> {
-    Ok(agent
-        .call(e.vault.id(), "request_payment")
-        .args_json(json!({
-            "request_id": request_id,
-            "token": e.ft.id(),
-            "amount": amount.to_string(),
-            "recipient": recipient,
-            "memo": "",
-            "route": { "base_usdc": {
-                "nonce": "0",
-                "max_priority_fee_per_gas": max_priority_fee_per_gas.to_string(),
-                "max_fee_per_gas": max_fee_per_gas.to_string(),
-                "gas_limit": gas_limit.to_string(),
-            }},
-        }))
-        .max_gas()
-        .transact()
-        .await?)
-}

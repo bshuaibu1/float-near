@@ -1,44 +1,74 @@
 #!/usr/bin/env node
 /**
- * Recovers BLOCKED payment attempts from the chain.
+ * Deliberate BACKFILL of refused payments from the chain.
  *
- * Why this has to exist. A refused payment is deliberately NOT stored in
- * contract state — storing one would let an agent grow the vault's storage
- * bill by spamming rejects, which docs/KNOWN-TRADEOFFS.md §2 identifies as the
- * real griefing vector. So the contract emits a NEP-297 event and keeps
- * nothing. The adapter used to remember only the refusals it personally
- * witnessed, in memory, which meant the single most important thing this
- * product does — refusing a payment because a SHARED pool is empty — vanished
- * on restart and was invisible for any payment made by another client.
+ * The adapter follows the head automatically (see BlockedFollower), so this
+ * script is for the other case: reaching back over blocks that were produced
+ * before the adapter existed, or during an outage.
  *
- * The events are still on chain, inside receipt outcomes. This reads them
- * back. No indexer is involved: NearBlocks returns nothing for this testnet
- * account, so everything here comes from plain RPC and is reproducible by
- * anyone with the same endpoint.
+ * It imports the adapter's scanner rather than reimplementing it. There used
+ * to be two copies of the event-parsing logic, which is one copy too many: a
+ * change to the NEP-297 event shape would have broken one of them silently,
+ * and the one that breaks quietly is always the one that matters, because its
+ * output is an empty list that reads exactly like "no refusals happened".
  *
- * Cost control. A naive walk would query every chunk of every block. In
- * practice 1 chunk in 10 carries any transaction at all, and a chunk's
- * `tx_root` is the all-ones hash when it is empty, so empty chunks are skipped
- * without a second call. Each run is also bounded by --max-blocks so this can
- * never turn into an unbounded scan.
- *
- * Honesty about coverage. The output records the exact block range scanned.
- * A reader must be able to tell "no refusals happened" from "we have not
- * looked there yet" — those are the same empty list otherwise.
+ * Requires the adapter to be built:  npm run build -w @floatonnear/float-adapter
  *
  * Usage:
  *   node scripts/scan-blocked.mjs [--max-blocks 400] [--from <height>]
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
+import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
+
+const DIST = resolve("packages/float-adapter/dist/blocked-scan.js");
+if (!existsSync(DIST)) {
+  console.error(`Built scanner not found at ${DIST}`);
+  console.error("Build it first:  npm run build -w @floatonnear/float-adapter");
+  process.exit(1);
+}
+const { scanRange, mergeScan, emptyStore, createRpc } = await import(pathToFileURL(DIST).href);
 
 const RPC = process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com";
-const VAULT = process.env.NEAR_VAULT_CONTRACT ?? "v3.floatvault-12329.testnet";
-const STORE = process.env.BLOCKED_LOG ?? ".demo/blocked-log.json";
 
-/** A chunk with no transactions has this as its tx_root. */
-const EMPTY_TX_ROOT = "11111111111111111111111111111111";
+/**
+ * NO DEFAULT VAULT. This read `?? "v3.floatvault-12329.testnet"`, and that
+ * default is the root cause of a real data-integrity incident:
+ *
+ *   run with NEAR_VAULT_CONTRACT unset -> scans v3 -> writes v3's refusals to
+ *   the SHARED default path .demo/blocked-log.json -> the adapter, pointed at a
+ *   different vault, loads them -> six refusals from nodes 5..20 render on a
+ *   vault that has exactly one node.
+ *
+ * It compounded from there: the adapter merged and saved the file back under
+ * ITS OWN vault's name, so the records ended up labelled with a vault they did
+ * not come from — and a provenance check that compares that label is
+ * structurally unable to detect it.
+ *
+ * A default that silently points at someone else's data is not a convenience.
+ * Refuse, and make the caller say which vault they mean.
+ */
+const VAULT = process.env.NEAR_VAULT_CONTRACT;
+if (!VAULT) {
+  console.error("FATAL: NEAR_VAULT_CONTRACT is not set.");
+  console.error("  There is deliberately no default. The previous one pointed at");
+  console.error("  v3.floatvault-12329.testnet and wrote ITS refusals into the shared");
+  console.error("  log, which then rendered on a different vault's dashboard.");
+  console.error("");
+  console.error("  NEAR_VAULT_CONTRACT=<vault> node scripts/scan-blocked.mjs [--from N]");
+  process.exit(2);
+}
+
+/**
+ * PER-VAULT PATH BY DEFAULT. One shared file for every vault is what let the
+ * contamination spread in the first place. Putting the vault id in the
+ * filename makes a cross-vault read impossible rather than merely detectable,
+ * which is the difference between a guard and a design that cannot go wrong.
+ */
+const STORE =
+  process.env.BLOCKED_LOG ?? `.demo/blocked-log.${VAULT.replace(/[^a-z0-9._-]/gi, "_")}.json`;
 
 const argv = process.argv.slice(2);
 const argOf = (name, dflt) => {
@@ -47,35 +77,54 @@ const argOf = (name, dflt) => {
 };
 const MAX_BLOCKS = argOf("--max-blocks", 400);
 
-async function rpc(method, params) {
-  const r = await fetch(RPC, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  if (!r.ok) throw new Error(`RPC HTTP ${r.status}`);
-  const j = await r.json();
-  if (j.error) throw new Error(`${method}: ${JSON.stringify(j.error).slice(0, 160)}`);
-  return j.result;
-}
+// Pacing and backoff live in the shared scanner, so the follower and this
+// script throttle identically. A second copy here would drift.
+const rpc = createRpc(RPC, {
+  paceMs: Number(process.env.SCAN_PACE_MS ?? "40"),
+  onThrottle: (ms) => console.log(`  rate-limited — waiting ${ms}ms`),
+});
 
 function load() {
-  if (!existsSync(STORE)) return { vault: VAULT, scannedFrom: null, scannedTo: null, blocked: {} };
+  if (!existsSync(STORE)) return emptyStore(VAULT);
   try {
-    return JSON.parse(readFileSync(STORE, "utf8"));
+    const p = JSON.parse(readFileSync(STORE, "utf8"));
+    return {
+      vault: p.vault ?? VAULT,
+      scannedFrom: p.scannedFrom ?? null,
+      scannedTo: p.scannedTo ?? null,
+      holes: Array.isArray(p.holes) ? p.holes : [],
+      blocked: p.blocked ?? {},
+    };
   } catch {
-    return { vault: VAULT, scannedFrom: null, scannedTo: null, blocked: {} };
+    return emptyStore(VAULT);
   }
 }
-function save(s) {
-  mkdirSync(dirname(STORE), { recursive: true });
-  writeFileSync(STORE, JSON.stringify(s, null, 2) + "\n");
+
+// ---- Do not fight the adapter for the same file.
+//
+// The adapter follows the head and rewrites this store every few seconds.
+// Both sides do load -> modify -> save, so running them against one file is a
+// lost-update race: whichever saves last silently discards the other's work,
+// and the thing discarded is refusal records. The docstring above tells people
+// to run this WHILE the adapter is up, so this is the expected case, not an
+// exotic one.
+//
+// Detected by mtime rather than a lockfile: no stale-lock problem, and a
+// recently-written store is exactly the signal that something else owns it.
+if (existsSync(STORE)) {
+  const ageMs = Date.now() - statSync(STORE).mtimeMs;
+  if (ageMs < 30_000 && !argv.includes("--force")) {
+    console.error(`${STORE} was written ${Math.round(ageMs / 1000)}s ago — something is following it.`);
+    console.error("Running both against one file loses refusal records to a last-writer-wins race.");
+    console.error("Either stop the adapter, or scan into a separate file and merge:");
+    console.error(`  BLOCKED_LOG=.demo/backfill.json node scripts/scan-blocked.mjs --from <height>`);
+    console.error("Pass --force to override.");
+    process.exit(1);
+  }
 }
 
 const store = load();
 const head = (await rpc("block", { finality: "final" })).header.height;
-
-// Resume from the cursor; otherwise walk back MAX_BLOCKS from the head.
 const from = argOf("--from", store.scannedTo ? store.scannedTo + 1 : head - MAX_BLOCKS + 1);
 const to = Math.min(head, from + MAX_BLOCKS - 1);
 
@@ -85,70 +134,53 @@ if (from > to) {
 }
 console.log(`Scanning blocks ${from}..${to} (head ${head}) for refusals by ${VAULT}`);
 
-let blocksSeen = 0;
-let chunksFetched = 0;
-let chunksSkipped = 0;
-let txChecked = 0;
-let found = 0;
+// ---- Scan in batches, saving after each.
+//
+// A large backfill runs for well over an hour. Writing only at the end means
+// any failure in that window — a dropped connection, a rate limit, a stray
+// Ctrl-C — discards every block already read, and the retry starts from
+// nothing. Checkpointing also makes the cursor meaningful: a resumed run
+// picks up where this one stopped instead of redoing the work.
+const BATCH = 500;
+let next = store;
+let added = 0;
+const totals = { blocksSeen: 0, chunksFetched: 0, chunksSkipped: 0 };
 
-for (let h = from; h <= to; h++) {
-  let blk;
-  try {
-    blk = await rpc("block", { block_id: h });
-  } catch (e) {
-    // A garbage-collected or missing block is normal on a public endpoint and
-    // must not abort the scan — but it IS a hole in coverage, so say so.
-    console.log(`  block ${h}: unavailable (${String(e).slice(0, 60)})`);
-    continue;
-  }
-  blocksSeen++;
+mkdirSync(dirname(STORE), { recursive: true });
+for (let lo = from; lo <= to; lo += BATCH) {
+  const hi = Math.min(to, lo + BATCH - 1);
+  const res = await scanRange(rpc, VAULT, lo, hi);
+  const merged = mergeScan(next, lo, hi, res);
+  next = merged.store;
+  added += merged.added;
+  totals.blocksSeen += res.blocksSeen;
+  totals.chunksFetched += res.chunksFetched;
+  totals.chunksSkipped += res.chunksSkipped;
+  next.vault = VAULT;
 
-  for (const ch of blk.chunks) {
-    if (ch.tx_root === EMPTY_TX_ROOT) {
-      chunksSkipped++;
-      continue;
-    }
-    chunksFetched++;
-    const chunk = await rpc("chunk", { chunk_id: ch.chunk_hash });
-    for (const tx of chunk.transactions ?? []) {
-      if (tx.receiver_id !== VAULT) continue;
-      txChecked++;
-      const st = await rpc("EXPERIMENTAL_tx_status", [tx.hash, tx.signer_id]);
-      const logs = (st.receipts_outcome ?? []).flatMap((o) => o.outcome.logs ?? []);
-      for (const line of logs) {
-        if (!line.startsWith("EVENT_JSON:") || !line.includes("request_blocked")) continue;
-        let ev;
-        try {
-          ev = JSON.parse(line.slice("EVENT_JSON:".length));
-        } catch {
-          continue;
-        }
-        for (const d of ev.data ?? []) {
-          if (store.blocked[d.request_id]) continue;
-          store.blocked[d.request_id] = {
-            requestId: d.request_id,
-            nodeId: d.node_id,
-            reasonCode: d.reason_code,
-            agent: tx.signer_id,
-            txHash: tx.hash,
-            blockHeight: h,
-            blockTimestampNs: blk.header.timestamp,
-          };
-          found++;
-        }
-      }
-    }
-  }
+  // Atomic replace: a reader must never catch a half-written file.
+  const tmp = `${STORE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n");
+  renameSync(tmp, STORE);
+
+  const done = hi - from + 1;
+  const pct = Math.round((done / (to - from + 1)) * 100);
+  console.log(`  ...${hi} (${pct}%, ${added} refusal(s) so far)`);
 }
 
-store.vault = VAULT;
-store.scannedFrom = store.scannedFrom === null ? from : Math.min(store.scannedFrom, from);
-store.scannedTo = Math.max(store.scannedTo ?? 0, to);
-save(store);
-
 console.log(
-  `  blocks ${blocksSeen}  chunks fetched ${chunksFetched}, skipped empty ${chunksSkipped}  ` +
-    `vault txs ${txChecked}`,
+  `  blocks ${totals.blocksSeen}  chunks fetched ${totals.chunksFetched}, skipped empty ${totals.chunksSkipped}`,
 );
-console.log(`  NEW refusals recorded: ${found}  (total known ${Object.keys(store.blocked).length})`);
-console.log(`  coverage now blocks ${store.scannedFrom}..${store.scannedTo} -> ${STORE}`);
+console.log(`  NEW refusals recorded: ${added}  (total known ${Object.keys(next.blocked).length})`);
+if (next.holes.length) {
+  // Said loudly. A range containing unread blocks is not covered, and
+  // reporting it as covered turns "we did not look" into "nothing happened".
+  // Holes are RANGES, so they need formatting — joining them raw prints
+  // "[object Object]", which is how a gap report becomes unreadable noise.
+  const span = (h) => (h.from === h.to ? `${h.from}` : `${h.from}..${h.to}`);
+  const blocks = next.holes.reduce((n, h) => n + (h.to - h.from + 1), 0);
+  console.log(`  ${blocks} block(s) UNREAD across ${next.holes.length} gap(s):`);
+  for (const h of next.holes.slice(0, 8)) console.log(`      ${span(h)}`);
+  if (next.holes.length > 8) console.log(`      ... and ${next.holes.length - 8} more`);
+}
+console.log(`  coverage now blocks ${next.scannedFrom}..${next.scannedTo} -> ${STORE}`);

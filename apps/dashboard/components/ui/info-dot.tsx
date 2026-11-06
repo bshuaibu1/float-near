@@ -1,0 +1,119 @@
+"use client";
+
+/**
+ * A small circled "i" that reveals an explanation on click.
+ *
+ * WHY THIS EXISTS
+ *
+ * /agents needed to say why it has no "Add agent" button. Written as a
+ * paragraph under the heading it was three lines of prose competing with the
+ * thing the page is actually for, and you only ever read it once. The rule it
+ * came from: explanation that is worth having but not worth permanent space
+ * goes behind an affordance, and the affordance should be the same one every
+ * time so it is recognisable.
+ *
+ * DELIBERATELY CLICK, NOT HOVER
+ *
+ * A hover tooltip cannot be opened on a touch screen and vanishes the moment
+ * you move toward the text you are trying to read. Click-to-open survives
+ * both. The native `title` attribute has the same problems plus a ~1s delay
+ * and no styling, which is why it is not used here.
+ *
+ * ACCESSIBILITY, since a div with an onClick would have been shorter:
+ *   - a real <button>, so it is tabbable and fires on Enter/Space for free
+ *   - aria-expanded tells a screen reader the state, aria-label says what it
+ *     opens (the glyph alone announces as the letter "i")
+ *   - Escape closes and returns focus to the trigger, so keyboard users are
+ *     not stranded inside the panel
+ *   - the panel is aria-live=polite, because it appears after the click and a
+ *     screen reader would otherwise not know anything happened
+ */
+
+import { useEffect, useId, useRef, useState } from "react";
+import { CARD, FAINT, LINE, MUTED } from "@/lib/colors";
+
+export function InfoDot({
+  label,
+  children,
+  align = "start",
+}: {
+  /** What this explains, e.g. "why there is no Add agent button". */
+  label: string;
+  children: React.ReactNode;
+  align?: "start" | "end";
+}) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    // Both listeners live behind `if (!open)`, so nothing is attached while
+    // closed - a dot that is never clicked costs no global handlers, and a
+    // page may hold several.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      btnRef.current?.focus();
+    };
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+
+    document.addEventListener("keydown", onKey);
+    // `pointerdown`, not `click`: a click that starts inside the panel and
+    // ends outside it (selecting the text to copy an account id, say) fires
+    // `click` on the document and would close the panel mid-selection.
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [open]);
+
+  return (
+    <span ref={wrapRef} className="relative inline-flex align-middle">
+      <button
+        ref={btnRef}
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        aria-label={open ? `Hide: ${label}` : `Explain ${label}`}
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex size-[15px] items-center justify-center rounded-full border text-[10px] font-semibold leading-none transition-colors cursor-pointer"
+        style={{
+          borderColor: open ? MUTED : LINE,
+          color: open ? MUTED : FAINT,
+          background: CARD,
+        }}
+      >
+        i
+      </button>
+
+      {open && (
+        <span
+          id={panelId}
+          role="note"
+          aria-live="polite"
+          /**
+           * `font-normal tracking-normal` are NOT decoration. A dot placed in
+           * a heading puts this panel inside an <h2>, so weight and
+           * letter-spacing inherit: measured at 600/-0.55px before these were
+           * added, which rendered the explanation as tight bold prose. Any
+           * typographic property the trigger's container might set has to be
+           * reasserted here, because the dot is meant to be droppable
+           * anywhere.
+           */
+          className={`absolute top-[22px] z-20 block w-[330px] rounded-xl border px-4 py-3 text-left text-[12.5px] font-normal normal-case leading-5 tracking-normal shadow-sm ${
+            align === "end" ? "right-0" : "left-0"
+          }`}
+          style={{ background: CARD, borderColor: LINE, color: MUTED }}
+        >
+          {children}
+        </span>
+      )}
+    </span>
+  );
+}

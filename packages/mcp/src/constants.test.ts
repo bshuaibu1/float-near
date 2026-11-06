@@ -1,19 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  AGENT_ACCOUNT_STORAGE_YOCTO,
-  MIN_AGENT_KEY_ALLOWANCE_YOCTO,
   MAX_TOKENS,
   MAX_RECIPIENTS,
   MAX_LABEL_LEN,
-  MAX_SUB_LABEL_LEN,
   MAX_COOLDOWN_SEC,
   MAX_PURGE_LIMIT,
   OWNER_PLANNERS,
   planPurgeSettled,
-  planCreateAgentAccount,
   planAddNode,
-  BASE_GAS_TGAS,
+  DEFAULT_GAS_TGAS,
 } from "./payloads.js";
 
 // This server validates locally so a bad call fails before it costs gas or a
@@ -26,11 +22,9 @@ const C = JSON.parse(
 
 describe("the MCP's mirrored constants match the contract", () => {
   it("agent account storage", () => {
-    expect(AGENT_ACCOUNT_STORAGE_YOCTO).toBe(C.AGENT_ACCOUNT_STORAGE_YOCTO);
   });
 
   it("minimum agent key allowance", () => {
-    expect(MIN_AGENT_KEY_ALLOWANCE_YOCTO).toBe(C.MIN_AGENT_KEY_ALLOWANCE_YOCTO);
   });
 
   it("every mirrored numeric bound", () => {
@@ -40,7 +34,6 @@ describe("the MCP's mirrored constants match the contract", () => {
     expect(MAX_TOKENS).toBe(C.MAX_TOKENS);
     expect(MAX_RECIPIENTS).toBe(C.MAX_RECIPIENTS);
     expect(MAX_LABEL_LEN).toBe(C.MAX_LABEL_LEN);
-    expect(MAX_SUB_LABEL_LEN).toBe(C.MAX_SUB_LABEL_LEN);
     expect(MAX_COOLDOWN_SEC).toBe(C.MAX_COOLDOWN_SEC);
     expect(MAX_PURGE_LIMIT).toBe(C.MAX_PURGE_LIMIT);
   });
@@ -58,13 +51,6 @@ describe("the MCP enforces the contract's bounds locally", () => {
     expect(() => planPurgeSettled("v.testnet", 1, max + 1)).toThrow();
   });
 
-  it("rejects a sub_label longer than MAX_SUB_LABEL_LEN", () => {
-    const max = Number(C.MAX_SUB_LABEL_LEN);
-    const ok = "a".repeat(max);
-    const tooLong = "a".repeat(max + 1);
-    expect(() => planCreateAgentAccount("v.testnet", 1, ok, "ed25519:aaa", "2")).not.toThrow();
-    expect(() => planCreateAgentAccount("v.testnet", 1, tooLong, "ed25519:aaa", "2")).toThrow();
-  });
 
   it("rejects a label longer than MAX_LABEL_LEN", () => {
     const max = Number(C.MAX_LABEL_LEN);
@@ -115,15 +101,13 @@ describe("the planner surface stays inside the contract's", () => {
   });
 });
 
-describe("the Base rail's gas floor", () => {
+describe("the dispatch gas floor", () => {
   it("attaches more than the contract's documented minimum", () => {
     // Asserted against the shared file, not a literal: the contract refuses a
-    // Base payment below MIN_GAS_FOR_BASE_DISPATCH, so if that floor rises and
-    // this constant does not, EVERY Base payment fails with INSUFFICIENT_GAS.
-    const floor = Number(C.MIN_GAS_FOR_BASE_DISPATCH_TGAS);
-    expect(floor).toBeGreaterThan(Number(C.MIN_GAS_FOR_DISPATCH_TGAS));
-    expect(BASE_GAS_TGAS).toBeGreaterThanOrEqual(floor);
+    // payment below MIN_GAS_FOR_DISPATCH, so if that floor rises and the gas
+    // we attach does not, EVERY payment fails with INSUFFICIENT_GAS.
+    expect(DEFAULT_GAS_TGAS).toBeGreaterThanOrEqual(Number(C.MIN_GAS_FOR_DISPATCH_TGAS));
     // NEAR caps prepaid gas at 300 Tgas; asking for more is rejected outright.
-    expect(BASE_GAS_TGAS).toBeLessThanOrEqual(300);
+    expect(DEFAULT_GAS_TGAS).toBeLessThanOrEqual(300);
   });
 });

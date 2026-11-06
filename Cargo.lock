@@ -823,6 +823,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
  "signature",
 ]
 
@@ -835,8 +836,10 @@ dependencies = [
  "curve25519-dalek",
  "ed25519",
  "rand_core 0.6.4",
+ "serde",
  "sha2 0.10.9",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -898,6 +901,13 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "factory"
+version = "0.1.0"
+dependencies = [
+ "near-sdk",
 ]
 
 [[package]]
@@ -1526,6 +1536,8 @@ name = "integration-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "ed25519-dalek",
  "futures",
  "near-workspaces",
  "serde",
@@ -1847,13 +1859,6 @@ dependencies = [
 
 [[package]]
 name = "mock-ft"
-version = "0.1.0"
-dependencies = [
- "near-sdk",
-]
-
-[[package]]
-name = "mock-mpc"
 version = "0.1.0"
 dependencies = [
  "near-sdk",
@@ -4080,7 +4085,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 name = "vault"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "near-sdk",
+ "rand_core 0.6.4",
 ]
 
 [[package]]

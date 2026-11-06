@@ -2,7 +2,8 @@
  * The ONLY place in this server that touches a key.
  *
  * It signs exactly one method — `request_payment` — with the restricted key
- * issued by `create_agent_account`. That key is cryptographically incapable of
+ * of a VIRTUAL AGENT, installed as a NEP-611 gas key on the vault and bound
+ * with `bind_virtual_agent`. That key is cryptographically incapable of
  * doing anything else: its `receiver_id` is the vault, its `method_names` is
  * `["request_payment"]`, and a NEAR function-call key cannot attach a deposit
  * at all. So the worst a compromised copy of this server can do is make
@@ -20,45 +21,64 @@ import { Account, JsonRpcProvider, KeyPair, KeyPairSigner } from "near-api-js";
 /** Must match AGENT_ALLOWED_METHOD in the contract; pinned by constants.test.ts. */
 const ALLOWED_METHOD = "request_payment";
 
-/** Fee and ordering fields for a Base-routed payment. Decimal strings. */
-export interface BaseRouteFields {
-  nonce: string;
-  maxFeePerGas: string;
-  maxPriorityFeePerGas: string;
-  gasLimit: string;
-}
-
+/**
+ * Fee and ordering fields for a Base-routed payment. Decimal strings.
+ *
+ * There is no `nonce`. The CONTRACT allocates it, because it is part of the
+ * signed payload and a caller cannot choose one safely: two payments in the
+ * same block read the same chain state, sign for the same nonce, and one is
+ * rejected AFTER its NEAR reservation has been consumed. The contract is the
+ * only place that sees every Base signature in a serial order.
+ */
 /**
  * The contract's `route` argument.
  *
- * Note what is NOT here: no payload, no destination, no amount. The contract
- * builds the ERC-20 calldata and the EIP-1559 transaction itself from the
- * amount and recipient it authorized, and signs the hash of its own
- * construction. These fields are fees and ordering only — a caller who lies
- * about them wastes its own gas and cannot move the payment. If this interface
- * ever grows a `payload` field, that property is gone.
+ * Note what is NOT here: no payload, no destination, no amount. For a
+ * cross-chain payment the contract transfers to the quote's deposit address
+ * and checks the allowlist against the final payee; nothing a caller passes
+ * can redirect where value ends up. If this type ever grows a `payload`
+ * field, that property is gone.
+ *
+ * A cross-chain payment is an ordinary NEP-141 transfer to a solver's
+ * deposit address — no derived address, no ETH to fund, no nonce.
  */
-export type RouteArg = "near_direct" | { base_usdc: Record<string, string> };
+export type RouteArg =
+  | "near_direct"
+  | { intents: { deposit_address: string; quote_deadline_ns: string; signature: string } };
 
-export function buildRoute(rail: "near" | "base", base?: BaseRouteFields): RouteArg {
+export function buildRoute(rail: "near"): RouteArg;
+export function buildRoute(rail: "intents", intents: IntentsRouteFields): RouteArg;
+export function buildRoute(rail: "near" | "intents", intents?: IntentsRouteFields): RouteArg {
   if (rail === "near") return "near_direct";
-  if (!base) {
-    throw new Error("rail 'base' requires nonce, maxFeePerGas, maxPriorityFeePerGas and gasLimit");
+  if (!intents) {
+    throw new Error("rail 'intents' requires depositAddress, quoteDeadlineNs and signature");
   }
-  for (const [k, v] of Object.entries(base)) {
-    // Decimal strings, because U128/U64 cross the ABI as strings and a JSON
-    // number would lose precision above 2^53. Rejected here rather than
-    // on-chain so a typo costs nothing.
-    if (!/^[0-9]+$/.test(v)) throw new Error(`${k} must be a decimal string, got ${v}`);
+  if (!/^[0-9]+$/.test(intents.quoteDeadlineNs)) {
+    // U64 crosses the ABI as a decimal string; a JSON number loses precision
+    // above 2^53 and a nanosecond deadline is far past that.
+    throw new Error(`quoteDeadlineNs must be a decimal string, got ${intents.quoteDeadlineNs}`);
+  }
+  if (!intents.depositAddress) {
+    // An empty deposit address is what a DRY quote returns. Sending one would
+    // transfer real funds to "", which the token contract rejects only after
+    // the vault has already reserved the budget.
+    throw new Error("depositAddress is empty — a dry quote cannot be paid");
   }
   return {
-    base_usdc: {
-      nonce: base.nonce,
-      max_priority_fee_per_gas: base.maxPriorityFeePerGas,
-      max_fee_per_gas: base.maxFeePerGas,
-      gas_limit: base.gasLimit,
+    intents: {
+      deposit_address: intents.depositAddress,
+      quote_deadline_ns: intents.quoteDeadlineNs,
+      signature: intents.signature,
     },
   };
+}
+
+/** Fields of a cross-chain route, all produced by the quote signer. */
+export interface IntentsRouteFields {
+  depositAddress: string;
+  quoteDeadlineNs: string;
+  /** base64 ed25519 over borsh(QuoteBinding). See quote.ts. */
+  signature: string;
 }
 
 export interface PayArgs {

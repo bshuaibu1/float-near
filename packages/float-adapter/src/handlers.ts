@@ -36,6 +36,12 @@ export interface AdapterConfig {
   token: string;
   decimals: number;
   /**
+   * The vault account. Needed to enumerate VIRTUAL agents, whose keys live on
+   * the vault itself. Optional so a caller that only wants account-bound
+   * agents still works rather than being forced to supply it.
+   */
+  vault?: string;
+  /**
    * Base deliveries, keyed by request id, as the relayer recorded them.
    *
    * OFF-CHAIN ON PURPOSE. The NEAR budget already moved when the vault signed;
@@ -67,7 +73,12 @@ export interface AdapterConfig {
    * refusals happened" and "we have not looked there" render identically —
    * which is the confusion this feature exists to remove.
    */
-  blockedScan?: { from: number; to: number } | null;
+  blockedScan?: {
+    from: number;
+    to: number;
+    /** Spans inside from..to that were never read. Unknown, not empty. */
+    holes?: Array<{ from: number; to: number }>;
+  } | null;
 }
 
 /** One refusal, as recovered from a receipt outcome. */
@@ -184,15 +195,6 @@ export interface VaultInfo {
    * never arrived. Null when the token contract cannot be read.
    */
   vaultTokenBalance: string | null;
-  /** Null means the cross-chain rail is CLOSED. */
-  baseRail: {
-    mpcContract: string;
-    usdcAddress: string;
-    chainId: number;
-    derivationPath: string;
-    domainId: number;
-    maxTxFeeWei: string;
-  } | null;
 }
 
 /**
@@ -204,16 +206,6 @@ export function explorerBaseFor(network: string): string {
   return network === "mainnet" || network === "near"
     ? "https://nearblocks.io"
     : "https://testnet.nearblocks.io";
-}
-
-/** `get_base_config` as the contract returns it. */
-interface RawBaseConfig {
-  mpc_contract: string;
-  usdc_address: string;
-  chain_id: number;
-  derivation_path: string;
-  domain_id: number;
-  max_tx_fee_wei: string;
 }
 
 /** A view against an arbitrary contract — the token, not the vault. */
@@ -228,20 +220,17 @@ export async function getVaultInfo(
   cfg: AdapterConfig,
   viewOn: ViewOnFn,
 ): Promise<VaultInfo> {
-  const [c, b] = await Promise.all([
-    view<{
-      owner: string;
-      vault_id: string;
-      network: string;
-      paused: boolean;
-      clock_mode: string;
-      strict_allocation: boolean;
-    }>("get_config", {}),
-    // A vault deployed before the Base rail existed has no such method.
-    // Reporting the rail as closed is the honest reading of that: nothing can
-    // be signed on it either way.
-    view<RawBaseConfig | null>("get_base_config", {}).catch(() => null),
-  ]);
+  // `get_base_config` used to be read here alongside `get_config`. The
+  // MPC/Base rail and its config were removed from the contract on
+  // 2026-10-28, so there is no method left to call and no rail to report.
+  const c = await view<{
+    owner: string;
+    vault_id: string;
+    network: string;
+    paused: boolean;
+    clock_mode: string;
+    strict_allocation: boolean;
+  }>("get_config", {});
 
   // Read off the TOKEN contract, not the vault — so it is the real balance and
   // not an echo of the vault's own bookkeeping. Null rather than "0" on
@@ -262,16 +251,6 @@ export async function getVaultInfo(
     clockMode: c.clock_mode,
     strictAllocation: c.strict_allocation,
     vaultTokenBalance,
-    baseRail: b
-      ? {
-          mpcContract: b.mpc_contract,
-          usdcAddress: b.usdc_address,
-          chainId: b.chain_id,
-          derivationPath: b.derivation_path,
-          domainId: b.domain_id,
-          maxTxFeeWei: b.max_tx_fee_wei,
-        }
-      : null,
   };
 }
 
@@ -282,12 +261,20 @@ export interface AgentKeyView {
   frozen: boolean;
   keys: {
     publicKey: string;
-    /** True only if the key really is a function-call key. */
+    /** True if the key names specific methods — a function-call OR gas key. */
     restricted: boolean;
     receiverId: string | null;
     methodNames: string[];
     allowanceYocto: string | null;
+    /** NEP-611 gas keys only. For these the balance IS the spending cap. */
+    gasBalanceYocto: string | null;
   }[];
+  /**
+   * True for a VIRTUAL agent: a gas key on the vault rather than a bound
+   * account. `accountId` is then the vault itself, which is what "virtual"
+   * means — there is no separate account.
+   */
+  virtual?: boolean;
   /** Set when the key list could not be read, so the UI can say so. */
   error?: string;
 }
@@ -298,7 +285,20 @@ export type KeyFn = (accountId: string) => Promise<
     access_key: {
       permission:
         | "FullAccess"
-        | { FunctionCall: { allowance: string | null; receiver_id: string; method_names: string[] } };
+        | { FunctionCall: { allowance: string | null; receiver_id: string; method_names: string[] } }
+        // NEP-611. A DISTINCT variant, not a FunctionCall with extra fields —
+        // reading `perm.FunctionCall` finds nothing here and reports a
+        // restricted key as unrestricted, the most misleading thing this page
+        // could say. `allowance` is null by design: the BALANCE is the cap.
+        | {
+            GasKeyFunctionCall: {
+              allowance: string | null;
+              balance: string;
+              receiver_id: string;
+              method_names: string[];
+              num_nonces?: number;
+            };
+          };
     };
   }[]
 >;
@@ -313,46 +313,230 @@ export type KeyFn = (accountId: string) => Promise<
  * trying to rule out. `restricted` here is computed from the permission NEAR
  * reports, and a FullAccess key makes it false.
  */
+/** What `coverageNote` returns, so a UI renders a fact rather than composing one. */
+export interface CoverageNote {
+  /** False when no scan has ever run. NOT the same as "no refusals". */
+  scanned: boolean;
+  /** Blocks inside the claimed range that were never actually read. */
+  unreadBlocks: number;
+  /** A sentence safe to render verbatim. */
+  text: string;
+}
+
+/**
+ * State what the refusal history actually covers, in words.
+ *
+ * `blockedCoverage` has been on /v1/dashboard for a while, computed behind a
+ * comment reading "A UI that shows 0 blocked without this cannot distinguish
+ * an honest zero from an unscanned range" — and no page rendered it. So the
+ * activity page showed four payments and zero refusals with nothing saying
+ * that 95% of the vault's blocks had never been read.
+ *
+ * The sentence is built HERE, not in JSX, because this module owns the
+ * distinction and has the tests. A formatter duplicated in a component is one
+ * that drifts, and the direction it drifts is always toward claiming more
+ * coverage than exists.
+ *
+ * Deliberately NOT expressed as a percentage. That would need the vault's
+ * creation height and the chain head, neither of which this handler has, and
+ * an invented denominator is exactly the plausible-wrong-number this file
+ * warns about. The range and the block count are facts; a ratio would not be.
+ */
+export function coverageNote(
+  scan: AdapterConfig["blockedScan"] | null | undefined,
+): CoverageNote {
+  if (!scan) {
+    return {
+      scanned: false,
+      unreadBlocks: 0,
+      text:
+        "Refusal history has not been scanned for this vault, so refusals are " +
+        "UNKNOWN rather than absent. A refusal is never stored on chain — only " +
+        "emitted as an event — so nothing can show them until " +
+        "scripts/scan-blocked.mjs has read the blocks.",
+    };
+  }
+
+  const unreadBlocks = (scan.holes ?? []).reduce((n, h) => n + (h.to - h.from + 1), 0);
+  const span = scan.to - scan.from + 1;
+  const n = (x: number) => x.toLocaleString("en-US");
+
+  // HEIGHTS ARE NOT FORMATTED. A block height is an identifier, not a
+  // quantity: "275,882,255" cannot be pasted into an explorer or an RPC call,
+  // and a reader checking the claim is exactly who this sentence is for. The
+  // COUNT is a quantity, so it keeps its separators.
+  let text =
+    `Refusals have been read from blocks ${scan.from}–${scan.to} ` +
+    `(${n(span)} blocks). Outside that range they are UNKNOWN, not absent.`;
+  if (unreadBlocks > 0) {
+    text +=
+      ` ${n(unreadBlocks)} block${unreadBlocks === 1 ? "" : "s"} inside that range ` +
+      `could not be read and remain unread.`;
+  }
+  return { scanned: true, unreadBlocks, text };
+}
+
+/** One access key, flattened, whichever permission variant NEAR reported. */
+function describeKey(k: Awaited<ReturnType<KeyFn>>[number]): AgentKeyView["keys"][number] {
+  const p = k.access_key.permission;
+  const obj = typeof p === "object" ? p : null;
+  // BOTH variants. A gas key is a `GasKeyFunctionCall`, NOT a `FunctionCall`
+  // with extra fields, so a check for the latter alone finds nothing on it and
+  // falls through to `restricted: false` — reporting a key that can call one
+  // method on one contract as if it could do anything.
+  const fc = obj && "FunctionCall" in obj ? obj.FunctionCall : null;
+  const gk = obj && "GasKeyFunctionCall" in obj ? obj.GasKeyFunctionCall : null;
+  const named = fc ?? gk;
+  return {
+    publicKey: k.public_key,
+    restricted: named !== null,
+    receiverId: named?.receiver_id ?? null,
+    methodNames: named?.method_names ?? [],
+    allowanceYocto: named?.allowance ?? null,
+    gasBalanceYocto: gk?.balance ?? null,
+  };
+}
+
+/**
+ * Every agent that may spend, with its keys read FROM THE CHAIN.
+ *
+ * The restriction is the product's central security claim, so the page that
+ * states it must not state it from a constant. A hardcoded "restricted to
+ * request_payment" would keep rendering happily if someone added a full-access
+ * key to an agent — exactly the regression a reader of that page is trying to
+ * rule out. `restricted` is computed from the permission NEAR reports.
+ *
+ * TWO RAILS, and this used to see only one:
+ *
+ *   ACCOUNT  `bind_agent` sets `node.account`, and the keys live on that
+ *            account. Kept: it binds an account that already exists and whose
+ *            owner already controls it, so it strands nothing.
+ *
+ *   VIRTUAL  `bind_virtual_agent` maps a public key to a node and leaves
+ *            `node.account` as None — deliberately, because that field means
+ *            "a real sub-account is bound here" and a virtual agent is the
+ *            absence of one. The key is a NEP-611 gas key ON THE VAULT.
+ *
+ * This filtered on `n.account` alone. Once sub-accounts were retired that is
+ * null on every node of every new vault, so the page rendered an EMPTY LIST
+ * for a correctly configured vault — which reads as "nothing is authorised
+ * here", the exact inversion the `error` field exists to prevent elsewhere.
+ *
+ * There is no view that lists bound keys, only `get_virtual_agent_node(pk)`.
+ * So the enumeration runs the other way: take the vault's own access keys and
+ * ask the contract which of them are bound. That also means the owner's
+ * full-access key — which the factory now installs — is correctly excluded,
+ * because it is not bound to any node.
+ */
 export async function getAgentKeys(
   view: ViewFn,
   keys: KeyFn,
-  _cfg: AdapterConfig,
+  cfg: AdapterConfig,
 ): Promise<AgentKeyView[]> {
   const tree = await view<VaultNode[]>("get_tree", {});
-  const bound = tree.filter((n) => n.account);
+  const byId = new Map(tree.map((n) => [n.id, n]));
 
-  return Promise.all(
-    bound.map(async (n): Promise<AgentKeyView> => {
-      const base = {
-        accountId: n.account as string,
-        nodeId: n.id,
-        label: n.label,
-        frozen: n.frozen,
-      };
+  const accountRows = await Promise.all(
+    tree
+      .filter((n) => n.account)
+      .map(async (n): Promise<AgentKeyView> => {
+        const base = { accountId: n.account as string, nodeId: n.id, label: n.label, frozen: n.frozen };
+        try {
+          return { ...base, keys: (await keys(n.account as string)).map(describeKey) };
+        } catch (e) {
+          // An unreadable key list is reported, never silently rendered as "no
+          // keys" — that would read as "nothing is authorised here", the
+          // opposite of unknown.
+          return { ...base, keys: [], error: e instanceof Error ? e.message : String(e) };
+        }
+      }),
+  );
+
+  // Without a vault id there is nothing to enumerate. Degrade to account-only
+  // rather than guessing an account name.
+  if (!cfg.vault) return accountRows;
+
+  let onVault: Awaited<ReturnType<KeyFn>>;
+  try {
+    onVault = await keys(cfg.vault);
+  } catch (e) {
+    return [
+      ...accountRows,
+      {
+        accountId: cfg.vault,
+        nodeId: -1,
+        label: "virtual agents",
+        frozen: false,
+        keys: [],
+        virtual: true,
+        error: e instanceof Error ? e.message : String(e),
+      },
+    ];
+  }
+
+  // Ask the contract which keys are bound. Concurrent: independent lookups.
+  const bindings = await Promise.all(
+    onVault.map(async (k) => {
       try {
-        const list = await keys(n.account as string);
         return {
-          ...base,
-          keys: list.map((k) => {
-            const p = k.access_key.permission;
-            const fc = typeof p === "object" && "FunctionCall" in p ? p.FunctionCall : null;
-            return {
-              publicKey: k.public_key,
-              restricted: fc !== null,
-              receiverId: fc?.receiver_id ?? null,
-              methodNames: fc?.method_names ?? [],
-              allowanceYocto: fc?.allowance ?? null,
-            };
-          }),
+          key: k,
+          nodeId: await view<number | null>("get_virtual_agent_node", { public_key: k.public_key }),
+          error: null as string | null,
         };
       } catch (e) {
-        // An unreadable key list is reported, never silently rendered as "no
-        // keys" — that would read as "nothing is authorised here", the
-        // opposite of unknown.
-        return { ...base, keys: [], error: e instanceof Error ? e.message : String(e) };
+        return { key: k, nodeId: null, error: e instanceof Error ? e.message : String(e) };
       }
     }),
   );
+
+  // A FAILED LOOKUP IS NOT "NOT AN AGENT". This first used
+  // `.catch(() => null)`, collapsing an RPC error into the same value as a
+  // genuine "not bound" — so a rate-limited chain renders "no virtual agents"
+  // for a vault that has them. That is the exact absent-versus-unreadable
+  // inversion the `error` field above exists to prevent, reintroduced while
+  // fixing the same class of bug. Surface it instead.
+  const unreadable = bindings.filter((b) => b.error !== null);
+  const lookupError = unreadable.length
+    ? `${unreadable.length} of ${bindings.length} key bindings could not be read: ${unreadable[0]!.error}`
+    : null;
+
+  // Group by node: MANY-TO-ONE is the point of virtual agents — several keys
+  // may share one node, so a swarm draws on a shared budget instead of
+  // consuming one of the 64 MAX_NODES per member.
+  const byNode = new Map<number, Awaited<ReturnType<KeyFn>>>();
+  for (const b of bindings) {
+    if (b.nodeId === null || b.nodeId === undefined) continue;
+    const list = byNode.get(b.nodeId) ?? [];
+    list.push(b.key);
+    byNode.set(b.nodeId, list);
+  }
+
+  const virtualRows: AgentKeyView[] = [...byNode.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([nodeId, list]) => ({
+      accountId: cfg.vault as string,
+      nodeId,
+      label: byId.get(nodeId)?.label ?? `node ${nodeId}`,
+      frozen: byId.get(nodeId)?.frozen ?? false,
+      keys: list.map(describeKey),
+      virtual: true,
+    }));
+
+  // If some bindings were unreadable, say so as its own row rather than
+  // letting a short list imply a complete one.
+  if (lookupError) {
+    virtualRows.push({
+      accountId: cfg.vault,
+      nodeId: -1,
+      label: "virtual agents",
+      frozen: false,
+      keys: [],
+      virtual: true,
+      error: lookupError,
+    });
+  }
+
+  return [...accountRows, ...virtualRows];
 }
 
 export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
@@ -393,6 +577,10 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
     // What the refusal history actually covers. A UI that shows "0 blocked"
     // without this cannot distinguish an honest zero from an unscanned range.
     blockedCoverage: cfg.blockedScan,
+    // The same fact as a sentence. Shipped alongside the raw range because the
+    // raw range sat here unrendered for weeks — a component had to compose the
+    // caveat itself, and none did. Giving it ready-made removes the excuse.
+    blockedCoverageNote: coverageNote(cfg.blockedScan),
     transactionStats: {
       total: onchain.length + cfg.blockedRing.length + Object.keys(cfg.chainBlocked ?? {}).length,
       // The Base rail's terminal states count as approved. "success" alone was

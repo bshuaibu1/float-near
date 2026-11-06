@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 /**
  * Drives the BUILT server over real stdio MCP.
@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SERVER = resolve(here, "../dist/server.js");
+const pkg = JSON.parse(readFileSync(resolve(here, "../package.json"), "utf8")) as { version: string };
 
 interface Tool {
   name: string;
@@ -25,6 +26,7 @@ interface Tool {
 }
 
 let tools: Tool[] = [];
+let serverInfo: { name?: string; version?: string } = {};
 
 async function listTools(): Promise<Tool[]> {
   const child = spawn(process.execPath, [SERVER], {
@@ -64,13 +66,20 @@ async function listTools(): Promise<Tool[]> {
       buf += String(d);
       for (const line of buf.split("\n")) {
         if (!line.trim()) continue;
-        let msg: { id?: number; result?: { tools?: Tool[] } };
+        let msg: {
+          id?: number;
+          result?: { tools?: Tool[]; serverInfo?: { name?: string; version?: string } };
+        };
         try {
           msg = JSON.parse(line);
         } catch {
           continue; // partial line; the next chunk completes it
         }
         if (msg.id === 1) {
+          // The handshake's own payload, which this harness used to discard.
+          // It is the only place the server's advertised identity appears, and
+          // it is what a user sees in their client's server list.
+          serverInfo = msg.result?.serverInfo ?? {};
           send({ jsonrpc: "2.0", method: "notifications/initialized" });
           send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
         }
@@ -101,10 +110,15 @@ describe("the MCP server starts and registers its tools", () => {
     expect(names).toEqual(
       [
         "vault_budget",
+        "vault_pending_approval",
+        "vault_plan_approve_payment",
+        "vault_plan_reject_payment",
+        "vault_plan_set_approval_threshold",
         "vault_config",
         "vault_pay",
         "vault_plan_add_node",
-        "vault_plan_create_agent",
+        "vault_plan_bind_agent",
+        "vault_plan_unbind_agent",
         "vault_plan_freeze",
         "vault_plan_pause",
         "vault_plan_purge",
@@ -113,6 +127,9 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_plan_set_recipients",
         "vault_request",
         "vault_tree",
+        "vault_create",
+        "vault_add_role",
+        "vault_roles",
       ].sort(),
     );
   });
@@ -126,15 +143,72 @@ describe("the MCP server starts and registers its tools", () => {
   // signs. Everything that changes policy emits an unsigned payload, which is
   // what keeps this server out of the trust path.
   it("exposes exactly ONE signing tool", () => {
-    const signing = tools.filter((t) => !t.name.startsWith("vault_plan_"));
-    const writes = signing.filter((t) => t.name === "vault_pay");
-    expect(writes).toHaveLength(1);
+    // This used to filter out vault_plan_* and then assert vault_pay appeared
+    // once -- which is satisfied by vault_pay EXISTING, and would pass just as
+    // happily with a second signing tool beside it. A weak assertion under a
+    // strong name, on the single most important property of this server.
+    //
+    // Now every tool must be classified. A new tool that is neither a known
+    // read nor a vault_plan_* fails here until someone decides, deliberately,
+    // which side of the trust boundary it belongs on.
+    const READS = new Set([
+      "vault_tree",
+      "vault_budget",
+      "vault_request",
+      "vault_config",
+      "vault_pending_approval",
+      // Lists which agents this server can sign AS, by role. Returns no key
+      // material — only role, node and account id.
+      "vault_roles",
+    ]);
+    // PROVISIONING: generates an AGENT's keypair locally, writes the secret
+    // to the keyring, and returns an UNSIGNED payload for the owner's wallet.
+    //
+    // A third category on purpose. These are not reads — they write key
+    // material to disk — and they are not `vault_plan_*`, because that prefix
+    // promises a pure function of its arguments. But they do not sign, and
+    // the key they create is an AGENT's: restricted to `request_payment` on
+    // one vault, bounded by the budget tree, unable to attach a deposit. The
+    // owner's key still never comes near this server, which is the property
+    // the whole boundary exists to protect.
+    //
+    // `vault_create` moved here from a set that described it as holding no
+    // key. That stopped being true when it gained `bindAgent`.
+    const PROVISIONING = new Set(["vault_create", "vault_add_role"]);
+    const unclassified = tools
+      .map((t) => t.name)
+      .filter(
+        (n) =>
+          n !== "vault_pay" &&
+          !n.startsWith("vault_plan_") &&
+          !READS.has(n) &&
+          !PROVISIONING.has(n),
+      );
+    expect(unclassified).toEqual([]);
+
+    // And the signer is present, exactly once.
+    expect(tools.filter((t) => t.name === "vault_pay")).toHaveLength(1);
   });
 
   it("describes every owner action as unsigned", () => {
     for (const t of tools.filter((t) => t.name.startsWith("vault_plan_"))) {
       expect(t.description ?? "").toMatch(/unsigned|not signed/i);
     }
+  });
+
+  // The name a user actually sees. A client lists its MCP servers by
+  // serverInfo.name, so this string -- not the package name, not the config
+  // key -- is the product's label in the one place the product is visible.
+  // It said "near-vault", which is the repo directory.
+  it("identifies itself as float", () => {
+    expect(serverInfo.name).toBe("float");
+  });
+
+  it("advertises the package's own version, not a hardcoded one that can drift", () => {
+    // server.ts carries the version as a literal, so it silently goes stale the
+    // first time package.json is bumped and a client then reports the wrong
+    // version forever. Pinned here so the bump has to move both.
+    expect(serverInfo.version).toBe(pkg.version);
   });
 
   it("offers no path to the test clock", () => {

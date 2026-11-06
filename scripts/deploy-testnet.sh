@@ -15,9 +15,31 @@
 # Usage:
 #   VAULT=vault.me.testnet OWNER=me.testnet bash scripts/deploy-testnet.sh
 #
+# On Windows, call git-bash explicitly and pass the variables INSIDE it:
+#   & 'C:\Program Files\Git\bin\bash.exe' -c "VAULT=... OWNER=... bash scripts/deploy-testnet.sh"
+#
 # Requires: near-cli-rs, cargo-near, and a key for VAULT in the legacy keychain.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+. scripts/lib/shell-env.sh
+
+# ---- Which shell is this? FIRST, before the VAULT/OWNER checks.
+#
+# Run under WSL from PowerShell the visible symptom is "set VAULT", because WSL
+# does not inherit $env:VAULT — which reads as a usage mistake and sends you
+# looking at the wrong thing. See scripts/lib/shell-env.sh for the measurements.
+SHELL_KIND="$(shell_kind "$(uname -s)" "$(cat /proc/sys/kernel/osrelease 2>/dev/null || true)")"
+if [ "$(wsl_verdict "$SHELL_KIND" "$(pwd)" "${ALLOW_WSL:-0}")" = "trap" ]; then
+  echo "FATAL: this is WSL's bash, working on a Windows path ($(pwd))." >&2
+  echo "  In PowerShell, plain 'bash' is WSL, not git-bash: cargo-near is absent" >&2
+  echo "  there and \$env:VAULT is not inherited. Use git-bash and set the" >&2
+  echo "  variables inside it:" >&2
+  echo '    & '"'"'C:\Program Files\Git\bin\bash.exe'"'"' -c "VAULT=<v> OWNER=<o> bash scripts/deploy-testnet.sh"' >&2
+  echo "  If you really do mean to build inside WSL, re-run with ALLOW_WSL=1." >&2
+  exit 1
+fi
+echo "==> shell: $SHELL_KIND"
 
 : "${VAULT:?set VAULT to the account the vault contract will live on}"
 : "${OWNER:?set OWNER to the account that will own the vault}"
@@ -34,7 +56,37 @@ command -v cargo-near >/dev/null || {
 }
 
 echo "==> building vault with --no-default-features (production clock)"
-( cd contracts/vault && cargo near build non-reproducible-wasm --no-default-features )
+# cargo-near generates the ABI by compiling the crate NATIVELY as a cdylib. On
+# Windows MSVC that link fails with ~52 unresolved externals (`panic_utf8`,
+# `promise_batch_create`, ...): near-sdk declares the host functions as externs
+# that only exist inside the NEAR runtime, and unlike ld, link.exe refuses to
+# emit a DLL with undefined symbols. There is no Windows workaround, so the ABI
+# step is skipped AUTOMATICALLY on git-bash — it used to be opt-out via
+# NO_ABI=1, which is a flag you learn to set only after the build has failed,
+# and that cost a cycle on the 2026-10-31 mainnet upgrade with this very comment
+# already in the repo.
+#
+# Not unconditional: on WSL/Linux the native target is Linux, link.exe is not
+# involved, and the ABI step works. NO_ABI=1/0 override in both directions.
+#
+# What skipping costs: only the ABI metadata embedded in the wasm. `--no-abi`
+# still runs the wasm build THROUGH cargo-near, so `--cfg near` is still set and
+# the real host functions are still linked -- which is the part that matters,
+# since a plain `cargo build --target wasm32-unknown-unknown` would silently
+# swap in near-sdk's pure-Rust fallbacks and destroy this contract's panic
+# reason codes. Verify rather than trust: the guard below reads clock_mode()
+# off-chain, and `grep -c panic_utf8 <wasm>` must be 1.
+ABI_FLAGS=()
+case "${NO_ABI:-auto}" in
+  1) ABI_DECISION="skip"; ABI_WHY="NO_ABI=1" ;;
+  0) ABI_DECISION="build"; ABI_WHY="NO_ABI=0" ;;
+  *) ABI_DECISION="$(abi_policy "$SHELL_KIND")"; ABI_WHY="auto, shell=$SHELL_KIND" ;;
+esac
+if [ "$ABI_DECISION" = "skip" ]; then
+  echo "    skipping ABI generation ($ABI_WHY) — link.exe cannot build the native cdylib"
+  ABI_FLAGS+=(--no-abi)
+fi
+( cd contracts/vault && cargo near build non-reproducible-wasm --no-default-features "${ABI_FLAGS[@]}" )
 
 # cargo-near writes to $CARGO_TARGET_DIR/near/<crate>/ when that is set, and to
 # ./target/near/<crate>/ when it is not. Checking only one of those is how an

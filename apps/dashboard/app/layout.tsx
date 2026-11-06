@@ -6,6 +6,7 @@ import "./globals.css";
 import { AppShell } from "@/components/app-shell";
 import { WalletProvider } from "@/components/wallet-provider";
 import { cn } from "@/lib/utils";
+import { CANVAS, INK } from "@/lib/colors";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
@@ -31,7 +32,7 @@ export default function RootLayout({
     >
       <body
         className="min-h-screen font-sans antialiased"
-        style={{ background: "#FBFBFA", color: "#111111" }}
+        style={{ background: CANVAS, color: INK }}
       >
         <WalletProvider>
           <AppShell>{children}</AppShell>
