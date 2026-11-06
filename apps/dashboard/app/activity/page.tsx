@@ -10,6 +10,7 @@ import {
   hasOwnerSession,
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
+import { usdc } from "@/lib/money";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 const FETCH_LIMIT = 200;
@@ -251,7 +252,7 @@ function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }
                 className="text-[13px] font-mono font-semibold"
                 style={{ color: isBlocked(item.status) ? WARN : INK }}
               >
-                {parseFloat(item.amount).toFixed(6)}{" "}
+                {usdc(parseFloat(item.amount))}{" "}
                 <span className="text-[11px] font-normal text-muted">USDC</span>
               </p>
             </div>
@@ -520,7 +521,7 @@ export default function Activity() {
           {payments.length > 0 && (
             <p className="text-[12px] font-mono text-muted">
               {rows.length - blockedCount} payment{rows.length - blockedCount !== 1 ? "s" : ""}&nbsp;·&nbsp;
-              {totalUsdc.toFixed(2)} USDC
+              {usdc(totalUsdc)} USDC
               {blockedCount > 0 && (
                 <span style={{ color: WARN }}>&nbsp;·&nbsp;{blockedCount} blocked</span>
               )}
@@ -734,7 +735,7 @@ export default function Activity() {
                            : DANGER,
                     }}
                   >
-                    {isBlocked(p.status) ? "–" : parseFloat(p.amount).toFixed(4)}
+                    {isBlocked(p.status) ? "–" : usdc(parseFloat(p.amount), "compact")}
                     {!isBlocked(p.status) && (
                       <span className="ml-1 text-[10px] text-faint">USDC</span>
                     )}
