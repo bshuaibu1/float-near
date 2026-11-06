@@ -7,6 +7,7 @@ import { Check, ChevronDown, Copy, ExternalLink, LogOut } from "lucide-react";
 import { useWallet, type WalletLoginMethod } from "@/components/wallet-provider";
 import { clearFloatOwnerSession, getFloatOwnerSession } from "@/lib/float-session";
 import { CARD, DANGER, INK, LINE, MUTED, SUCCESS } from "@/lib/colors";
+import { shortAccount } from "@/lib/short-account";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
@@ -28,6 +29,7 @@ type VaultInfo = {
 function shortVaultName(vaultId: string): string {
   return vaultId.split(".")[0] || vaultId;
 }
+
 
 // Registry tab hidden — planned as standalone registry.usefloat.xyz once
 // APIs are natively x402. Not linked until that work is complete.
@@ -115,11 +117,7 @@ export function TopNav() {
   }, []);
 
   const displayedAccount = walletAddress ?? ownerSessionLabel;
-  const truncatedAddress = displayedAccount
-    ? displayedAccount.includes("@")
-      ? displayedAccount
-      : `${displayedAccount.slice(0, 4)}...${displayedAccount.slice(-4)}`
-    : null;
+  const truncatedAddress = shortAccount(displayedAccount);
 
   useEffect(() => {
     if (!accountMenuOpen && !connectMenuOpen && !vaultMenuOpen) return;
@@ -199,7 +197,13 @@ export function TopNav() {
                 // explicitly "click for the full id", and the title attribute
                 // carries it on hover — whereas a clipped nav label just
                 // reads as broken.
-                className="flex max-w-[7.5rem] items-center gap-1.5 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-chip lg:max-w-[11rem]"
+                /* lg:max-w was 11rem (176px), which left the label 140px of
+                   the 144px it needs - clipping `work12-testnet-fleet` to
+                   `work12-testnet-fle…` for want of FOUR pixels, on a 1440px
+                   screen with room to spare. The cap is meant to stop a
+                   pathological label eating the toolbar, not to truncate the
+                   ordinary case; 14rem clears a ~180px label and still caps. */
+                className="flex max-w-[7.5rem] items-center gap-1.5 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-chip lg:max-w-[14rem]"
               >
                 {vault.paused ? (
                   <span

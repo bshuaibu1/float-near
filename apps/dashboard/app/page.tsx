@@ -12,6 +12,7 @@ import {
   hasOwnerSession,
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
+import { usd, usdc, percent } from "@/lib/money";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 // Includes the Base rail's two terminal states. "signed" means the vault
@@ -45,12 +46,17 @@ function computeDailySpend(activity: ActivityItem[]): { spend: number; label: st
 
 type ApiAgent = {
   agentId: string;
-  /** The tree label with its depth prefix, e.g. "   └─ r1". */
+  /** The node's own label, e.g. "marketing". No tree glyphs, no indentation. */
   displayName?: string | null;
   /** Depth in the budget tree, root 0. A number, not characters. */
   depth?: number;
   walletAddress: string;
-  createdAt: string;
+  /**
+   * NULL - the contract stores no creation time for a node. The adapter used
+   * to send epoch zero to satisfy a non-nullable type, so the first page to
+   * render this would have confidently displayed "Jan 1, 1970".
+   */
+  createdAt: string | null;
   lifetimeSpent?: string;
   lifetimePayments?: number;
   dailySpent?: string;
@@ -145,7 +151,7 @@ export default function Overview() {
   const totalSpent     = agents.reduce((s, a) => s + parseFloat(a.lifetimeSpent || "0"), 0);
   const txStats        = data?.transactionStats;
   const txCount        = txStats?.total ?? agents.reduce((s, a) => s + (a.lifetimePayments ?? 0), 0);
-  const avgTx          = txCount > 0 ? (totalSpent / txCount).toFixed(3) : "0.000";
+  const avgTx          = txCount > 0 ? totalSpent / txCount : 0;
   const txApproved     = txStats?.approved ?? activity.filter(r => APPROVED.includes(r.status?.toLowerCase())).length;
   const txBlocked      = txStats?.blocked ?? activity.filter(r => r.status?.toLowerCase() === "blocked").length;
   const txFailed       = txStats?.failed ?? activity.filter(r => r.status?.toLowerCase() === "failed").length;
@@ -195,7 +201,7 @@ export default function Overview() {
         <div className={card} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Active Agents</p>
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{dash(agents.length)}</span>
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{dash(agents.length)}</span>
           </div>
           <p className="text-[12px] text-muted">{dashboardAuthorized ? "linked to this account" : "connect account"}</p>
         </div>
@@ -203,7 +209,7 @@ export default function Overview() {
         <div className={card} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Total Spent</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{loading ? "—" : `$${totalSpent.toFixed(2)}`}</span>
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{loading ? "—" : usd(totalSpent)}</span>
           </div>
           <p className="text-[12px] text-muted">lifetime, all agents</p>
         </div>
@@ -211,7 +217,7 @@ export default function Overview() {
         <div className={card} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Transactions</p>
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{dash(txCount)}</span>
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{dash(txCount)}</span>
           </div>
           <p className="text-[12px] text-muted">
             {txCount > 0
@@ -224,7 +230,7 @@ export default function Overview() {
         <div className={card} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Avg TX Size</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight leading-none text-ink">{loading ? "—" : `$${avgTx}`}</span>
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{loading ? "—" : usd(avgTx)}</span>
           </div>
           <p className="text-[12px] text-muted">per payment</p>
         </div>
@@ -241,8 +247,8 @@ export default function Overview() {
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5 text-muted">How much can still be spent today</p>
           <p className="text-[12px] mb-4 text-faint">This is the shared limit for everyone. Agents draw from it.</p>
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-[36px] font-semibold tracking-tight leading-none text-ink">
-              {loading ? "—" : balance.toLocaleString([], { minimumFractionDigits:2, maximumFractionDigits:2 })}
+            <span className="text-[36px] font-semibold tracking-tight tabular-nums leading-none text-ink">
+              {loading ? "—" : usdc(balance)}
             </span>
             <span className="text-sm font-medium text-muted">USDC</span>
           </div>
@@ -258,11 +264,11 @@ export default function Overview() {
                   {/* tooltip */}
                   <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 pointer-events-none opacity-0 group-hover/chart:opacity-0 peer-hover:opacity-100 z-10">
                     <div className="px-2 py-1 rounded-md text-[10px] font-mono whitespace-nowrap" style={{ background:INK, color:"#fff" }}>
-                      {b.label}: ${b.spend.toFixed(3)}
+                      {b.label}: {usd(b.spend)}
                     </div>
                   </div>
                   <div
-                    title={`${b.label}: $${b.spend.toFixed(3)} USDC`}
+                    title={`${b.label}: ${usd(b.spend)}`}
                     className="peer w-full rounded-[2px] cursor-default"
                     style={{
                       height: mounted ? `${Math.max(b.pct, hasSpend ? 4 : 0)}%` : "0%",
@@ -403,12 +409,12 @@ export default function Overview() {
                       {a.displayName ?? a.agentId}
                     </span>
                   </div>
-                  <span className="text-[12px] font-mono text-right tabular-nums text-ink">${spentToday.toFixed(2)}</span>
+                  <span className="text-[12px] font-mono text-right tabular-nums text-ink">{usd(spentToday)}</span>
                   <div className="flex items-center gap-2">
                     <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: trk }}>
                       <div className="h-full rounded-full transition-all duration-500" style={{ width:`${pct}%`, background: col }}/>
                     </div>
-                    <span className="text-[11px] font-medium w-8 text-right shrink-0" style={{ color: col }}>{pct.toFixed(0)}%</span>
+                    <span className="text-[11px] font-medium w-8 text-right shrink-0" style={{ color: col }}>{percent(pct, { decimals: 0 })}</span>
                   </div>
                 </div>
               );

@@ -73,7 +73,21 @@ export interface DayUsage {
 export interface ApiAgent {
   agentId: string;
   walletAddress: string;
-  createdAt: string;
+  /**
+   * NULL, because the contract does not record one.
+   *
+   * `Node` has no timestamp field - id, parent, path, label, account,
+   * limits, cooldown, frozen, recipients, and nothing else. Only a payment
+   * REQUEST carries `created_at_ns`.
+   *
+   * This used to be `new Date(0).toISOString()`, which satisfied a
+   * non-nullable type by inventing "1970-01-01T00:00:00.000Z". Nothing
+   * rendered it yet, so it was not a visible bug - it was a loaded one: the
+   * first page to show an agent's age would have shipped "Created Jan 1,
+   * 1970" with complete confidence. A missing value has to BE missing, or
+   * the type system is helping you lie.
+   */
+  createdAt: string | null;
   status: "active" | "killed";
   /** The node's own label. NO tree glyphs, no indentation. */
   displayName: string;
@@ -87,6 +101,19 @@ export interface ApiAgent {
    * padding into prose. A consumer that wants indentation can multiply.
    */
   depth: number;
+  /**
+   * This node's parent id, or null at the root.
+   *
+   * WITHOUT IT THE DASHBOARD CANNOT CHECK THE CONTRACT'S OWN RULE. Under
+   * strict allocation `set_node_caps` refuses a cap below the sum already
+   * allocated to that node's children, at EVERY depth, not just root
+   * (lib.rs:854). The policies page could only evaluate that for root,
+   * because `depth` alone says a node sits at level 2 but not WHICH level-1
+   * node it hangs from. So shrinking a mid-tree budget below its children
+   * passed validation, and the owner signed and paid gas for a transaction
+   * the contract was always going to reject.
+   */
+  parent: number | null;
   lifetimeSpent?: string;
   lifetimePayments?: number;
   walletBalance?: string | null;
@@ -150,10 +177,11 @@ export function nodeToApiAgent(n: VaultNode, usage: DayUsage, decimals: number):
     // the thing this product exists to make visible.
     agentId: n.account ?? `node-${n.id}`,
     walletAddress: n.account ?? "",
-    createdAt: new Date(0).toISOString(),
+    createdAt: null,
     status: n.frozen ? "killed" : "active",
     displayName: n.label,
     depth: 0,
+    parent: n.parent,
     dailySpent: fromBaseUnits(used, decimals),
     dailyBudgetUsedPercent: cap > 0n ? Number((used * 100n) / cap) : 0,
     walletBalance: null, // the VAULT holds the tokens; an agent account holds none

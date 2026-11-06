@@ -17,6 +17,8 @@ import { signLink } from "@/lib/sign-link";
 import { useChainWatch, useToast } from "@/lib/use-chain-watch";
 import { Toast, WatchStatus } from "@/components/toast";
 import { DANGER, DANGER_BG, INK, NEUTRAL, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
+import { validatePolicyDraft } from "@/lib/policy-validation";
+import { computeChanges, type Change, type ChangeGroup } from "@/lib/policy-changes";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
@@ -87,14 +89,7 @@ type OwnerPlan = {
  * see two edits collapse into one transaction, because that is what the
  * contract does.
  */
-type ChangeGroup = "caps" | "cooldown" | "recipients";
-
-type Change = {
-  group: ChangeGroup;
-  label: string;
-  from: string;
-  to: string;
-};
+// ChangeGroup and Change now live beside the function that builds them.
 
 const GROUP_TITLE: Record<ChangeGroup, string> = {
   caps: "Spending limits",
@@ -257,45 +252,22 @@ export default function Policies() {
   );
 
   /** Every pending edit, grouped by the contract call that applies it. */
-  const changes = useMemo<Change[]>(() => {
-    if (!selected) return [];
-    const out: Change[] = [];
-    if (dailyCap !== base.daily) {
-      out.push({
-        group: "caps",
-        label: "Daily limit",
-        from: base.daily ? `${base.daily} USDC` : "unset",
-        to: `${dailyCap || "0"} USDC`,
-      });
-    }
-    if (perTxCap !== base.perTx) {
-      out.push({
-        group: "caps",
-        label: "Per payment",
-        from: base.perTx ? `${base.perTx} USDC` : "unset",
-        to: `${perTxCap || "0"} USDC`,
-      });
-    }
-    if (cooldown !== base.cooldown) {
-      out.push({
-        group: "cooldown",
-        label: "Cooldown",
-        from: cooldownLabel(base.cooldown),
-        to: cooldownLabel(cooldown),
-      });
-    }
-    if (recipientList.join("\n") !== base.ownRecipients.join("\n")) {
-      out.push({
-        group: "recipients",
-        label: "Who this agent may pay",
-        from: base.ownRecipients.length
-          ? base.ownRecipients.join(", ")
-          : "inherited from above",
-        to: recipientList.length ? recipientList.join(", ") : "inherit from above",
-      });
-    }
-    return out;
-  }, [selected, base, dailyCap, perTxCap, cooldown, recipientList]);
+  /**
+   * The diff the review panel shows, now in lib/policy-changes.ts.
+   *
+   * Extracted for the same reason as the validator: as a useMemo here it
+   * could not be tested, and it is the last description of an edit a user
+   * reads before signing.
+   */
+  const changes = useMemo<Change[]>(
+    () =>
+      computeChanges(
+        { dailyCap, perTxCap, cooldown, recipients: recipientList },
+        base,
+        Boolean(selected),
+      ),
+    [selected, base, dailyCap, perTxCap, cooldown, recipientList],
+  );
 
   const groups = useMemo(
     () => [...new Set(changes.map((c) => c.group))] as ChangeGroup[],
@@ -303,81 +275,29 @@ export default function Policies() {
   );
 
   /**
-   * The contract's OWN rules, checked here so a doomed transaction is never
-   * built, signed, and paid for.
+   * The contract's own rules, now in lib/policy-validation.ts.
    *
-   * Transcribed from `validate_limits` and `set_node_caps` in
-   * contracts/vault/src/lib.rs — not from intuition. The first draft of this
-   * function got it materially wrong: it called `per_tx > daily` a soft
-   * warning that "can never bind", on the assumption the contract would shrug
-   * and let the daily cap stop the payment first. It does not. Line 2310
-   * fails outright with `per_tx_cap must be <= daily_cap`, so the owner would
-   * have approved a transaction in their wallet, paid gas, and watched it
-   * revert.
-   *
-   * The allocation rules are only checked where they can be checked HONESTLY.
-   * Depth 1 implies the parent is root, so a sibling sum is exact there; at
-   * greater depth the page does not know the parent and says nothing rather
-   * than guessing.
+   * It moved so it could be TESTED. As a useMemo in this component it was
+   * unreachable by any test, and it had shipped a real defect: the downward
+   * allocation rule ran only at the root, so shrinking a mid-tree budget
+   * below its children passed here and reverted on chain - the owner paying
+   * gas for a transaction the contract was always going to reject.
    */
-  const issues = useMemo(() => {
-    const errs: string[] = [];
-    const warns: string[] = [];
-    const d = Number(dailyCap);
-    const p = Number(perTxCap);
-    const capsTouched = dailyCap !== base.daily || perTxCap !== base.perTx;
-
-    if (capsTouched) {
-      // validate_limits, line 2307: caps must be positive.
-      if (!Number.isFinite(d) || d <= 0) {
-        errs.push("Daily limit must be greater than zero - the contract rejects a zero cap.");
-      }
-      if (!Number.isFinite(p) || p <= 0) {
-        errs.push("Per payment must be greater than zero - the contract rejects a zero cap.");
-      }
-      // validate_limits, line 2310: per_tx_cap <= daily_cap.
-      if (Number.isFinite(d) && Number.isFinite(p) && d > 0 && p > 0 && p > d) {
-        errs.push(
-          `Per payment (${perTxCap}) cannot exceed the daily limit (${dailyCap}). The contract refuses this outright: "per_tx_cap must be <= daily_cap".`,
-        );
-      }
-    }
-
-    // set_node_caps allocation rules, only under strict_allocation.
-    if (capsTouched && info?.strictAllocation && selected && Number.isFinite(d) && d > 0) {
-      const depth = (selected.depth ?? 0);
-      const capOf = (a: ApiAgent) => Number(a.policy?.dailyBudget ?? 0) || 0;
-      const childrenOfRoot = agents.filter((a) => (a.depth ?? 0) === 1);
-
-      if (depth === 0) {
-        // "cap is below the sum already allocated to children" (line 855).
-        const allocated = childrenOfRoot.reduce((s, a) => s + capOf(a), 0);
-        if (d < allocated) {
-          errs.push(
-            `Strict allocation is on, and ${allocated} is already allocated to agents beneath the master. A master cap of ${dailyCap} is below that, which the contract rejects.`,
-          );
-        }
-      } else if (depth === 1 && rootCap > 0) {
-        // "sum of child caps would exceed the parent cap" (line 876).
-        const others = childrenOfRoot
-          .filter((a) => a.agentId !== selected.agentId)
-          .reduce((s, a) => s + capOf(a), 0);
-        if (others + d > rootCap) {
-          errs.push(
-            `Strict allocation is on. ${others} is allocated to the other agents, so ${dailyCap} here would take the total to ${
-              others + d
-            }, above the master's ${rootCap}. The contract rejects this.`,
-          );
-        }
-      }
-    }
-
-    const dupes = recipientList.filter((l, i) => recipientList.indexOf(l) !== i);
-    if (dupes.length) errs.push(`Duplicate payee: ${dupes[0]}`);
-    if (info?.vaultId && recipientList.includes(info.vaultId)) errs.push("A vault cannot pay itself.");
-    if (recipientList.length > 32) errs.push("At most 32 payees - the contract rejects more.");
-    return { errs, warns };
-  }, [dailyCap, perTxCap, base, recipientList, info, selected, agents, rootCap]);
+  const issues = useMemo(
+    () =>
+      validatePolicyDraft({
+        dailyCap,
+        perTxCap,
+        base,
+        selected,
+        all: agents,
+        recipients: recipientList,
+        strictAllocation: Boolean(info?.strictAllocation),
+        vaultId: info?.vaultId ?? null,
+        nodeIdOf: (n) => nodeIdOf(n as ApiAgent, agents),
+      }),
+    [dailyCap, perTxCap, base, recipientList, info, selected, agents],
+  );
 
   const postPlan = useCallback(
     async (action: string, extra: Record<string, unknown>) => {
@@ -672,7 +592,7 @@ export default function Policies() {
                         : undefined
                     }
                   >
-                    <NumInput value={dailyCap} onChange={setDailyCap} unit="USDC" />
+                    <NumInput value={dailyCap} onChange={setDailyCap} unit="USDC" label="Daily limit" />
                   </PolicyRow>
 
                   <PolicyRow
@@ -680,7 +600,7 @@ export default function Policies() {
                     hint="Largest single payment."
                     changed={perTxCap !== base.perTx}
                   >
-                    <NumInput value={perTxCap} onChange={setPerTxCap} unit="USDC" />
+                    <NumInput value={perTxCap} onChange={setPerTxCap} unit="USDC" label="Per payment" />
                   </PolicyRow>
 
                   <PolicyRow
@@ -709,6 +629,7 @@ export default function Policies() {
                         onChange={(v) => setCooldown(parseCooldownInput(v))}
                         unit="sec"
                         size="sm"
+                        label="Custom cooldown"
                       />
                     )}
                   </PolicyRow>
@@ -1332,11 +1253,26 @@ function NumInput({
   onChange,
   unit,
   size = "lg",
+  label,
 }: {
   value: string;
   onChange: (v: string) => void;
   unit: string;
   size?: "lg" | "sm";
+  /**
+   * What this field IS, for assistive tech.
+   *
+   * The visible text lives in PolicyRow as a <p> - a sibling of this input
+   * with no association to it - so a screen reader announced both money
+   * fields identically: "edit, 100" and "edit, 2", on the screen where
+   * spending limits are set. Nothing said which was the daily cap.
+   *
+   * An ATTRIBUTE rather than a <label for>: the visible <p> would have to
+   * become a <label> to be referenced by one, and this page's layout must not
+   * move. The unit is appended so the field reads "Daily limit, in USDC"
+   * instead of leaving the adjacent "USDC" orphaned from it.
+   */
+  label: string;
 }) {
   const lg = size === "lg";
   return (
@@ -1350,6 +1286,7 @@ function NumInput({
         min={0}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        aria-label={`${label}, in ${unit}`}
         className={`bg-transparent text-right tabular-nums text-ink focus:outline-none ${
           lg ? "w-[5rem] text-[20px] font-semibold tracking-[-0.02em]" : "w-16 text-[13px]"
         }`}

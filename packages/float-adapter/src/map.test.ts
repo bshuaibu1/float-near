@@ -44,6 +44,25 @@ function req(over: Partial<VaultRequest> = {}): VaultRequest {
 }
 
 describe("nodeToApiAgent", () => {
+  /**
+   * A MISSING VALUE MUST BE MISSING.
+   *
+   * The contract's `Node` has no timestamp - id, parent, path, label,
+   * account, limits, cooldown, frozen, recipients, and that is all. Only a
+   * payment request carries `created_at_ns`.
+   *
+   * This field used to be `new Date(0).toISOString()`, which satisfied a
+   * non-nullable type by inventing epoch zero. Nothing rendered it, so it was
+   * not a visible bug; it was a loaded one, waiting for the first page to show
+   * an agent's age and announce "Jan 1, 1970" with total confidence.
+   */
+  it("reports NO creation time, rather than inventing epoch zero", () => {
+    const a = nodeToApiAgent(node(), { executed: "0", pending: "0" }, D);
+    expect(a.createdAt).toBeNull();
+    expect(a.createdAt).not.toBe(new Date(0).toISOString());
+    expect(String(a.createdAt)).not.toMatch(/1970/);
+  });
+
   it("renders caps in HUMAN units", () => {
     // The dashboard prints policy.dailyBudget straight into the table. Base
     // units here would show 300000000 where the owner set 300.

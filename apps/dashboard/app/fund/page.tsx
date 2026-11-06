@@ -5,6 +5,7 @@ import { useVisiblePolling } from "@/lib/use-chain-watch";
 import { QRCodeSVG } from "qrcode.react";
 import { Check, Copy, ExternalLink } from "lucide-react";
 import { INK, LINE, MUTED } from "@/lib/colors";
+import { usdc } from "@/lib/money";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
@@ -124,7 +125,7 @@ export default function FundPage() {
             <p
               className="mt-0.5 text-[22px] font-semibold tracking-[-0.03em] text-ink"
             >
-              {balance === null ? "Unavailable" : formatUsdc(toUiAmount(balance, info.tokenDecimals))}{" "}
+              {balance === null ? "Unavailable" : usdc(toUiAmount(balance, info.tokenDecimals))}{" "}
               <span className="text-[14px] font-medium text-muted">
                 USDC
               </span>
@@ -201,9 +202,9 @@ export default function FundPage() {
                   The vault is holding{" "}
                   {balance === null
                     ? "an unknown amount"
-                    : `${formatUsdc(toUiAmount(balance, info.tokenDecimals))} USDC`}
+                    : `${usdc(toUiAmount(balance, info.tokenDecimals))} USDC`}
                   {rootBudget
-                    ? `, and the root budget still allows ${formatUsdc(
+                    ? `, and the root budget still allows ${usdc(
                         toUiAmount(rootBudget.amount, rootBudget.decimals),
                       )} USDC to be spent today.`
                     : "."}{" "}
@@ -409,9 +410,4 @@ function toUiAmount(raw: string, decimals: number): number {
   return Number(v / d) + Number(v % d) / Number(d);
 }
 
-function formatUsdc(amount: number): string {
-  return amount.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
+
