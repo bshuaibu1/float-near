@@ -155,6 +155,11 @@ registered, unlike a `PUT 202`, which consumes the number.
 
 ### Original instructions (kept for reference)
 
+> A record, not a runbook. Two things in the block below are now dead:
+> `intents-rail` was merged into `main` and the branch deleted, and these
+> versions are superseded (create-float is on 0.4.0). Do not paste it — the
+> `git pull` will fail, and the publishes would be wrong if it did not.
+
 Versions are bumped and all three pack cleanly. **`mcp` is a minor bump, so the
 adapter's dependency range moved to `^0.2.0`** — otherwise `^0.1.0` silently
 refuses to resolve the new server and a deploy gets the old one.

@@ -114,7 +114,7 @@ Useful overrides:
 
 ```bash
 PORT=8788 bash scripts/deploy-vps.sh          # a second vault on one box
-BRANCH=intents-rail bash scripts/deploy-vps.sh
+BRANCH=<git-ref> bash scripts/deploy-vps.sh   # anything other than main
 SKIP_PULL=1 bash scripts/deploy-vps.sh        # deploy the tree as-is
 ```
 
