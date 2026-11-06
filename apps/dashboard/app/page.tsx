@@ -13,6 +13,7 @@ import {
   useOwnerSessionAvailable,
 } from "@/lib/float-session";
 import { usd, usdc, percent } from "@/lib/money";
+import { agentHue, agentSeed } from "@/lib/agent-hue";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 // Includes the Base rail's two terminal states. "signed" means the vault
@@ -63,7 +64,23 @@ type ApiAgent = {
   dailyBudgetUsedPercent?: number;
   policy?: { dailyBudget?: string };
 };
-type ActivityItem = { id: string; agent: string; venue: string; modelName?: string; amount: string; rail: string; time: string; status: string; };
+type ActivityItem = {
+  id: string;
+  agent: string;
+  /** The agent's stable id. The avatar seeds from this, never the name. */
+  agentId?: string | null;
+  /** memo || recipient, kept while /activity still reads it. */
+  venue: string;
+  /** WHO was paid. Always present on a real payment. */
+  recipient?: string | null;
+  /** WHY, if the agent said. Usually null: the MCP defaults memo to "". */
+  memo?: string | null;
+  modelName?: string;
+  amount: string;
+  rail: string;
+  time: string;
+  status: string;
+};
 type TransactionStats = { total: number; approved: number; blocked: number; failed: number; other: number; };
 
 function formatTime(iso: string): string {
@@ -399,7 +416,7 @@ export default function Overview() {
                     style={{ paddingLeft: `${(a.depth ?? 0) * 1.1}rem` }}
                   >
                     <div className="relative shrink-0">
-                      <AgentAvatar seed={a.agentId} size={24} animated />
+                      <AgentAvatar seed={agentSeed(a.agentId)} hue={agentHue(a.agentId)} size={24} animated />
                       <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white" style={{ background:SUCCESS }}/>
                     </div>
                     {/* displayName, not agentId: agentId is `node-<id>` for a team
@@ -435,7 +452,7 @@ export default function Overview() {
           </Link>
         </div>
         <div className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider" style={{ color:MUTED, borderBottom:`1px solid ${LINE}` }}>
-          <span>Time</span><span>Agent</span><span>Route</span><span className="text-right">Amount</span><span className="text-center">Rail</span><span className="text-right">Status</span>
+          <span>Time</span><span>Agent</span><span>To</span><span className="text-right">Amount</span><span className="text-center">Rail</span><span className="text-right">Status</span>
         </div>
         {activity.length === 0 ? (
           <div className="px-6 py-10 text-[13px] text-muted">
@@ -452,10 +469,60 @@ export default function Overview() {
                 >
                   <span className="text-[12px] font-mono tabular-nums text-muted">{formatTime(r.time)}</span>
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <AgentAvatar seed={r.agent} size={16} animated />
+                    <AgentAvatar seed={agentSeed(r.agentId) || r.agent} hue={agentHue(r.agentId)} size={16} animated />
                     <span className="text-[12px] font-mono truncate text-ink">{r.agent.slice(0,8)}…</span>
                   </div>
-                  <span className="text-[13px] font-medium truncate text-ink">{resolveVenue(r.venue, r.modelName)}</span>
+                  {/*
+                      ONE COLUMN, TWO FACTS, AND THE SECOND IS OPTIONAL.
+
+                      This was a single line reading `memo || recipient`, so
+                      one row showed an account and the next showed a
+                      sentence, with nothing to say which. A second COLUMN
+                      would have been blank on most rows - the MCP defaults
+                      memo to "" and nothing requires it - and a mostly-empty
+                      column in a six-column table is dead width.
+
+                      So: who was paid, always, as the primary line. What it
+                      was for underneath, only when the agent said. The
+                      absence of a note now looks like an absence instead of
+                      looking like a recipient.
+                    */}
+                    {/*
+                      ONE LINE, TWO FACTS, RECIPIENT ALWAYS FIRST.
+
+                      This column was `memo || recipient`, so one row showed an
+                      account and the next showed a sentence under the same
+                      heading, with no way to tell which you were looking at.
+                      Both of the live payments went to work12.testnet and the
+                      table made them look like different destinations.
+
+                      A second COLUMN was the obvious fix and is the wrong one:
+                      the MCP defaults memo to "" and nothing requires it, so
+                      it would be blank on most rows, and a mostly-empty column
+                      in a six-column table is dead width.
+
+                      TWO LINES was the next attempt, and it made the rows
+                      ragged - measured 45px without a note against 61px with
+                      one, which in a six-row summary card reads as a mistake
+                      rather than as a design.
+
+                      So: one line, fixed height. The recipient is always
+                      first, which is what disambiguates the two facts; the
+                      note follows in muted text after a separator, and
+                      truncates as a unit so the account survives a narrow
+                      column.
+                    */}
+                    <div className="text-[13px] truncate min-w-0" title={r.memo ?? undefined}>
+                      <span className="font-medium text-ink">
+                        {r.recipient ?? resolveVenue(r.venue, r.modelName)}
+                      </span>
+                      {r.memo && (
+                        <span className="text-muted">
+                          {" · "}
+                          {resolveVenue(r.memo, r.modelName)}
+                        </span>
+                      )}
+                    </div>
                   <span className="text-[12px] font-mono text-right tabular-nums text-ink">{r.amount} <span className="text-muted">USDC</span></span>
                   <span className="text-[11px] uppercase tracking-wider text-center font-medium text-muted">{resolveRail(r.rail)}</span>
                   <div className="flex justify-end">
