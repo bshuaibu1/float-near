@@ -74,12 +74,11 @@ so drift fails two suites.
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new
   one is picked up without editing the gate.
-  **IT DOES NOT RUN `create-float`.** The gate covers dashboard, adapter and mcp only, so that
-  package's 242 tests — including `rotate-key`, which guards a real key-privilege property, and
-  `float-exit`, which guards the refund path — can regress without the gate noticing. Run them
-  with `npm test -w @floatonnear/create-float`. Not added to the gate yet because the suite is
-  **240/242 red** on the stale wasm (item 6), so wiring it in now would block every other check
-  on an unrelated failure. Rebuild the wasm first, then add it.
+  **IT DOES NOT RUN `create-float`.** The gate covers dashboard, adapter and mcp only, so
+  that package’s **248 tests** — including `rotate-key` (key-privilege), `float-exit` (the refund
+  path) and `rerecord` (the publish guard) — can regress without the gate noticing. Run them
+  with `npm test -w @floatonnear/create-float`. They are **248/248 green** as of `2026-11-07`,
+  so the reason not to wire them in has gone; it is simply not done yet.
 - Rust: `cargo test` (192 tests). **Build only with `cargo near build`, never plain `cargo build`.**
 - Local: `.claude/launch.json` → `create-page` (`node web/serve.mjs`, :8788) and `dashboard` (:3000).
 - Fixture: `node scripts/seed-fixture.mjs` (needs `OWNER`, `FACTORY`, `TOKEN`; refuses mainnet).
@@ -119,27 +118,23 @@ so drift fails two suites.
    `get_tree`, finds the gas key and quotes **3.465732 back = 3.348190 account + 0.117542 gas
    key**. A fifth defect was found while fixing it: it signed `withdraw` AS THE VAULT, and
    `assert_owner` compares `predecessor_account_id()` to the owner, so that step could never
-   have worked. **Users still have the broken 0.4.0 until a release ships — blocked on item 6.**
-6. **`res/vault.wasm` is STALE, so create-float CANNOT BE PUBLISHED.** `prepack` runs
-   `bundle-wasm --assert-current`, which refuses: *"built from different source bytes than are
-   on disk now (recorded `b044ad32d3fe…`, current `8c1970e25f3f…`)"*. Two tests fail on this and
-   both are positive controls ("ACCEPTS the current contract", proving the guard is not
-   always-fail) — confirmed identical on a clean worktree at `ebd4c5a`, so it predates the
-   `float-exit` work. Fix: `cd contracts/vault && cargo near build non-reproducible-wasm
-   --no-abi`, then re-bundle. **This is what stands between the `float-exit` fix and users.**
-7. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
-8. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
+   have worked. **Users still have the broken 0.4.0 until a release is PUBLISHED** — the
+   publish blocker is now cleared (see below), so cutting 0.5.0 is all that is left.
+6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
+7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
-9. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
-10. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
-11. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
+8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
+9. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
+10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
 
 ## Next 3 steps
 
-**Resolved 2026-11-07:** the ordering question above `float-exit` was answered — fix it first,
-and it is done (item 5). What is left of it is a RELEASE, not code: `res/vault.wasm` is stale,
-`prepack` refuses, and until that is rebuilt every user still installs the broken 0.4.0. That
-rebuild is the shortest path between a fixed refund and a user who can run it (item 6).
+**Resolved 2026-11-07:** `float-exit` is fixed (item 5) and the publish blocker is cleared. The
+contract was rebuilt and came out **byte-identical** (`003568bcea22be80…`, 298,819 B) — the
+binary was never stale, only its provenance record, and the guard had a state no rebuild could
+clear. `prepack` passes, create-float is 248/248. **What remains is one command: publish 0.5.0.**
+Until it is published every user still installs the broken 0.4.0 that tells them their deposit
+is unrecoverable, so this outranks step 1 below.
 
 1. **Write the README + pitch + demo script.** Nothing exists. The demo path is already one
    command (`seed-fixture.mjs` → adapter → dashboard → signing page :8788), and the strongest

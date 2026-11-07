@@ -129,7 +129,17 @@ const sourceFiles = compiled.map((f) => ({
 // pass that writes a file and reverts it leaves identical content with a newer
 // timestamp, and `cargo near build` is content-addressed so the rebuild it
 // demands is a no-op that cannot move the artifact's mtime.
-const PROVENANCE = join(DEST_DIR, "vault.sources.json");
+// Overridable for the same reason BUNDLE_WASM_SRC is: so a check can run
+// against a record other than the tracked one.
+//
+// Without this seam, a test exercising digest drift has to corrupt
+// `res/vault.sources.json` IN PLACE — and node:test runs test FILES in
+// parallel, so freshness.test.mjs read that corruption mid-flight and failed.
+// A test that can only be written by mutating shared state is telling you the
+// module needs a seam, not that the test needs a lock.
+const PROVENANCE = process.env.BUNDLE_WASM_PROVENANCE
+  ? resolve(process.env.BUNDLE_WASM_PROVENANCE)
+  : join(DEST_DIR, "vault.sources.json");
 const currentDigest = sourcesDigest(
   compiled.map((f) => ({ path: f, content: readFileSync(join(SRC_DIR, f), "utf8") })),
 );
@@ -145,18 +155,87 @@ if (existsSync(PROVENANCE)) {
   }
 }
 
-for (const p of freshnessProblems({
+const freshness = freshnessProblems({
   typesSrc: readFileSync(join(SRC_DIR, "types.rs"), "utf8"),
   wasmBytes: srcBytes,
   wasmMtimeMs: statSync(SRC).mtimeMs,
   sources: sourceFiles,
   recordedDigest,
   currentDigest,
-})) {
-  fails.push(
-    `${p}\n    The contract is STALE. Rebuild it before publishing:\n` +
-      "      cd contracts/vault && cargo near build non-reproducible-wasm --no-abi",
+});
+
+/**
+ * A DIGEST MISMATCH THAT A REBUILD CANNOT CLEAR.
+ *
+ * The provenance record is trusted whenever `artifactSha256` matches the wasm
+ * on disk. That reads like "this record describes how this artifact was
+ * built", but it does not: `cargo near build` is content-addressed, so TWO
+ * DIFFERENT SOURCE TREES CAN PRODUCE IDENTICAL BYTES. Change a comment, a doc
+ * string, or any code that does not alter codegen, and you get the same wasm
+ * from different sources.
+ *
+ * Then: the digest mismatches, the artifact hash still matches the record, so
+ * the stale digest stays trusted — and the printed remedy, "rebuild", produces
+ * the same bytes and changes nothing. The guard is red forever with no action
+ * available to clear it.
+ *
+ * Measured 2026-11-07. `res/vault.wasm` and a fresh build were both
+ * `003568bcea22be80…`, 298,819 bytes, byte-identical — while the recorded
+ * digest said `b044ad32d3fe…` and the sources said `8c1970e25f3f…`. Two tests
+ * were red and `prepack` refused, blocking the release of a `float-exit` fix
+ * that tells users their money is recoverable. The binary was never wrong.
+ *
+ * This is the SECOND time this guard has had a no-remedy state: freshness.mjs
+ * records the first, where a reverted mutation left identical content with a
+ * newer mtime, and the digest was introduced to fix it. The lesson it wrote
+ * down then applies now — "a check that cries wolf is a check people learn to
+ * override, and then it is not protecting the publish any more."
+ *
+ * The fix is NOT to fall back to mtime. A fresh clone equalises every mtime,
+ * so mtime would wave a genuinely stale artifact through — that is exactly
+ * what the digest exists to catch, and freshness.test.mjs pins it.
+ *
+ * The fix is to make the real remedy reachable and EXPLICIT. When the ONLY
+ * complaint is the digest, the artifact has already passed every content check
+ * above — it answers every reason code the source defines, it is not a
+ * test-clock build, and it imports panic_utf8. An operator who has just
+ * rebuilt and sees identical bytes knows the record is merely out of date, and
+ * can say so once, on purpose, in a way that greps.
+ */
+const onlyDigestDrift =
+  freshness.length === 1 && /built from different source/i.test(freshness[0]);
+const RERECORD = process.env.BUNDLE_WASM_RERECORD === "1";
+
+if (onlyDigestDrift && RERECORD) {
+  // `recordedDigest ?? ""` is not defensive noise. A mutation widening
+  // `onlyDigestDrift` ran this branch with recordedDigest UNDEFINED, where
+  // `.slice()` THROWS — and the crash swallowed the real refusal (a
+  // test-clock artifact), so the script exited non-zero with the actual
+  // reason never printed. A guard that fails for the wrong reason teaches
+  // the operator the wrong fix, which is this file's recurring theme.
+  const was = (recordedDigest ?? "").slice(0, 12) || "nothing recorded";
+  console.log(
+    `bundle-wasm: re-recording provenance (BUNDLE_WASM_RERECORD=1)\n` +
+      `  artifact unchanged at ${srcSha.slice(0, 16)}…, sources moved ` +
+      `${was}… -> ${currentDigest.slice(0, 12)}…\n` +
+      `  Every content check passed, so the source change did not reach codegen.`,
   );
+} else {
+  for (const p of freshness) {
+    fails.push(
+      onlyDigestDrift
+        ? `${p}\n` +
+          "    Every CONTENT check passed, so this artifact is not provably stale:\n" +
+          "    the sources moved without changing the compiled output, which a\n" +
+          "    rebuild cannot fix — it produces the same bytes and the same record.\n" +
+          "    Rebuild first to confirm the bytes really are unchanged:\n" +
+          "      cd contracts/vault && cargo near build non-reproducible-wasm --no-abi\n" +
+          "    then, if the artifact hash did NOT move, re-record provenance:\n" +
+          "      BUNDLE_WASM_RERECORD=1 node scripts/bundle-wasm.mjs"
+        : `${p}\n    The contract is STALE. Rebuild it before publishing:\n` +
+          "      cd contracts/vault && cargo near build non-reproducible-wasm --no-abi",
+    );
+  }
 }
 
 if (fails.length) {
