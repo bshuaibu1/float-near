@@ -64,6 +64,25 @@ const MUTANTS = [
     from: 'if (ctx === "compact" && abs >= 1000) {',
     to: "if (abs >= 1000) {",
   },
+  /**
+   * M10 is the LAYOUT CONTRACT, not a formatting rule.
+   *
+   * The Overview's stat cards switched to compact because its output is
+   * bounded at eight characters and detailed's is not: a card 150px wide can
+   * be designed against eight, not against "whatever the next value turns
+   * out to be". Dropping K and M quietly restores the unbounded case —
+   * $999.9B becomes "$999900000K", which fits nothing.
+   *
+   * The point tests above catch this too, and that is the honest position:
+   * M10 is not uniquely killed by the new bound test. The bound test's job
+   * is to STATE the contract the layout now depends on, so that adding a
+   * unit or moving a threshold reads as the layout change it is.
+   */
+  {
+    name: "M10 compact loses K and M, so a card figure grows without limit",
+    from: '    [1e6, "M"],\n    [1e3, "K"],',
+    to: "",
+  },
 ];
 
 let survived = 0;

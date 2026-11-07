@@ -87,6 +87,35 @@ for (const p of paths) {
   }
 }
 
+/**
+ * AND THE EXHAUST THIS SCRIPT DID NOT KNOW ABOUT.
+ *
+ * The two edits above are a KEEP-LIST, so anything the tooling invents that
+ * is not on it passes through silently. That is not hypothetical: running
+ * the preview also dropped a generated `apps/dashboard/README.md` — npm
+ * boilerplate, "# Synopsis", "npm install float-dashboard" — and a
+ * `git add -A` swept it into a commit about stat cards alongside both config
+ * files this script exists to revert. It had to be amended back out.
+ *
+ * A named list cannot catch the next one either, so this check is not a
+ * longer list. It reports every untracked file under the dashboard that git
+ * is not already ignoring, and leaves the judgement to a human: deleting
+ * files automatically is how real work gets destroyed by a tidy-up script.
+ */
+const untracked = execSync(
+  "git ls-files --others --exclude-standard -- apps/dashboard",
+  { encoding: "utf8" },
+)
+  .split(LF)
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+if (untracked.length) {
+  console.log(`\n  ${untracked.length} untracked file(s) under apps/dashboard:`);
+  for (const f of untracked) console.log(`    ? ${f}`);
+  console.log("  Not deleted. Check whether any are tool exhaust before committing.");
+}
+
 if (dirty) {
   console.log(`${dirty} file(s) still differ from HEAD`);
   process.exit(1);

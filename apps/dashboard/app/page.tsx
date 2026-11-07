@@ -123,6 +123,18 @@ type Treasury = { walletAddress: string; amount: string; currency: string; decim
 type DashboardData = { treasury: Treasury | null; agents: ApiAgent[]; transactionStats?: TransactionStats; recentActivity: ActivityItem[]; };
 
 const card   = "bg-white rounded-lg p-6" as const;
+/**
+ * The four figures at the top, which are NOT the same shape as a panel.
+ *
+ * `p-6` is 48px of horizontal padding. A quarter-width card on a 375px
+ * screen is 69px wide, so the padding alone exceeded the card and left the
+ * content box 21px. Measured in the browser: `$3.50` needs 74px at this
+ * type size, so it rendered 54px past the card's own border — the user read
+ * "$3.5", a different and smaller number, with the 0 lost under the card
+ * beside it. Clipping a money figure is the one failure mode `lib/money.ts`
+ * exists to prevent, and the layout was reintroducing it underneath.
+ */
+const statCard = "bg-white rounded-lg p-4 md:p-6" as const;
 const border = { border: `1px solid ${LINE}` } as const;
 
 function utilColor(pct: number) { return pct >= 80 ? DANGER : pct >= 50 ? WARN : SUCCESS; }
@@ -235,9 +247,22 @@ export default function Overview() {
         </div>
       ) : null}
 
-      {/* 4 stat cards */}
-      <div className="grid grid-cols-4 gap-3 mb-3">
-        <div className={card} style={border}>
+      {/*
+        4 stat cards. TWO COLUMNS BEFORE `md`, four after.
+
+        `grid-cols-4` was unconditional, and it was the only bare
+        `grid-cols-*` on the page — the panel row below it has always been
+        `col-span-12 md:col-span-8`, so responsiveness is the house style and
+        this was the one place that missed it, not a decision to be
+        desktop-only.
+
+        The desktop layout is untouched: at `md` and above this resolves to
+        the same four columns with the same `p-6`, which was verified by
+        diffing computed styles and boxes for all 209 elements of the page at
+        1180px, before and after. Zero differences.
+      */}
+      <div className="grid grid-cols-2 gap-3 mb-3 md:grid-cols-4">
+        <div className={statCard} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Active Agents</p>
           <div className="flex items-baseline gap-2 mb-1">
             <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{dash(agents.length)}</span>
@@ -245,15 +270,35 @@ export default function Overview() {
           <p className="text-[12px] text-muted">{dashboardAuthorized ? "linked to this account" : "connect account"}</p>
         </div>
 
-        <div className={card} style={border}>
+        <div className={statCard} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Total Spent</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{loading ? "—" : usd(totalSpent)}</span>
+            {/*
+              COMPACT, and the exact figure on hover.
+
+              Two columns gives this card 117px of content box on a phone,
+              which is about eight characters at this size. `$12,345.60` is
+              ten and would clip again — a narrower grid moves the cliff, it
+              does not remove it. Compact is bounded instead: `$12.3K` is the
+              widest an abbreviation gets, so the figure fits at EVERY width
+              rather than up to whatever the next test value happened to be.
+
+              Abbreviating does lose precision, and there is no detail view
+              for lifetime spend to recover it from, so `title` carries the
+              exact number. Below $1,000 the two are identical and nothing
+              changes — which is why today's $3.50 looks the same.
+            */}
+            <span
+              title={loading ? undefined : usd(totalSpent)}
+              className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink"
+            >
+              {loading ? "—" : usd(totalSpent, "compact")}
+            </span>
           </div>
           <p className="text-[12px] text-muted">lifetime, all agents</p>
         </div>
 
-        <div className={card} style={border}>
+        <div className={statCard} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Transactions</p>
           <div className="flex items-baseline gap-2 mb-1">
             <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{dash(txCount)}</span>
@@ -266,10 +311,15 @@ export default function Overview() {
           </p>
         </div>
 
-        <div className={card} style={border}>
+        <div className={statCard} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Avg TX Size</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">{loading ? "—" : usd(avgTx)}</span>
+            <span
+              title={loading ? undefined : usd(avgTx)}
+              className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink"
+            >
+              {loading ? "—" : usd(avgTx, "compact")}
+            </span>
           </div>
           <p className="text-[12px] text-muted">per payment</p>
         </div>
