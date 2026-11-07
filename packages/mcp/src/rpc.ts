@@ -236,12 +236,44 @@ export interface AgentCreds {
  * TypeError three frames deeper, and beats silently signing with the wrong
  * account.
  */
-export function requireAgentKey(env: { agentId?: string; agentKey?: string }): AgentCreds {
+export function requireAgentKey(env: {
+  agentId?: string;
+  agentKey?: string;
+  /**
+   * Why `NEAR_VAULT_AGENT_KEY_FILE` produced no key, when one was named.
+   *
+   * SEPARATE FROM `agentKey` BEING ABSENT, and it must stay that way. "The
+   * variable is not set" and "the file you pointed it at is broken" are
+   * different problems with different fixes; reporting the second as the first
+   * sends the operator to set something they have already set — and the
+   * quickest way out of that dead end is pasting the key inline, which undoes
+   * the reason the file option exists.
+   */
+  agentKeyError?: string;
+  /**
+   * `account_id` from a `~/.near-credentials`-shaped key file, when the key
+   * came from one. Absent for an inline key or a bare key file.
+   */
+  agentKeyAccountId?: string;
+}): AgentCreds {
+  // THE FILE'S OWN FAILURE OUTRANKS EVERY "not set" MESSAGE BELOW. It is the
+  // only one of them that names a cause, and once a path is involved the
+  // missing-variable advice is actively misleading.
+  if (!env.agentKey && env.agentKeyError) {
+    throw new Error(
+      `Paying needs the agent key, and the key file could not be read. ` +
+        `${env.agentKeyError} Fix the path or the file — or unset the _FILE variable ` +
+        `to fall back to an inline NEAR_VAULT_AGENT_KEY.`,
+    );
+  }
   // Name EVERY missing variable, not just the first. A message that reports
   // half the problem buys a second failed attempt.
   if (!env.agentId && !env.agentKey) {
     throw new Error(
-      "Paying requires NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY, and neither is set. " +
+      "Paying requires NEAR_VAULT_AGENT_ID and a key, and neither is set. " +
+        "The key can be NEAR_VAULT_AGENT_KEY (inline) or NEAR_VAULT_AGENT_KEY_FILE " +
+        "(a path to a ~/.near-credentials-shaped JSON file, or a bare key file) — " +
+        "prefer the file, since an inline key is printed by any read of the config. " +
         "Reads and payload planning work without them; only paying needs them. " +
         "The key must be a RESTRICTED one, from a VIRTUAL AGENT — never a " +
         "full-access key.",
@@ -254,11 +286,38 @@ export function requireAgentKey(env: { agentId?: string; agentKey?: string }): A
   }
   if (!env.agentKey) {
     throw new Error(
-      "NEAR_VAULT_AGENT_KEY is not set. This must be a VIRTUAL AGENT's key, bound " +
+      "No agent key is set: use NEAR_VAULT_AGENT_KEY_FILE (a path — preferred, since " +
+        "an inline key is printed by any read of the config) or NEAR_VAULT_AGENT_KEY. " +
+        "This must be a VIRTUAL AGENT's key, bound " +
         "with bind_virtual_agent and installed as a NEP-611 gas key on the vault — it can call only request_payment on the vault, cannot " +
         "call other contracts, and cannot attach a deposit. Never put a full-access key here.",
     );
   }
+  /**
+   * THE KEY FILE AND NEAR_VAULT_AGENT_ID MUST NAME THE SAME ACCOUNT.
+   *
+   * Which key signs *is* which budget is charged — the contract resolves the
+   * spending node from the signer, never from the request body. So a key used
+   * under the wrong account id does not get rejected locally; it goes to chain
+   * and fails with NOT_VIRTUAL_AGENT, which reads as a binding bug and sends
+   * the reader to the contract rather than to their config.
+   *
+   * No mismatch is legitimate. A virtual agent's key is a NEP-611 gas key ON
+   * the vault, so it signs AS the vault, and a credentials file for it names
+   * the vault. A file naming some other account holds some other account's key
+   * — most often the owner's full-access one, which must never be used here.
+   */
+  if (env.agentKeyAccountId && env.agentKeyAccountId !== env.agentId) {
+    throw new Error(
+      `the key file belongs to ${env.agentKeyAccountId}, but NEAR_VAULT_AGENT_ID is ` +
+        `${env.agentId}. A key signs as the account it was issued for, and the vault ` +
+        `resolves the spending budget from the signer — so this pairing cannot pay. ` +
+        `Point NEAR_VAULT_AGENT_ID at ${env.agentKeyAccountId}, or use the key file ` +
+        `for ${env.agentId}. A virtual agent's key is a gas key ON the vault, so for ` +
+        `one it is the vault's own id.`,
+    );
+  }
+
   return { agentId: env.agentId, agentKey: env.agentKey };
 }
 

@@ -80,6 +80,107 @@ describe("requireAgentKey", () => {
       agentKey: "ed25519:x",
     });
   });
+
+  it("offers the key-FILE variable alongside the inline one", () => {
+    // An operator who has never seen NEAR_VAULT_AGENT_KEY_FILE will keep
+    // pasting the key inline, which is the exposure this is meant to end. The
+    // message that fires when no key is set is the one place they are
+    // guaranteed to read.
+    expect(() => requireAgentKey({})).toThrow(/NEAR_VAULT_AGENT_KEY_FILE/);
+  });
+
+  /**
+   * A NAMED-BUT-BROKEN KEY FILE MUST NOT READ AS "NOT SET".
+   *
+   * They are different problems with different fixes. "NEAR_VAULT_AGENT_KEY is
+   * not set" sends the operator to set a variable they have already set, while
+   * the real fault is the path it points at — and they would then almost
+   * certainly set the INLINE one to get moving, undoing the change.
+   *
+   * Same failure shape `loadKeyring` carries `skippedOtherVault` for: an empty
+   * result reported with the wrong cause costs a debugging session.
+   */
+  it("reports a broken key file rather than a missing variable", () => {
+    const fileErr =
+      "NEAR_VAULT_AGENT_KEY_FILE: key file /etc/float/agent.json does not exist.";
+
+    const withId = (() => {
+      try {
+        requireAgentKey({ agentId: "a0.v.testnet", agentKeyError: fileErr });
+        return "";
+      } catch (e) {
+        return (e as Error).message;
+      }
+    })();
+    expect(withId).toContain("NEAR_VAULT_AGENT_KEY_FILE");
+    expect(withId).toContain("/etc/float/agent.json");
+    expect(withId, "degraded into the generic not-set message").not.toMatch(
+      /NEAR_VAULT_AGENT_KEY is not set/,
+    );
+
+    // And when NEITHER half is set, the file failure is still the useful fact.
+    const neither = (() => {
+      try {
+        requireAgentKey({ agentKeyError: fileErr });
+        return "";
+      } catch (e) {
+        return (e as Error).message;
+      }
+    })();
+    expect(neither).toContain("/etc/float/agent.json");
+  });
+
+  /**
+   * A CREDENTIALS FILE CARRIES THE ACCOUNT TOO, so the two can disagree.
+   *
+   * WHICH KEY SIGNS *IS* WHICH BUDGET IS CHARGED — the contract resolves the
+   * spending node from the signer, never from the request body. A key whose
+   * file says it belongs to one account, used under a different
+   * NEAR_VAULT_AGENT_ID, cannot work: it fails on chain with
+   * NOT_VIRTUAL_AGENT, which reads like a binding bug and sends the reader to
+   * the contract instead of to their config (keyring.ts records that exact
+   * misdiagnosis happening).
+   *
+   * There is no legitimate mismatch. A virtual agent's key is a gas key ON the
+   * vault, so it signs AS the vault and a credentials file for it names the
+   * vault. A file naming anything else is a different account's key — most
+   * likely the owner's full-access one, which must never be used here.
+   */
+  it("refuses a key whose file names a different account", () => {
+    const e = (() => {
+      try {
+        requireAgentKey({
+          agentId: "v.fac.testnet",
+          agentKey: "ed25519:x",
+          agentKeyAccountId: "owner.testnet",
+        });
+        return "";
+      } catch (err) {
+        return (err as Error).message;
+      }
+    })();
+    expect(e).toContain("v.fac.testnet");
+    expect(e).toContain("owner.testnet");
+    expect(e).toMatch(/NEAR_VAULT_AGENT_ID/);
+  });
+
+  it("accepts a key whose file names the same account", () => {
+    expect(
+      requireAgentKey({
+        agentId: "v.fac.testnet",
+        agentKey: "ed25519:x",
+        agentKeyAccountId: "v.fac.testnet",
+      }),
+    ).toEqual({ agentId: "v.fac.testnet", agentKey: "ed25519:x" });
+  });
+
+  it("ignores a stale key-file error once a key did load", () => {
+    // Defensive: the resolver never sets both, and a caller that passed both
+    // must not be refused a key it has.
+    expect(
+      requireAgentKey({ agentId: "a0.v.testnet", agentKey: "ed25519:x", agentKeyError: "boom" }),
+    ).toEqual({ agentId: "a0.v.testnet", agentKey: "ed25519:x" });
+  });
 });
 
 describe("newRequestId", () => {

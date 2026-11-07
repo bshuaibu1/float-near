@@ -254,3 +254,71 @@ describe("credentials belonging to another vault", () => {
     expect(ring.skippedOtherVault).toBe(0);
   });
 });
+
+// =====================================================================
+// NEAR_VAULT_AGENT_KEY_FILE: a path instead of a plaintext env value
+// =====================================================================
+
+/** The message `resolveKeySource` hands over when the named file is unusable. */
+const KEY_FILE_ERR =
+  "NEAR_VAULT_AGENT_KEY_FILE: key file /etc/float/agent.json does not exist.";
+
+function thrown(fn: () => unknown): string {
+  try {
+    fn();
+    return "";
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
+describe("a key file that could not be read", () => {
+  /**
+   * THE THIRD MEMBER OF A FAMILY THIS MODULE ALREADY KNOWS.
+   *
+   * An empty ring has had two indistinguishable causes — "nothing configured"
+   * and "everything belongs to another vault" — and telling them apart is why
+   * `skippedOtherVault` exists at all. A broken `NEAR_VAULT_AGENT_KEY_FILE` is
+   * the third, and it is the worst one to misreport: "no agent credentials are
+   * configured. Set NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY" tells the
+   * operator to paste the key inline, which is precisely the exposure the file
+   * option was added to remove.
+   */
+  it("says so rather than reporting nothing configured", () => {
+    const ring = loadKeyring({ agentId: "v.fac.testnet", agentKeyError: KEY_FILE_ERR });
+    expect(ring.all).toHaveLength(0);
+
+    const msg = thrown(() => selectAgent(ring, {}));
+    expect(msg).toContain("/etc/float/agent.json");
+    expect(msg, "degraded into the generic message").not.toMatch(
+      /no agent credentials are configured/i,
+    );
+  });
+
+  /**
+   * The subtle one. With a fleet on disk the ring is NOT empty, so the
+   * refusal is the ambiguity error — "pass role, agent or nodeId". True, but
+   * it hides a regression: the broken file is what removed the default this
+   * deployment had been relying on. Without the note, a working adapter that
+   * stops signing un-targeted payments looks like a caller bug.
+   */
+  it("is still named when a fleet file left the ring non-empty", () => {
+    const ring = loadKeyring({ agentKeysPath: keyfile(FLEET), agentKeyError: KEY_FILE_ERR });
+    expect(ring.all).toHaveLength(2);
+    expect(ring.fallback).toBeUndefined();
+    expect(thrown(() => selectAgent(ring, {}))).toContain("/etc/float/agent.json");
+  });
+
+  it("does not interfere with a request that names its agent", () => {
+    // A broken default must not break selection that never needed it.
+    const ring = loadKeyring({ agentKeysPath: keyfile(FLEET), agentKeyError: KEY_FILE_ERR });
+    expect(selectAgent(ring, { role: "news" }).secret).toBe("ed25519:news");
+  });
+
+  it("loads a key that came from a file exactly as an inline one", () => {
+    // The whole point: once read, a file-sourced key is not a special case.
+    const ring = loadKeyring({ agentId: "v.fac.testnet", agentKey: "ed25519:fromfile" });
+    expect(selectAgent(ring, {}).secret).toBe("ed25519:fromfile");
+    expect(ring.agentKeyError).toBeUndefined();
+  });
+});

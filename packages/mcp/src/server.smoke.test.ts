@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { KeyPair } from "near-api-js";
 
 /**
  * Drives the BUILT server over real stdio MCP.
@@ -233,4 +235,174 @@ describe("the MCP server starts and registers its tools", () => {
       expect(t.description ?? "").not.toMatch(/set_day_len/i);
     }
   });
+});
+
+// =====================================================================
+// NEAR_VAULT_AGENT_KEY_FILE, against the REAL entry point
+// =====================================================================
+
+/**
+ * Drives the BUILT server with nothing injected, because the thing being
+ * tested here is the WIRING.
+ *
+ * `resolveKeySource` has its own unit tests and they would stay green if
+ * server.ts never called it — a correct module reached by nothing. The config
+ * block is module-level code in a file that starts a stdio server, so the only
+ * honest way to assert it runs is to run it.
+ *
+ * It also pins the one rule this file's startup logging can break: STDOUT IS
+ * THE JSON-RPC TRANSPORT. There is no other `console.*` call in server.ts, so a
+ * warning printed to stdout would be the first, and it would corrupt the stream
+ * — the client would report a protocol error and say nothing about the
+ * configuration problem the warning was describing.
+ */
+async function startWith(extraEnv: Record<string, string>) {
+  const child = spawn(process.execPath, [SERVER], {
+    env: {
+      ...process.env,
+      NEAR_VAULT_CONTRACT: "vault.testnet",
+      NEAR_VAULT_TOKEN: "usdc.testnet",
+      ...extraEnv,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (d) => (stdout += String(d)));
+  child.stderr.on("data", (d) => (stderr += String(d)));
+
+  child.stdin.write(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "smoke", version: "0" },
+      },
+    }) + "\n",
+  );
+
+  // Long enough for startup logging and the handshake reply to arrive.
+  await new Promise((r) => setTimeout(r, 2500));
+  child.kill();
+  return { stdout, stderr };
+}
+
+describe("a key file given to the real server", () => {
+  const dirs: string[] = [];
+  /** A throwaway keypair. Nothing here is read from the real config files. */
+  const secretIn = (name: string, body: string) => {
+    const d = mkdtempSync(join(tmpdir(), "float-smoke-"));
+    dirs.push(d);
+    const p = join(d, name);
+    writeFileSync(p, body);
+    return p;
+  };
+  afterAll(() => {
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
+  it(
+    "prefers the file, warns on STDERR, and leaves stdout pure JSON-RPC",
+    async () => {
+      const fileSecret = KeyPair.fromRandom("ed25519").toString();
+      const inlineSecret = KeyPair.fromRandom("ed25519").toString();
+      const path = secretIn(
+        "agent.json",
+        JSON.stringify({ account_id: "vault.testnet", private_key: fileSecret }),
+      );
+
+      const { stdout, stderr } = await startWith({
+        NEAR_VAULT_AGENT_ID: "vault.testnet",
+        NEAR_VAULT_AGENT_KEY: inlineSecret,
+        NEAR_VAULT_AGENT_KEY_FILE: path,
+      });
+
+      // The warning reached the operator...
+      expect(stderr).toContain("NEAR_VAULT_AGENT_KEY_FILE");
+      expect(stderr).toMatch(/NEAR_VAULT_AGENT_KEY is ignored/);
+
+      // ...on stderr, and NOT on the transport. Every stdout line must still
+      // be a JSON-RPC message; one line of prose breaks the client.
+      const lines = stdout.split("\n").filter((l) => l.trim());
+      expect(lines.length, "server produced no stdout at all").toBeGreaterThan(0);
+      for (const line of lines) {
+        expect(() => JSON.parse(line), `non-JSON on stdout: ${line.slice(0, 80)}`).not.toThrow();
+      }
+
+      // AND NEITHER STREAM CARRIES A KEY. This is the entire point of the
+      // change: a startup line that echoed the value it had just loaded would
+      // put a live private key in the client's log file forever.
+      for (const [name, stream] of [["stdout", stdout], ["stderr", stderr]] as const) {
+        expect(stream, `${name} leaked the file's key`).not.toContain(fileSecret);
+        expect(stream, `${name} leaked the inline key`).not.toContain(inlineSecret);
+        expect(stream).not.toContain(fileSecret.slice(8, 24));
+        expect(stream).not.toContain(inlineSecret.slice(8, 24));
+      }
+    },
+    20_000,
+  );
+
+  /**
+   * WHAT THIS PINS, AND WHAT IT DOES NOT.
+   *
+   * It pins that an inline-only config — what `.mcp.json` has today — produces
+   * NO warning and NO error. That is a regression in its own right if it
+   * breaks: a client which surfaces stderr would start reporting a problem to
+   * every existing user who has nothing wrong.
+   *
+   * It does NOT prove the inline key is actually loaded. Nothing this server
+   * emits distinguishes "key loaded" from "no key", so replacing the inline
+   * read with `undefined` leaves this test green — checked, not assumed. The
+   * adapter's smoke test carries that half, where a credential that fails to
+   * load produces an observable 400 from `selectAgent`.
+   */
+  it(
+    "warns about nothing when the configuration is inline-only",
+    async () => {
+      const inlineSecret = KeyPair.fromRandom("ed25519").toString();
+      const { stdout, stderr } = await startWith({
+        NEAR_VAULT_AGENT_ID: "vault.testnet",
+        NEAR_VAULT_AGENT_KEY: inlineSecret,
+      });
+
+      // Nothing to warn about, and nothing to report as broken.
+      expect(stderr).not.toMatch(/NEAR_VAULT_AGENT_KEY_FILE/);
+      expect(stderr).not.toMatch(/ignored|could not be read/i);
+      expect(stdout + stderr).not.toContain(inlineSecret);
+
+      // And it still started.
+      const ids = stdout
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as { id?: number });
+      expect(ids.some((m) => m.id === 1), "server never answered initialize").toBe(true);
+    },
+    20_000,
+  );
+
+  it(
+    "still starts, and says why, when the key file is unreadable",
+    async () => {
+      // The server must stay usable with no key: reads, payload planning and
+      // `vault_create` need none, and onboarding someone who has no vault yet
+      // is why this server runs with nothing configured.
+      const { stdout, stderr } = await startWith({
+        NEAR_VAULT_AGENT_KEY_FILE: join(tmpdir(), "float-smoke-absent", "nope.json"),
+      });
+
+      expect(stderr).toContain("nope.json");
+      expect(stderr).toMatch(/does not exist/i);
+      // Started anyway: the handshake was answered.
+      const ids = stdout
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as { id?: number });
+      expect(ids.some((m) => m.id === 1), "server never answered initialize").toBe(true);
+    },
+    20_000,
+  );
 });

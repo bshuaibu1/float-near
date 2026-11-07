@@ -179,7 +179,7 @@ npx @floatonnear/create-float --owner you.near --agents 1 --fund 1
 
 **`--agents` is not optional in practice.** No agent is created without it, and a
 vault with no agent cannot pay — the MCP server will answer *"Paying requires
-NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY, and neither is set."*
+NEAR_VAULT_AGENT_ID and a key, and neither is set."*
 
 **Mainnet is the default**, and there is no testnet path worth taking: NEAR
 Intents has no testnet, so a testnet vault cannot make a cross-chain payment at
