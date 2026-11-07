@@ -430,6 +430,72 @@ export function planPurgeSettled(vault: string, beforeDay: number, limit: number
   };
 }
 
+/**
+ * Move tokens out of the vault, to anywhere the owner says.
+ *
+ * THE STEP THAT DECIDES WHETHER MONEY SURVIVES A TEARDOWN. Deleting a NEAR
+ * account does NOT return its fungible tokens — the token ledger keeps a row
+ * keyed to an account nobody can ever sign for again. So this is not hygiene
+ * before closing a vault, it is the difference between recovering a balance
+ * and burning it, and `scripts/teardown-vault.mjs` runs it first for exactly
+ * that reason.
+ *
+ * BASE UNITS, NOT HUMAN ONES. `withdraw` passes the amount straight to
+ * `ft_transfer`, so this takes what the token uses. The caller scales, and
+ * the summary says the human figure so the two cannot silently disagree in
+ * the wallet.
+ *
+ * The contract refuses a zero amount (`amount must be positive`), so this
+ * does too — refusing here means the owner is not sent to a wallet to sign
+ * something that will revert and cost gas to learn.
+ */
+export function planWithdraw(
+  vault: string,
+  token: string,
+  amountBase: string,
+  receiverId: string,
+  decimals: number,
+): OwnerPayload {
+  let amt: bigint;
+  try {
+    amt = BigInt(amountBase);
+  } catch {
+    throw new Error(`amount must be an integer in base units, got "${amountBase}"`);
+  }
+  if (amt <= 0n) {
+    throw new Error(
+      `amount must be positive — the contract rejects a zero withdrawal outright.`,
+    );
+  }
+  if (!receiverId) throw new Error("a receiver account is required");
+
+  // Human figure for the summary only. Done with string surgery rather than
+  // Number(), because 2^53 is about 9 billion and a 6-decimal token hits that
+  // at 9,007 tokens — a figure a real vault can hold, and silently wrong is
+  // the one thing a wallet confirmation must never be.
+  const neg = amt < 0n;
+  const v = (neg ? -amt : amt).toString().padStart(decimals + 1, "0");
+  const whole = v.slice(0, v.length - decimals);
+  const frac = decimals ? v.slice(v.length - decimals).replace(/0+$/, "") : "";
+  const human = frac ? `${whole}.${frac}` : whole;
+
+  return {
+    receiverId: vault,
+    methodName: "withdraw",
+    args: { token, amount: amountBase, receiver_id: receiverId },
+    gasTgas: DEFAULT_GAS_TGAS,
+    // `withdraw` is #[payable] and calls assert_owner() -> assert_one_yocto().
+    depositYocto: ONE_YOCTO,
+    summary: `Send ${human} out of the vault to ${receiverId}`,
+    warnings: [
+      `This moves real tokens. ${receiverId} keeps them — the vault cannot pull them back.`,
+      `In-flight payments reserved against this balance may now fail at the token ` +
+        `contract. Their reservations are released by the existing sweep machinery, ` +
+        `so no accounting breaks, but a payment simply does not go through.`,
+    ],
+  };
+}
+
 /** Registry used by the MCP server, and asserted against the contract's method list. */
 export const OWNER_PLANNERS = {
   add_node: { methodName: "add_node", fn: planAddNode },
@@ -444,6 +510,7 @@ export const OWNER_PLANNERS = {
   set_paused: { methodName: "set_paused", fn: planSetPaused },
   set_strict_allocation: { methodName: "set_strict_allocation", fn: planSetStrictAllocation },
   purge_settled: { methodName: "purge_settled", fn: planPurgeSettled },
+  withdraw: { methodName: "withdraw", fn: planWithdraw },
 } as const;
 
 /** A ready-to-run command, so approving does not require trusting this server. */

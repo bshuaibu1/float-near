@@ -10,6 +10,7 @@ import {
   planPurgeSettled,
   planSetPaused,
   planSetApprovalThreshold,
+  planWithdraw,
   toCliCommand,
 } from "./payloads.js";
 
@@ -170,6 +171,75 @@ describe("the planner surface", () => {
     for (const m of Object.values(OWNER_PLANNERS)) {
       expect(methods.has(m.methodName), `${m.methodName} is not a pub fn on the vault`).toBe(true);
     }
+  });
+});
+
+describe("planWithdraw", () => {
+  /**
+   * THE STEP THAT DECIDES WHETHER MONEY SURVIVES A TEARDOWN.
+   *
+   * Deleting a NEAR account does NOT return fungible tokens — the ledger
+   * keeps a row keyed to an account nobody can sign for again. So the
+   * Danger Zone's first step is not hygiene, and a bug here burns a balance
+   * rather than inconveniencing someone.
+   */
+  it("passes the amount through in BASE units, untouched", () => {
+    const p = planWithdraw(VAULT, TOK, "12500000", "alice.testnet", 6);
+    expect(p.methodName).toBe("withdraw");
+    expect(p.receiverId).toBe(VAULT);
+    expect(p.args).toEqual({
+      token: TOK,
+      amount: "12500000",
+      receiver_id: "alice.testnet",
+    });
+    // #[payable] + assert_owner() -> assert_one_yocto()
+    expect(p.depositYocto).toBe("1");
+  });
+
+  it("says the HUMAN figure in the summary, because that is what a wallet shows", () => {
+    expect(planWithdraw(VAULT, TOK, "12500000", "alice.testnet", 6).summary).toContain("12.5");
+    // Trailing zeros trimmed; a quantity does not owe you its cents.
+    expect(planWithdraw(VAULT, TOK, "2000000", "alice.testnet", 6).summary).toContain("2 ");
+  });
+
+  /**
+   * NOT `Number()`, and this is the case that proves why.
+   *
+   * 2^53 is about 9.007e15, which a 6-decimal token reaches at 9,007
+   * tokens — a figure a real vault can hold. Via Number() the base amount
+   * loses precision and the wallet shows a confirmation that disagrees with
+   * the transaction. String surgery has no such cliff.
+   */
+  it("is exact past 2^53, where floating point stops being", () => {
+    const base = "9007199254740993"; // 2^53 + 1, exactly
+    expect(Number(base).toString()).not.toBe(base); // the cliff is real
+    const p = planWithdraw(VAULT, TOK, base, "alice.testnet", 6);
+    expect(p.args).toMatchObject({ amount: base });
+    expect(p.summary).toContain("9007199254.740993");
+  });
+
+  /** The contract fails a zero amount, so this must not send the owner to a
+   *  wallet to sign something that reverts and charges gas to learn. */
+  it("refuses zero and negative, as the contract does", () => {
+    for (const bad of ["0", "-1", "-12500000"]) {
+      expect(() => planWithdraw(VAULT, TOK, bad, "alice.testnet", 6)).toThrow(/positive/i);
+    }
+  });
+
+  it("refuses an amount that is not an integer in base units", () => {
+    for (const bad of ["12.5", "", "lots", "1e6"]) {
+      expect(() => planWithdraw(VAULT, TOK, bad, "alice.testnet", 6)).toThrow();
+    }
+  });
+
+  it("refuses an empty receiver rather than sending tokens nowhere", () => {
+    expect(() => planWithdraw(VAULT, TOK, "1", "", 6)).toThrow(/receiver/i);
+  });
+
+  /** The warning a user needs before signing, not after. */
+  it("warns that the receiver keeps the tokens", () => {
+    const w = planWithdraw(VAULT, TOK, "1", "alice.testnet", 6).warnings ?? [];
+    expect(w.join(" ")).toMatch(/cannot pull them back|keeps them/i);
   });
 });
 

@@ -11,6 +11,8 @@ import { Toast, WatchStatus } from "@/components/toast";
 import { DANGER, DANGER_BG, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
 import { InfoDot } from "@/components/ui/info-dot";
 import { agentHue, agentSeed } from "@/lib/agent-hue";
+import { DangerZone } from "@/components/danger-zone";
+import { BindAgent } from "@/components/bind-agent";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
@@ -55,6 +57,15 @@ type ApiAgent = {
 
 type VaultInfo = {
   vaultId: string;
+  /**
+   * The vault's ACTUAL token balance, base units — not the root node's
+   * remaining daily budget, which is a different quantity entirely. The
+   * Danger Zone's guard reads this and nothing else. Null when the token
+   * contract could not be read, which is NOT zero.
+   */
+  vaultTokenBalance?: string | null;
+  /** The contract's own day counter, for a purge cutoff. Null, never 0. */
+  currentDay?: number | null;
   /** Declared because the signing link needs it; the adapter always sent it. */
   network: string;
   explorerBase: string;
@@ -85,8 +96,18 @@ export default function AgentsPage() {
     label: string;
     from: string;
     to: string;
-    /** What the chain should show once signed - see lib/applied.ts. */
-    expect: Expectation;
+    /**
+     * What the chain should show once signed - see lib/applied.ts.
+     *
+     * OPTIONAL, because two actions have nothing a snapshot can observe. A
+     * withdrawal moves a balance on the TOKEN contract and a purge removes
+     * records, and `appliedStatus` compares policy fields: neither would
+     * ever be seen to apply. Inventing a kind that reports "applied"
+     * immediately would announce success before the transaction landed;
+     * leaving it absent means the watcher does not run, which is the honest
+     * answer to "can this be confirmed from here".
+     */
+    expect?: Expectation;
   } | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -145,6 +166,47 @@ export default function AgentsPage() {
     [agents],
   );
 
+  /**
+   * The two teardown steps a browser signature can actually reach.
+   *
+   * See lib/teardown.ts for why it is only two: four of the six steps need
+   * the VAULT as signer, and one of those is a DeployContract, which wallets
+   * refuse from a dApp.
+   */
+  const buildTeardownStep = useCallback(
+    async (body: Record<string, unknown>, label: string, from: string, to: string) => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/v1/owner-plan`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const b = (await res.json()) as { payload?: OwnerPayload; error?: string };
+        if (!res.ok || !b.payload) throw new Error(b.error ?? `HTTP ${res.status}`);
+        setPlan({
+          payload: b.payload,
+          label,
+          from,
+          to,
+          /**
+           * NOTHING TO WATCH FOR. `lib/applied.ts` compares a policy
+           * snapshot, and neither a withdrawal nor a purge changes one — a
+           * balance lives on the token contract and purged records are
+           * simply absent. Claiming an expectation the watcher cannot
+           * observe would leave it spinning forever on a transaction that
+           * had in fact landed.
+           */
+          // No expectation: see the field's note on the plan state.
+        });
+        setPlanError(null);
+      } catch (e) {
+        setPlan(null);
+        setPlanError(e instanceof Error ? e.message : "Could not prepare the transaction.");
+      }
+    },
+    [],
+  );
+
   /** The agent list in the shape lib/applied.ts compares against. */
   const snapshots = useMemo<PolicySnapshot[]>(
     () =>
@@ -160,7 +222,7 @@ export default function AgentsPage() {
 
   const allApplied = useMemo(
     () =>
-      plan !== null &&
+      plan?.expect !== undefined &&
       appliedStatus(plan.expect, snapshots, info ? { paused: info.paused, strictAllocation: info.strictAllocation } : null) ===
         "applied",
     [plan, snapshots, info],
@@ -168,7 +230,10 @@ export default function AgentsPage() {
 
   const { toast, setToast } = useToast();
   const { phase: watchPhase } = useChainWatch({
-    txCount: plan ? 1 : 0,
+    // Only watch what can be watched. A plan with no expectation (withdraw,
+    // purge) would otherwise leave the watcher spinning on a transaction it
+    // has no way to observe.
+    txCount: plan?.expect ? 1 : 0,
     allApplied,
     refresh: load,
     onApplied: setToast,
@@ -213,15 +278,18 @@ export default function AgentsPage() {
         <h2 className="text-[22px] font-semibold tracking-tight text-ink flex items-center gap-2">
           Budget tree
           <InfoDot label="why agents are not added from this page">
-            Agents are added with{" "}
+            A key is never GENERATED here. Creating one needs a keypair whose secret
+            has to reach whatever runs the agent, and a browser can only put that on a
+            screen or hand it to a server — so{" "}
             <code className="rounded px-1 py-0.5 font-mono text-[11.5px] bg-chip">
               vault_add_role
-            </code>
-            , not from here. Creating one needs a keypair whose secret has to reach
-            whatever runs the agent, and a browser can only put that on a screen or
-            hand it to a server. So the tool generates the key on your own machine,
-            writes the secret to disk there, and returns an unsigned payload for the
-            owner to approve in their wallet.
+            </code>{" "}
+            generates it on your own machine and writes the secret to disk there.
+            {" "}
+            What this page can do is the owner&apos;s half: paste the PUBLIC key your
+            agent printed and it builds the transaction for your wallet. That matters
+            for a vault created by following a link, which binds no key at all — before
+            this, the only way back was the command line.
           </InfoDot>
         </h2>
         <p className="text-[13px] mt-1.5 max-w-2xl text-muted">
@@ -431,6 +499,29 @@ export default function AgentsPage() {
               </div>
             </div>
           )}
+
+          {/*
+            THE DANGER ZONE.
+
+            It does NOT offer a "Close vault" button, and that is the honest
+            part. Closing is six steps (scripts/teardown-vault.mjs) and four
+            of them need the VAULT as signer — the gas-key withdrawal, the
+            token's storage_unregister, the 33-byte stub deploy and the
+            DeleteAccount. A wallet refuses DeployContract from a dApp, which
+            is the whole reason vault CREATION goes through a factory, so no
+            amount of work here reaches them.
+
+            What it does offer is the two steps a browser signature can
+            reach, and the first is the one that decides whether the money
+            survives: deleting an account does not return fungible tokens.
+            Then it hands over the exact command for the rest.
+
+            See lib/teardown.ts for the guard. The short version: an
+            UNREADABLE balance is not an empty one, so it blocks.
+          */}
+          <BindAgent onPlan={buildTeardownStep} />
+
+          {info ? <DangerZone info={info} onPlan={buildTeardownStep} /> : null}
 
           <p className="mt-4 text-[11.5px] leading-5 text-muted">
             {info?.strictAllocation
