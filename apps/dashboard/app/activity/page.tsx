@@ -134,6 +134,189 @@ type StatusFilter = "all" | "success" | "failed" | "blocked";
 const border = { border: `1px solid ${LINE}` };
 
 // ---------------------------------------------------------------------------
+// One payment: a table row on a desktop, a card on a phone
+// ---------------------------------------------------------------------------
+/**
+ * One payment, as a table row on a desktop and as a card on a phone.
+ *
+ * The row is pinned to `minWidth: 48rem` (768px), so at 375px it ran 426px
+ * past the viewport - 801px of row on a 375px screen. It scrolls, so nothing
+ * was lost, but Status and the explorer link were the two columns furthest
+ * off the right edge and the status of a payment is what the page is for.
+ *
+ * THE WHOLE ROW IS ALREADY A BUTTON that opens the detail dialog, which on a
+ * phone is the best touch target available: the card is 343x~100px, against
+ * a 44px floor. That is kept rather than redesigned.
+ *
+ * The explorer anchor stays nested inside it with its `stopPropagation`,
+ * exactly as on the row - it is pre-existing nested-interactive markup, and
+ * changing that is a separate question from this layout.
+ */
+function ActivityRow({ item, isLast, explorerBase, vaultId, onOpen }: {
+  item: Payment;
+  isLast: boolean;
+  explorerBase: string | null;
+  vaultId: string | null;
+  onOpen: () => void;
+}) {
+  // Computed once; both layouts read these and neither recomputes.
+  const blocked = isBlocked(item.status);
+  const ok = isSuccess(item.status) || isDelivered(item.status);
+  const amountColor = isSuccess(item.status) || isSigned(item.status) || isDelivered(item.status)
+    ? INK
+    : blocked ? WARN : DANGER;
+  const badgeStyle = ok
+    ? { background: SUCCESS_BG, color: SUCCESS }
+    : isSigned(item.status)
+      ? { background: "#EEF2F7", color: "#3B5A7A" }
+      : blocked
+        ? { background: WARN_BG, color: WARN }
+        : { background: DANGER_BG, color: DANGER };
+
+  const badge = (
+    <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full" style={badgeStyle}>
+      {isSuccess(item.status) ? "success" : item.status}
+    </span>
+  );
+
+  const explorerIcon = (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+      <path d="M1.5 8.5l7-7M8.5 1.5H2.5M8.5 1.5v6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+
+  const amount = (
+    <>
+      {blocked ? "–" : usdc(parseFloat(item.amount), "compact")}
+      {!blocked && <span className="ml-1 text-[10px] text-faint">USDC</span>}
+    </>
+  );
+
+  return (
+    <>
+      {/* DESKTOP: unchanged, verified against main element by element. */}
+      <button
+        onClick={onOpen}
+        className="hidden md:grid w-full gap-4 items-center px-6 py-3.5 hover:bg-canvas transition-colors duration-100 text-left"
+        style={{
+          gridTemplateColumns: "5rem minmax(17rem, 1fr) 6rem 4rem 5.5rem 1.5rem",
+          minWidth: "48rem",
+          borderBottom: isLast ? "none" : `1px solid ${LINE}`,
+        }}
+      >
+        <span className="text-[12px] font-mono tabular-nums text-muted" title={formatExactTime(item.createdAt)}>
+          {formatTime(item.createdAt)}
+        </span>
+
+        <div className="flex items-center gap-2.5 min-w-0">
+          <AgentAvatar seed={agentSeed(item.agentId)} hue={agentHue(item.agentId)} size={20} animated={false} />
+          <div className="min-w-0">
+            <p className="text-[12px] font-medium truncate leading-tight text-ink">{item.agentName}</p>
+            {/* On a BLOCKED row the venue is near-useless — the payment never
+                happened. What a reader needs is WHY, and for a parent-pool
+                block that reason is the whole point of the product. Showing
+                only a "BLOCKED" badge hid it behind a click. Not truncated,
+                deliberately: the sentence is the content. */}
+            {blocked && item.blockMessage ? (
+              <p className="text-[11px] leading-snug" style={{ color: WARN }}>{item.blockMessage}</p>
+            ) : (
+              <p className="text-[11px] truncate leading-tight text-muted">{resolveVenue(item.venue)}</p>
+            )}
+          </div>
+        </div>
+
+        <span className="text-[12px] font-mono text-right tabular-nums" style={{ color: amountColor }}>
+          {amount}
+        </span>
+
+        <span className="text-[10px] uppercase tracking-wider text-center font-medium" style={{ color: blocked ? WARN : MUTED }}>
+          {resolveRail(item.rail)}
+        </span>
+
+        <div className="flex justify-end">{badge}</div>
+
+        {/* Explorer link — inline, doesn't open modal.
+            Points at the VAULT account, not a tx hash: the vault stores
+            payments by request id and the adapter has no hash to link. The
+            old Solscan anchor was unreachable for the same reason. */}
+        <div className="flex justify-end">
+          {explorerBase ? (
+            <a
+              href={`${explorerBase}/address/${vaultId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-chip text-muted"
+              title="View the vault on NEAR Explorer"
+            >
+              {explorerIcon}
+            </a>
+          ) : (
+            <span className="h-6 w-6" />
+          )}
+        </div>
+      </button>
+
+      {/* PHONE */}
+      <button
+        onClick={onOpen}
+        className="md:hidden w-full px-4 py-3.5 text-left transition-colors active:bg-canvas"
+        style={{ borderBottom: isLast ? "none" : `1px solid ${LINE}` }}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <AgentAvatar seed={agentSeed(item.agentId)} hue={agentHue(item.agentId)} size={20} animated={false} />
+            <p className="text-[13px] font-medium truncate text-ink">{item.agentName}</p>
+          </div>
+          {/* The exact timestamp is a `title` on the row, which never fires
+              on a touch screen. The relative time is what fits; the exact one
+              is in the dialog this card opens, so it is one tap away rather
+              than unreachable. */}
+          <span className="shrink-0 text-[12px] font-mono tabular-nums text-muted">
+            {formatTime(item.createdAt)}
+          </span>
+        </div>
+
+        {/* WRAPS, where the column truncates. A block reason is a sentence
+            and is the whole value of a blocked row. */}
+        {blocked && item.blockMessage ? (
+          <p className="mt-1.5 text-[12px] leading-snug" style={{ color: WARN }}>{item.blockMessage}</p>
+        ) : (
+          <p className="mt-1.5 text-[12px] leading-snug text-muted">{resolveVenue(item.venue)}</p>
+        )}
+
+        <div className="mt-2.5 flex items-center justify-between gap-3">
+          <span className="text-[13px] font-mono tabular-nums" style={{ color: amountColor }}>
+            {amount}
+          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider font-medium" style={{ color: blocked ? WARN : MUTED }}>
+              {resolveRail(item.rail)}
+            </span>
+            {badge}
+            {explorerBase ? (
+              // 44px, not the row's 24px. It sits beside the status badge, so
+              // an under-sized target here is one a finger hits by accident
+              // while trying to open the payment.
+              <a
+                href={`${explorerBase}/address/${vaultId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="View the vault on NEAR Explorer"
+                className="-my-2 -mr-2 flex h-11 w-11 items-center justify-center rounded-md text-muted"
+              >
+                {explorerIcon}
+              </a>
+            ) : null}
+          </div>
+        </div>
+      </button>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Detail Modal
 // ---------------------------------------------------------------------------
 function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }) {
@@ -599,14 +782,36 @@ export default function Activity() {
             )}
           </div>
 
-          {/* Rail + Status pills */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1">
+          {/*
+            Rail + Status pills.
+
+            EIGHT TARGETS AT 25px HIGH, in two groups separated by a 1px
+            rule, in a row that ran 135px past a 375px viewport. The worst
+            concentration of under-sized controls on the dashboard, and they
+            are filters - things people poke at repeatedly, where a mis-tap
+            costs a reload of the list and a second attempt.
+
+            Below `md`: each chip reaches the 44px floor, the groups wrap
+            instead of overflowing, and the hairline divider is dropped - a
+            vertical rule between two rows that are no longer side by side
+            separates nothing.
+
+            `max-md:` RATHER THAN A `md:` RESET, and the diff is why. Written
+            as `min-h-[2.75rem] md:min-h-0`, the desktop rule still DECLARES
+            a min-height of 0 where there was none (`auto`), and splitting
+            `gap-3` into `gap-x-3 gap-y-1` changes the row gap. Both are
+            invisible at desktop - a 0 minimum never binds and a row gap does
+            nothing on a single line - and both appeared as real differences
+            against main, 9 of them. `max-md:` applies below the breakpoint
+            and leaves nothing declared above it.
+          */}
+          <div className="flex items-center gap-3 max-md:flex-wrap max-md:gap-y-1">
+            <div className="flex items-center gap-1 max-md:flex-wrap">
               {(["all", "near", "base", "blocked"] as RailFilter[]).map(v => (
                 <button
                   key={v}
                   onClick={() => setRailFilter(v)}
-                  className="px-2.5 py-1 rounded-md text-[11px] font-medium uppercase tracking-wider transition-colors"
+                  className="px-2.5 py-1 rounded-md text-[11px] font-medium uppercase tracking-wider transition-colors max-md:min-h-[2.75rem] max-md:px-3"
                   style={railFilter === v
                     ? { background: INK, color: CARD }
                     : { color: MUTED }}
@@ -616,14 +821,14 @@ export default function Activity() {
               ))}
             </div>
 
-            <div style={{ width: 1, height: 16, background: LINE }} />
+            <div className="hidden md:block" style={{ width: 1, height: 16, background: LINE }} />
 
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 max-md:flex-wrap">
               {(["all", "success", "failed", "blocked"] as StatusFilter[]).map(v => (
                 <button
                   key={v}
                   onClick={() => setStatusFilter(v)}
-                  className="px-2.5 py-1 rounded-md text-[11px] font-medium capitalize transition-colors"
+                  className="px-2.5 py-1 rounded-md text-[11px] font-medium capitalize transition-colors max-md:min-h-[2.75rem] max-md:px-3"
                   style={statusFilter === v
                     ? { background: INK, color: CARD }
                     : { color: MUTED }}
@@ -638,9 +843,11 @@ export default function Activity() {
         {/* Table */}
         <div className="bg-white rounded-lg overflow-x-auto" style={border}>
 
-          {/* Column headers */}
+          {/* Column headers. Desktop only: below `md` the rows are cards
+              that label themselves, and this `minWidth: 48rem` is half of
+              what made the table 801px wide on a 375px screen. */}
           <div
-            className="grid gap-4 px-6 py-3 text-[11px] font-medium uppercase tracking-wider"
+            className="hidden md:grid gap-4 px-6 py-3 text-[11px] font-medium uppercase tracking-wider"
             style={{
               color: MUTED,
               borderBottom: `1px solid ${LINE}`,
@@ -678,126 +885,14 @@ export default function Activity() {
           ) : (
             <div>
               {pageRows.map((p, i) => (
-                <button
+                <ActivityRow
                   key={p.id}
-                  onClick={() => setSelected(p)}
-                  className="w-full grid gap-4 items-center px-6 py-3.5 hover:bg-canvas transition-colors duration-100 text-left"
-                  style={{
-                    gridTemplateColumns: "5rem minmax(17rem, 1fr) 6rem 4rem 5.5rem 1.5rem",
-              minWidth: "48rem",
-                    borderBottom: i < pageRows.length - 1 ? `1px solid ${LINE}` : "none",
-                  }}
-                >
-                  {/* Time */}
-                  <span
-                    className="text-[12px] font-mono tabular-nums text-muted"
-                    title={formatExactTime(p.createdAt)}
-                  >
-                    {formatTime(p.createdAt)}
-                  </span>
-
-                  {/* Agent name + Venue */}
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <AgentAvatar seed={agentSeed(p.agentId)} hue={agentHue(p.agentId)} size={20} animated={false} />
-                    <div className="min-w-0">
-                      <p
-                        className="text-[12px] font-medium truncate leading-tight text-ink"
-                      >
-                        {p.agentName}
-                      </p>
-                      {/* On a BLOCKED row the venue is near-useless — the
-                          payment never happened. What a reader needs is WHY,
-                          and for a parent-pool block that reason is the whole
-                          point of the product. Showing only a "BLOCKED" badge
-                          hid it behind a click. Not truncated, deliberately:
-                          the sentence is the content. */}
-                      {isBlocked(p.status) && p.blockMessage ? (
-                        <p className="text-[11px] leading-snug" style={{ color: WARN }}>
-                          {p.blockMessage}
-                        </p>
-                      ) : (
-                        <p
-                          className="text-[11px] truncate leading-tight text-muted"
-                        >
-                          {resolveVenue(p.venue)}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Amount — red on failure, amber on blocked */}
-                  <span
-                    className="text-[12px] font-mono text-right tabular-nums"
-                    style={{
-                      color:
-                        isSuccess(p.status) || isSigned(p.status) || isDelivered(p.status)
-                          ? INK
-                           : isBlocked(p.status) ? WARN
-                           : DANGER,
-                    }}
-                  >
-                    {isBlocked(p.status) ? "–" : usdc(parseFloat(p.amount), "compact")}
-                    {!isBlocked(p.status) && (
-                      <span className="ml-1 text-[10px] text-faint">USDC</span>
-                    )}
-                  </span>
-
-                  {/* Rail */}
-                  <span
-                    className="text-[10px] uppercase tracking-wider text-center font-medium"
-                    style={{ color: isBlocked(p.status) ? WARN : MUTED }}
-                  >
-                    {resolveRail(p.rail)}
-                  </span>
-
-                  {/* Status badge */}
-                  <div className="flex justify-end">
-                    <span
-                      className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
-                      style={
-                        isSuccess(p.status) || isDelivered(p.status)
-                          ? { background: SUCCESS_BG, color: SUCCESS }
-                          : isSigned(p.status)
-                            ? { background: "#EEF2F7", color: "#3B5A7A" }
-                            : isBlocked(p.status)
-                              ? { background: WARN_BG, color: WARN }
-                              : { background: DANGER_BG, color: DANGER }
-                      }
-                    >
-                      {isSuccess(p.status) ? "success" : p.status}
-                    </span>
-                  </div>
-
-                  {/* Explorer link — inline, doesn't open modal.
-                      Points at the VAULT account, not a tx hash: the vault
-                      stores payments by request id and the adapter has no hash
-                      to link. The old Solscan anchor was unreachable for the
-                      same reason. */}
-                  <div className="flex justify-end">
-                    {explorerBase ? (
-                      <a
-                        href={`${explorerBase}/address/${vaultId}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={e => e.stopPropagation()}
-                        className="flex items-center justify-center h-6 w-6 rounded-md transition-colors hover:bg-chip text-muted"
-                        title="View the vault on NEAR Explorer"
-                      >
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                          <path
-                            d="M1.5 8.5l7-7M8.5 1.5H2.5M8.5 1.5v6"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      </a>
-                    ) : (
-                      <span className="h-6 w-6" />
-                    )}
-                  </div>
-                </button>
+                  item={p}
+                  isLast={i >= pageRows.length - 1}
+                  explorerBase={explorerBase}
+                  vaultId={vaultId}
+                  onOpen={() => setSelected(p)}
+                />
               ))}
             </div>
           )}
