@@ -76,11 +76,90 @@ export function createRpc(
       await sleep(wait);
       return rpc(method, params, attempt + 1);
     }
+    /**
+     * READ THE BODY BEFORE JUDGING THE STATUS.
+     *
+     * NEAR answers a handler error with HTTP 422 AND a complete JSON-RPC
+     * error body. The previous order — `if (!r.ok) throw` first — threw a
+     * bare `RPC HTTP 422` and never looked, so every caller saw a failure
+     * with no idea what kind.
+     *
+     * That silently defeated the first version of `isAbsentHeight`: its
+     * unit tests passed, because they threw errors with the right shape by
+     * hand, and against the real chain it never matched once. Correct and
+     * unreachable. Measured: block 276175670 on fastnear's archival
+     * endpoint returns 422 with `cause.name = "UNKNOWN_BLOCK"`.
+     *
+     * `text()` then parse, not `json()`: a proxy or gateway error is HTML,
+     * and `json()` would throw over the status this is trying to report.
+     */
+    const raw = await r.text();
+    let j: any = null;
+    try {
+      j = JSON.parse(raw);
+    } catch {
+      // Not JSON. The status is all there is to say.
+    }
+
+    if (j?.error) {
+      // THE ERROR TRAVELS AS DATA, not only as a message. A caller that
+      // needs to tell one failure from another should not be parsing a
+      // string that was built for a human and truncated to 140 characters.
+      // `scanRange` needs exactly that distinction — see `isAbsentHeight`.
+      const err = new Error(`${method}: ${JSON.stringify(j.error).slice(0, 140)}`) as RpcError;
+      err.rpcError = j.error;
+      throw err;
+    }
     if (!r.ok) throw new Error(`RPC HTTP ${r.status}`);
-    const j: any = await r.json();
-    if (j.error) throw new Error(`${method}: ${JSON.stringify(j.error).slice(0, 140)}`);
-    return j.result;
+    return j?.result;
   } as RpcFn;
+}
+
+/** An RPC failure that carries the JSON-RPC error object it came from. */
+export interface RpcError extends Error {
+  rpcError?: { name?: string; cause?: { name?: string }; data?: unknown };
+}
+
+/**
+ * Did this failure mean "no block was ever produced at that height"?
+ *
+ * NEAR gives every slot a height, and when a producer misses its slot that
+ * height never gets a block. Measured on testnet: 8 of the 1,604 heights in
+ * one real scan, about 0.5%. Those heights are not gaps in coverage — there
+ * is nothing at them to read, by anyone, ever.
+ *
+ * The scanner used to record them as unread, so every scan of every vault
+ * reported holes that could never be filled and the dashboard said "refusal
+ * history is incomplete" permanently, for a reason that was not real.
+ *
+ * `UNKNOWN_BLOCK` ALONE IS NOT ENOUGH, and this is the trap. A non-archival
+ * node returns the same `UNKNOWN_BLOCK` for a block that genuinely exists
+ * but has been garbage-collected — measured against the default testnet RPC,
+ * which returned it for every height in that same scan, including ones the
+ * scanner had read successfully. Treating that as "nothing there" would
+ * claim coverage of a range never read, which is the exact failure this
+ * subsystem exists to prevent.
+ *
+ * The two are distinguishable by what the node could resolve:
+ *
+ *   never produced   data: "DB Not Found Error: BLOCK HEIGHT: 276175670"
+ *   node lacks it    data: "DB Not Found Error: BLOCK: DN5cUfsq…"
+ *
+ * A HEIGHT that resolves to nothing means no block exists. A HASH means the
+ * node resolved the height to a block and only lacks the body.
+ *
+ * FAILS SAFE. This matches a nearcore error string, which is not a stable
+ * API. If that wording changes, the match fails and the height is recorded
+ * as a hole — degrading to the old behaviour, which overstates gaps. The
+ * opposite error, overstating coverage, is the one that matters, and no
+ * change to this string can produce it.
+ */
+export function isAbsentHeight(e: unknown): boolean {
+  const err = e as RpcError;
+  const rpc = err?.rpcError;
+  if (!rpc) return false;
+  if (rpc.cause?.name !== "UNKNOWN_BLOCK") return false;
+  return typeof rpc.data === "string" && /BLOCK HEIGHT:/i.test(rpc.data);
 }
 
 export interface BlockedRecord {
@@ -100,6 +179,14 @@ export interface ScanResult {
   chunksSkipped: number;
   /** Heights that could not be read. Coverage inside a hole is unknown. */
   holes: number[];
+  /**
+   * Heights where NEAR never produced a block, so there was nothing to read.
+   *
+   * NOT holes. Counted separately so a scan can still SAY how many it met —
+   * silently dropping them would make "1,604 blocks, 1,596 seen" look like
+   * an arithmetic error with no explanation on screen.
+   */
+  absentHeights: number[];
 }
 
 /**
@@ -149,14 +236,20 @@ export async function scanRange(
     chunksFetched: 0,
     chunksSkipped: 0,
     holes: [],
+    absentHeights: [],
   };
 
   for (let h = from; h <= to; h++) {
     let blk: any;
     try {
       blk = await rpc("block", { block_id: h });
-    } catch {
-      res.holes.push(h);
+    } catch (e) {
+      // A height NEAR never produced is not a gap in coverage: there is
+      // nothing at it to read. Anything else is a genuine failure and stays
+      // a hole. See `isAbsentHeight` for why UNKNOWN_BLOCK alone is not
+      // enough to tell those apart.
+      if (isAbsentHeight(e)) res.absentHeights.push(h);
+      else res.holes.push(h);
       continue;
     }
     res.blocksSeen++;

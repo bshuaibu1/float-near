@@ -9,6 +9,7 @@ import {
   scanRange,
   coalesce,
   createRpc,
+  isAbsentHeight,
   type BlockedStore,
   type ScanResult,
   type RpcFn,
@@ -110,6 +111,136 @@ describe("scanning a range", () => {
     const res = await scanRange(rpc, VAULT, 100, 102);
     expect(res.holes).toEqual([101]);
     expect(res.blocksSeen).toBe(2);
+  });
+});
+
+/**
+ * A HEIGHT NEAR NEVER PRODUCED IS NOT A GAP IN COVERAGE.
+ *
+ * NEAR gives every slot a height, and a producer that misses its slot leaves
+ * that height empty forever. Measured on testnet: 8 of the 1,604 heights in
+ * one real scan, about 0.5%.
+ *
+ * The scanner recorded them as unread, so every scan of every vault reported
+ * holes that could never be filled, and the dashboard said "refusal history
+ * is incomplete" permanently for a reason that was not real. That is what
+ * made a correctness caveat read as a standing alarm.
+ *
+ * The error bodies are taken verbatim from testnet, not invented:
+ *   height 276175670 on an archival node → never produced
+ *   height 276175669 on a non-archival node → exists, node lacks the body
+ */
+describe("a height that was never produced", () => {
+  const rpcErr = (data: string, causeName = "UNKNOWN_BLOCK") =>
+    Object.assign(new Error("block: ..."), {
+      rpcError: { name: "HANDLER_ERROR", cause: { info: {}, name: causeName }, code: -32000, message: "Server error", data },
+    });
+
+  const ABSENT = "DB Not Found Error: BLOCK HEIGHT: 276175670 \n Cause: Unknown";
+  const GC_D = "DB Not Found Error: BLOCK: DN5cUfsqfzttkfhzxdDWk48BnERUcQtCobdQMvZCrQjD \n Cause: Unknown";
+
+  it("is not counted as unread", async () => {
+    const rpc: RpcFn = async (m, p: any) => {
+      if (m === "block" && p?.block_id === 101) throw rpcErr(ABSENT);
+      if (m === "block") return { header: { height: p.block_id, timestamp: "1" }, chunks: [] };
+      throw new Error(`unexpected ${m}`);
+    };
+    const res = await scanRange(rpc, VAULT, 100, 102);
+    expect(res.holes, "an absent height was recorded as a hole").toEqual([]);
+    expect(res.absentHeights).toEqual([101]);
+    expect(res.blocksSeen).toBe(2);
+  });
+
+  /**
+   * THE TRAP, and the reason `UNKNOWN_BLOCK` alone is not the test.
+   *
+   * A non-archival node returns the SAME error name for a block that
+   * genuinely exists but has been garbage-collected. Measured: the default
+   * testnet RPC returned UNKNOWN_BLOCK for every height in that scan,
+   * including ones the scanner had already read successfully. Treating that
+   * as "nothing there" would claim coverage of a range never read — the one
+   * failure this whole subsystem exists to prevent.
+   */
+  it("is NOT confused with a block the node has garbage-collected", async () => {
+    const rpc: RpcFn = async (m, p: any) => {
+      if (m === "block" && p?.block_id === 101) throw rpcErr(GC_D);
+      if (m === "block") return { header: { height: p.block_id, timestamp: "1" }, chunks: [] };
+      throw new Error(`unexpected ${m}`);
+    };
+    const res = await scanRange(rpc, VAULT, 100, 102);
+    expect(res.holes, "a real block the node lacks must stay a hole").toEqual([101]);
+    expect(res.absentHeights).toEqual([]);
+  });
+
+  /** Anything that is not recognisably an absent height stays a hole. */
+  it("fails safe for every other kind of failure", async () => {
+    const cases: Array<[string, unknown]> = [
+      ["a plain Error with no rpcError", new Error("socket hang up")],
+      ["a different error name", rpcErr(ABSENT, "UNAVAILABLE_SHARD")],
+      ["UNKNOWN_BLOCK with no data", Object.assign(new Error("x"), { rpcError: { cause: { name: "UNKNOWN_BLOCK" } } })],
+      ["UNKNOWN_BLOCK with unparseable data", rpcErr("something else entirely")],
+    ];
+    for (const [label, thrown] of cases) {
+      const rpc: RpcFn = async (m, p: any) => {
+        if (m === "block" && p?.block_id === 101) throw thrown;
+        if (m === "block") return { header: { height: p.block_id, timestamp: "1" }, chunks: [] };
+        throw new Error(`unexpected ${m}`);
+      };
+      const res = await scanRange(rpc, VAULT, 100, 102);
+      expect(res.holes, `${label} should stay a hole`).toEqual([101]);
+      expect(res.absentHeights, `${label} should not be called absent`).toEqual([]);
+    }
+  });
+
+  /**
+   * The error has to ARRIVE as data for any of the above to work. Before
+   * this, `createRpc` threw a bare Error whose message was the JSON
+   * truncated to 140 characters, and the discriminating substring sits past
+   * that cut on a real testnet error — so a message-matching version of this
+   * fix would have silently never matched.
+   */
+  /**
+   * THE STATUS CODE IS THE POINT, and getting it wrong made the first
+   * version of this fix correct and completely unreachable.
+   *
+   * NEAR answers a handler error with HTTP 422 AND a full JSON-RPC error
+   * body. `createRpc` used to check `!r.ok` FIRST and throw a bare
+   * `RPC HTTP 422` without reading the body — so `rpcError` was never
+   * attached and `isAbsentHeight` could not match, ever.
+   *
+   * The unit tests above passed throughout, because they throw errors with
+   * the right shape by hand. Only running it against the chain showed it:
+   * block 276175670, which the discriminator was DERIVED from, was still
+   * recorded as a hole.
+   *
+   * So 422 is pinned here. A test that posts a 200 proves the parsing and
+   * nothing about the path the real endpoint takes.
+   */
+  it("attaches the error body on a 422, which is what NEAR actually returns", async () => {
+    const body = { name: "HANDLER_ERROR", cause: { info: {}, name: "UNKNOWN_BLOCK" }, code: -32000, message: "Server error", data: ABSENT };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, error: body }), { status: 422 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const rpc = createRpc("http://rpc.invalid", { paceMs: 0 });
+    const err = await rpc("block", { block_id: 1 }).then(() => null, (e) => e);
+    vi.unstubAllGlobals();
+
+    expect(err.rpcError, "the 422 body was not read; isAbsentHeight can never match").toEqual(body);
+    expect(isAbsentHeight(err)).toBe(true);
+    // The message alone could not have carried it: the discriminating
+    // substring sits past the 140-character truncation on a real error.
+    expect(err.message).not.toContain("BLOCK HEIGHT:");
+  });
+
+  /** A non-JSON failure must still report its status rather than crashing. */
+  it("still reports a plain HTTP failure when the body is not JSON", async () => {
+    const fetchMock = vi.fn(async () => new Response("<html>502 Bad Gateway</html>", { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const rpc = createRpc("http://rpc.invalid", { paceMs: 0 });
+    const err = await rpc("block", { block_id: 1 }).then(() => null, (e) => e);
+    vi.unstubAllGlobals();
+
+    expect(err.message).toContain("400");
+    expect(isAbsentHeight(err)).toBe(false);
   });
 });
 
@@ -261,8 +392,14 @@ describe("coverage honesty under a large backlog", () => {
 });
 
 describe("rpc throttling behaviour", () => {
-  const okBody = { ok: true, status: 200, json: async () => ({ result: { fine: true } }) };
-  const throttled = { ok: false, status: 429, json: async () => ({}) };
+  /**
+   * `text`, not just `json`. `createRpc` reads the body as text and parses
+   * it, so that it can attach a JSON-RPC error that arrives alongside a
+   * non-2xx status — NEAR sends UNKNOWN_BLOCK as HTTP 422 with a full error
+   * body. A double with only `json` models a Response that does not exist.
+   */
+  const okBody = { ok: true, status: 200, text: async () => JSON.stringify({ result: { fine: true } }) };
+  const throttled = { ok: false, status: 429, text: async () => "{}" };
 
   it("retries a 429 and succeeds, rather than turning it into a gap", async () => {
     // This is the whole reason createRpc exists. A transient 429 that
@@ -295,7 +432,7 @@ describe("rpc throttling behaviour", () => {
 
   it("does not retry a genuine error like a bad method", async () => {
     // Retrying a 400 just wastes time; only throttling and 5xx are transient.
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({}) });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => "{}" });
     vi.stubGlobal("fetch", fetchMock);
     const rpc = createRpc("http://x", { paceMs: 0 });
     await expect(rpc("nope", {})).rejects.toThrow(/400/);
