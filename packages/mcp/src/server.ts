@@ -55,8 +55,17 @@ import {
   planSetApprovalThreshold,
   planApprovePayment,
   planRejectPayment,
+  planWithdraw,
 } from "./payloads.js";
-import { accountExists, DEFAULT_RPC_URL, newRequestId, requireAgentKey, viewFunction } from "./rpc.js";
+import {
+  accountExists,
+  DEFAULT_RPC_URL,
+  newRequestId,
+  requireAgentKey,
+  viewAccessKeys,
+  viewAccount,
+  viewFunction,
+} from "./rpc.js";
 import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
 import { dirname } from "node:path";
 
@@ -653,6 +662,159 @@ server.tool(
     limit: z.number().int().min(0).max(100).default(100),
   },
   async ({ beforeDay, limit }) => renderPlan(planPurgeSettled(requireVault(), beforeDay, limit)),
+);
+
+server.tool(
+  "vault_plan_withdraw",
+  "Build an UNSIGNED payload to move tokens OUT of the vault to any account. The owner approves it in their own wallet; this server never signs. This is the step that decides whether money survives a teardown: deleting a NEAR account does NOT return fungible tokens, so they must be moved first.",
+  {
+    amount: z
+      .string()
+      .describe(
+        "HUMAN units, e.g. \"12.5\" for 12.5 USDC. Omit to withdraw the vault's entire balance, read from the token contract.",
+      )
+      .optional(),
+    receiverId: z.string().describe("who receives the tokens, e.g. alice.testnet"),
+    token: z.string().optional().describe("overrides NEAR_VAULT_TOKEN"),
+  },
+  async ({ amount, receiverId, token }) => {
+    const vault = requireVault();
+    const tok = tokenFor(token);
+
+    /**
+     * NO AMOUNT MEANS "ALL", READ FROM THE CHAIN — not a guess, and not a
+     * figure the caller carried in. The balance is taken as the token's own
+     * base-unit STRING and passed through untouched, because re-deriving it
+     * through a float leaves dust and a vault with dust never reaches the
+     * zero a delete needs.
+     */
+    let base: string;
+    if (amount === undefined) {
+      const bal = await viewFunction<string>(cfg.rpcUrl, tok, "ft_balance_of", {
+        account_id: vault,
+      });
+      if (!/^\d+$/.test(String(bal))) {
+        return text(
+          `${tok} reported this vault's balance as ${JSON.stringify(bal)}, which is not a ` +
+            `number. Refusing to build a withdrawal from a balance that cannot be read.`,
+        );
+      }
+      if (BigInt(bal) === 0n) {
+        return text(`${vault} holds no ${tok}. Nothing to withdraw.`);
+      }
+      base = String(bal);
+    } else {
+      // `toBaseUnits` returns a bigint; the payload carries base units as a
+      // STRING, because that is what the contract's U128 arg expects.
+      base = toBaseUnits(amount, cfg.decimals).toString();
+    }
+
+    return renderPlan(planWithdraw(vault, tok, base, receiverId, cfg.decimals));
+  },
+);
+
+server.tool(
+  "vault_teardown_report",
+  "Read-only. Report exactly what closing this vault would return, what it would strand, and the command that does it. Needs no key and signs nothing. Use this to answer 'can I close this vault and what do I get back?' before anyone exports anything.",
+  {},
+  async () => {
+    const vault = requireVault();
+    const tok = cfg.token;
+
+    const [acct, keyList, config] = await Promise.all([
+      viewAccount(cfg.rpcUrl, vault),
+      viewAccessKeys(cfg.rpcUrl, vault),
+      viewFunction<{ owner: string }>(cfg.rpcUrl, vault, "get_config", {}).catch(() => null),
+    ]);
+
+    const ftBase = tok
+      ? await viewFunction<string>(cfg.rpcUrl, tok, "ft_balance_of", { account_id: vault }).catch(
+          () => null,
+        )
+      : null;
+
+    const stakeYocto = BigInt(acct.storage_usage) * 10n ** 19n;
+    const freeYocto = BigInt(acct.amount) - stakeYocto;
+
+    const gasKeys = keyList
+      .map((k) => {
+        const pm = k.access_key.permission as
+          | string
+          | { GasKeyFunctionCall?: { balance?: string }; GasKeyFullAccess?: { balance?: string } };
+        const v =
+          typeof pm === "object" ? (pm.GasKeyFunctionCall ?? pm.GasKeyFullAccess) : undefined;
+        // The balance sits at the TOP level of the permission variant, not
+        // under `gas_key_info` as near-api-js's shape suggests.
+        return v?.balance !== undefined
+          ? { publicKey: k.public_key, balanceYocto: String(v.balance) }
+          : null;
+      })
+      .filter((x): x is { publicKey: string; balanceYocto: string } => x !== null);
+
+    const gasTotal = gasKeys.reduce((a, g) => a + BigInt(g.balanceYocto), 0n);
+    const fullAccess = keyList.filter((k) => k.access_key.permission === "FullAccess");
+
+    /**
+     * CAN ANYTHING SIGN AS THE VAULT? That is the whole question, and it is
+     * not "does the owner exist".
+     *
+     * Every step that recovers the NEAR — emptying a gas key, deploying the
+     * stub, the delete itself — needs a signature whose signer_id IS THE
+     * VAULT. A browser wallet will not produce one: measured 2026-11-07,
+     * Meteor silently signs as the connected account and reports success.
+     * So the only route is a full-access key on disk, and a vault carrying
+     * none is permanently unrecoverable beyond its tokens.
+     */
+    const signable = fullAccess.length > 0;
+
+    const nearStr = (y: bigint) => (Number(y) / 1e24).toFixed(6);
+    const tokenStr =
+      ftBase && /^\d+$/.test(ftBase) ? fromBaseUnits(BigInt(ftBase), cfg.decimals) : null;
+
+    return json({
+      vault,
+      owner: config?.owner ?? "(could not read get_config)",
+      holds: {
+        tokens: tokenStr === null ? "unknown — the token contract could not be read" : `${tokenStr} ${tok ?? ""}`.trim(),
+        near_free: nearStr(freeYocto),
+        near_storage_stake: nearStr(stakeYocto),
+        gas_keys: gasKeys.map((g) => ({ ...g, near: nearStr(BigInt(g.balanceYocto)) })),
+        gas_key_total_near: nearStr(gasTotal),
+        storage_bytes: acct.storage_usage,
+      },
+      recoverable_now_by_an_owner_signature: {
+        tokens: tokenStr ?? "unknown",
+        how: "vault_plan_withdraw, approved in the owner's wallet. No key on disk needed.",
+      },
+      needs_a_full_access_key_on_disk: {
+        near: nearStr(freeYocto + stakeYocto + gasTotal),
+        why:
+          "Emptying a gas key, shrinking the code and deleting the account all need a " +
+          "signature whose signer_id is the VAULT. A browser wallet will not make one — " +
+          "measured: Meteor ignores signerId and silently signs as the connected account.",
+        possible: signable,
+        detail: signable
+          ? `${fullAccess.length} FullAccess key(s) on the vault. If one of them is the owner's, ` +
+            `teardown-vault.mjs can sign with it.`
+          : "NO FullAccess key on this vault. The NEAR is unrecoverable by anyone. Do not " +
+            "shrink it: that frees the stake into an account nobody can empty, which is " +
+            "worse than leaving it alone.",
+      },
+      never_recoverable: {
+        warning:
+          "DeleteKey on a funded gas key BURNS the balance and reports success — measured, " +
+          "0.08322 NEAR as tokens_burnt. Always withdrawFromGasKey first. teardown-vault.mjs " +
+          "does this and exits rather than continuing if it fails.",
+      },
+      command: signable
+        ? `NETWORK=${cfg.network} VAULT=${vault} OWNER=${config?.owner ?? "<owner>"} ` +
+          `TOKEN=${tok ?? "<token>"} node scripts/teardown-vault.mjs`
+        : "(none — nothing can sign as this vault)",
+      note:
+        "Read-only. This server holds at most a restricted agent key and signed nothing. " +
+        "Run the command yourself, after the token withdrawal has settled.",
+    });
+  },
 );
 
 await server.connect(new StdioServerTransport());

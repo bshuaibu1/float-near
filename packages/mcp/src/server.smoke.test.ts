@@ -122,10 +122,12 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_plan_freeze",
         "vault_plan_pause",
         "vault_plan_purge",
+        "vault_plan_withdraw",
         "vault_plan_set_caps",
         "vault_plan_set_cooldown",
         "vault_plan_set_recipients",
         "vault_request",
+        "vault_teardown_report",
         "vault_tree",
         "vault_create",
         "vault_add_role",
@@ -160,6 +162,20 @@ describe("the MCP server starts and registers its tools", () => {
       // Lists which agents this server can sign AS, by role. Returns no key
       // material — only role, node and account id.
       "vault_roles",
+      /**
+       * A READ, and the name was changed to say so.
+       *
+       * It was first called `vault_teardown_plan`, which this gate rejected —
+       * correctly. `vault_plan_*` promises an unsigned PAYLOAD, and this
+       * returns a report: what closing the vault would give back, what it
+       * would strand, and the command. View calls only, no key, nothing
+       * written, nothing signed.
+       *
+       * The point of it is to answer "can I close this and what do I get
+       * back?" WITHOUT anyone exporting a key first — so it being a pure
+       * read is the feature, not an implementation detail.
+       */
+      "vault_teardown_report",
     ]);
     // PROVISIONING: generates an AGENT's keypair locally, writes the secret
     // to the keyring, and returns an UNSIGNED payload for the owner's wallet.

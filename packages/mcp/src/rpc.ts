@@ -191,6 +191,41 @@ export async function viewAccessKeys(
   return json.result?.keys ?? [];
 }
 
+/** An account's balance and storage, as the chain reports them. */
+export interface AccountView {
+  amount: string;
+  storage_usage: number;
+}
+
+/**
+ * Read an account's balance and storage.
+ *
+ * Both as the chain reports them: `amount` is the TOTAL, and the storage
+ * stake (`storage_usage * 1e19`) is locked inside it rather than held
+ * separately. Subtracting is the caller's job, and getting that backwards is
+ * how a vault with 0.02 spendable looks like it has 0.12.
+ */
+export async function viewAccount(rpcUrl: string, accountId: string): Promise<AccountView> {
+  const r = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "near-vault-mcp",
+      method: "query",
+      params: { request_type: "view_account", finality: "final", account_id: accountId },
+    }),
+  });
+  if (!r.ok) throw new Error(`RPC ${rpcUrl} returned HTTP ${r.status}`);
+  const json = (await r.json()) as {
+    result?: AccountView;
+    error?: { message?: string };
+  };
+  if (json.error) throw new Error(`view_account failed: ${json.error.message ?? "unknown"}`);
+  if (!json.result) throw new Error(`view_account returned no result for ${accountId}`);
+  return json.result;
+}
+
 export interface AgentCreds {
   agentId: string;
   agentKey: string;
