@@ -42,9 +42,50 @@ import { Account, KeyPair, KeyPairSigner, JsonRpcProvider, PublicKey } from "nea
 
 const ROOT = resolve(import.meta.dirname, "..");
 const NETWORK = process.env.NETWORK ?? "testnet";
-const VAULT = process.env.VAULT ?? "floatv4-testnet.fac.floatv4.testnet";
-const OWNER = process.env.OWNER ?? "floatv4.testnet";
-const TOKEN = process.env.TOKEN ?? "ft.floatv4.testnet";
+/**
+ * VAULT, OWNER and TOKEN ARE REQUIRED. THEY USED TO DEFAULT, AND THE DEFAULTS
+ * WERE A WAY TO LOSE SOMEONE ELSE'S MONEY.
+ *
+ * They were my dev accounts — `floatv4.testnet` and the mock FT
+ * `ft.floatv4.testnet`. The Danger Zone hands this command to USERS, and it
+ * emitted only NETWORK and VAULT, so every user's paste inherited my token id.
+ *
+ * A wrong TOKEN is not a crash. `ft_balance_of` on a real-but-wrong FT returns
+ * "0", so step 1 prints "no tokens to withdraw", step 3 finds no registration,
+ * and the delete proceeds — stranding the real balance at an address nobody
+ * can ever sign for again. Reproduced against a live vault holding 46.5 USDC
+ * with TOKEN=wrap.testnet: every read said zero.
+ *
+ * A wrong OWNER fails safely, because `key(OWNER)` exits when the credential
+ * is missing — but it exits saying "no credential for floatv4.testnet", which
+ * tells a user nothing about what they should have passed.
+ *
+ * So: no guessing. An unset value stops the run before any read, and the
+ * message names the variable and what belongs in it.
+ */
+const need = (name, hint) => {
+  const v = process.env[name];
+  if (v === undefined || v.trim() === "") {
+    console.error(`\nFATAL: ${name} is required — this script will not guess it.`);
+    console.error(`  ${hint}`);
+    console.error(
+      `\n  NETWORK=<net> VAULT=<vault> OWNER=<you> TOKEN=<token> \\\n    EXPECT_TOKENS=<balance> node scripts/teardown-vault.mjs\n`,
+    );
+    process.exit(2);
+  }
+  return v.trim();
+};
+
+const VAULT = need("VAULT", "The vault account to tear down, e.g. my-vault.fac.floatv4.testnet");
+const OWNER = need(
+  "OWNER",
+  "The account that owns it and holds a FullAccess key on it, e.g. you.testnet",
+);
+const TOKEN = need(
+  "TOKEN",
+  "The fungible token the vault holds. A WRONG value here reads as a zero " +
+    "balance\n  and the delete strands the real tokens permanently.",
+);
 const STUB = join(ROOT, ".demo", "stub-new.wasm");
 const RPC =
   process.env.RPC ??
@@ -115,9 +156,49 @@ console.log(`\n  network   ${NETWORK}`);
 console.log(`  vault     ${VAULT}`);
 console.log(`  owner     ${OWNER}`);
 console.log(`  balance   ${near(BigInt(acct0.amount))} NEAR`);
-console.log(`  tokens    ${human(tokens0)}`);
+console.log(`  tokens    ${human(tokens0)}  of ${TOKEN}`);
 console.log(`  gas keys  ${gasKeys.length}`);
 console.log(`  storage   ${acct0.storage_usage} B = ${code0.length} code + ${acct0.storage_usage - code0.length} state\n`);
+
+/**
+ * THE WRONG TOKEN DELETES A VAULT WITH MONEY STILL IN IT, SILENTLY.
+ *
+ * `TOKEN` defaults to one specific mock FT. Point this script at a vault
+ * holding a DIFFERENT token and every read returns 0: step 1 prints
+ * "no tokens to withdraw", step 3 finds no registration, and the delete
+ * proceeds. A `delete_account` does not return fungible tokens, so the
+ * balance is stranded at a dead address permanently.
+ *
+ * The failure is invisible in the output — `tokens 0.000000` is also what a
+ * genuinely empty vault prints — and it is only readable AFTER the
+ * irreversible step. So printing the token id above is necessary but not
+ * sufficient; the expectation has to be stated BEFORE the run and checked
+ * while stopping is still possible.
+ *
+ * `EXPECT_TOKENS` is that check, in whole units. It is opt-in because an
+ * empty vault has nothing to assert, but any run against a vault believed to
+ * hold a balance should set it.
+ */
+if (process.env.EXPECT_TOKENS !== undefined) {
+  const want = process.env.EXPECT_TOKENS.trim();
+  const got = human(tokens0);
+  // Compare as fixed-point strings, not numbers: "46.5" and "46.500000" are
+  // the same balance, and parsing both through Number would also make
+  // "" and "0" and nonsense like "abc" compare equal to a zero balance.
+  if (!/^\d+(\.\d+)?$/.test(want)) {
+    console.error(`FATAL: EXPECT_TOKENS="${want}" is not a decimal number.`);
+    process.exit(2);
+  }
+  if (Number(want).toFixed(6) !== got) {
+    console.error(
+      `FATAL: expected ${Number(want).toFixed(6)} of ${TOKEN}, read ${got}.\n` +
+        `       Nothing has been touched. Either TOKEN is wrong for this vault\n` +
+        `       or the balance moved. Deleting now would strand the real balance.`,
+    );
+    process.exit(2);
+  }
+  console.log(`  verified  vault holds exactly ${got} of ${TOKEN}\n`);
+}
 
 const owner = new Account(OWNER, p, new KeyPairSigner(ownerKp));
 const vault = new Account(VAULT, p, new KeyPairSigner(vaultSigner));

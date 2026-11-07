@@ -102,8 +102,52 @@ const MUTANTS = [
   },
   {
     name: "M8 the teardown command drops its network, defaulting a mainnet teardown to testnet",
-    from: "  return `NETWORK=${network} VAULT=${vaultId} node scripts/teardown-vault.mjs`;",
-    to: "  return `VAULT=${vaultId} node scripts/teardown-vault.mjs`;",
+    from: "    `NETWORK=${network}`,",
+    to: "",
+  },
+  /**
+   * M9 AND M10 ARE THE PAIR THAT COST REAL MONEY TO FIND.
+   *
+   * The command genuinely shipped without `OWNER` and `TOKEN`, so both fell
+   * back to the script's defaults — the author's dev account and the mock
+   * FT. M10 is the worse half and the reason the script no longer defaults:
+   * `ft_balance_of` on a real-but-wrong token returns "0", so the teardown
+   * reports nothing to withdraw, finds no registration to unregister, and
+   * deletes the vault with the balance still inside. Reproduced against a
+   * live vault holding 46.5 USDC with TOKEN=wrap.testnet — every read said
+   * zero and nothing in the output hinted otherwise.
+   */
+  {
+    name: "M9 the command drops OWNER, so the user inherits the script's dev account",
+    from: "    `OWNER=${owner}`,",
+    to: "",
+  },
+  {
+    name: "M10 the command drops TOKEN — a wrong token reads as zero and the delete strands the real balance",
+    from: "    `TOKEN=${token}`,",
+    to: "",
+  },
+  /**
+   * M11 is the subtle one, because it looks like MORE checking rather than
+   * less. Asserting `EXPECT_TOKENS=0` on a balance that could not be read
+   * converts "I do not know" into "I checked, it is empty" — and the script
+   * then passes its own guard and deletes. An unknown balance has to omit
+   * the assertion entirely.
+   */
+  {
+    name: "M11 an unknown balance asserts zero instead of omitting the expectation",
+    from: "  if (expectTokens !== null) parts.push(`EXPECT_TOKENS=${expectTokens}`);",
+    to: "  parts.push(`EXPECT_TOKENS=${expectTokens ?? 0}`);",
+  },
+  {
+    name: "M12 baseToDecimal goes back to float arithmetic, rounding the assertion past 2^53",
+    from: "  const d = base.padStart(decimals + 1, \"0\");",
+    to: "  return (Number(base) / 10 ** decimals).toFixed(decimals);\n  const d = base.padStart(decimals + 1, \"0\");",
+  },
+  {
+    name: "M13 baseToDecimal accepts anything, so a malformed balance becomes a plausible number",
+    from: "  if (!/^\\d+$/.test(base)) throw new Error(`not a base-unit string: ${base}`);",
+    to: "",
   },
 ];
 

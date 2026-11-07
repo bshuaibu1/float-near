@@ -264,6 +264,35 @@ describe("getVaultInfo", () => {
     return async <T>(m: string) => table[m] as T;
   }
 
+  /**
+   * THE DANGER ZONE'S TEARDOWN COMMAND IS BUILT FROM THESE TWO FIELDS, and
+   * they reach the dashboard through a `as VaultInfo` cast — so nothing at
+   * runtime notices if they stop being sent. They would become
+   * `OWNER=undefined TOKEN=undefined` in a command a user pastes into a
+   * shell to delete a vault.
+   *
+   * Both were present all along and merely undeclared on the dashboard side,
+   * which is exactly how the command came to omit them and let the script
+   * fall back to its author's dev account and the mock FT. A wrong token
+   * reads as a zero balance, so the teardown reports nothing to withdraw and
+   * deletes the vault with the money still in it.
+   *
+   * Asserted as a response-shape contract rather than inside a Danger Zone
+   * test, because the cast is on this side of the boundary.
+   */
+  it("sends the owner and token id the teardown command cannot be built without", async () => {
+    const info = await getVaultInfo(view(), cfg(), async () => "0");
+    expect(info.owner).toBe("alice.testnet");
+    expect(typeof info.tokenId).toBe("string");
+    expect(info.tokenId.length).toBeGreaterThan(0);
+    // Not just present — the owner must be the CONTRACT'S owner, not the
+    // configured vault id or some other account that happens to be to hand.
+    // An `OWNER` that is not the key holder fails the teardown at credential
+    // load, which is safe but reads as "you have no credential" rather than
+    // "this page told you the wrong account".
+    expect(info.owner).not.toBe(info.vaultId);
+  });
+
   it("reports the vault's REAL token balance, not its budget", async () => {
     // These are different quantities and the funding page needs this one: fund
     // 10,000 against a 100/day cap and the budget figure still reads 40, which

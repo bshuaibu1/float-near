@@ -141,6 +141,27 @@ export function teardownState(vaultTokenBalance: BaseAmount): TeardownState {
 }
 
 /**
+ * Base units to a plain decimal string, for `EXPECT_TOKENS`.
+ *
+ * STRING SURGERY, NOT `Number(base) / 10 ** decimals`. The display path in
+ * this app can afford a float because a mis-rendered digit is cosmetic; this
+ * value is an ASSERTION guarding an irreversible delete, so a balance past
+ * 2^53 base units must not silently become a near-miss that aborts a
+ * legitimate teardown — or worse, round into agreement with a wrong one.
+ *
+ * Emits a fixed `decimals` places so the output is directly comparable with
+ * the script's own `toFixed(decimals)` formatting, rather than relying on
+ * both sides to normalise the same way.
+ */
+export function baseToDecimal(base: string, decimals: number): string {
+  if (!/^\d+$/.test(base)) throw new Error(`not a base-unit string: ${base}`);
+  if (decimals === 0) return base.replace(/^0+(?=\d)/, "");
+  const d = base.padStart(decimals + 1, "0");
+  const whole = d.slice(0, d.length - decimals).replace(/^0+(?=\d)/, "");
+  return `${whole}.${d.slice(d.length - decimals)}`;
+}
+
+/**
  * The command that finishes the job, built from the vault the user is
  * actually looking at.
  *
@@ -152,7 +173,40 @@ export function teardownState(vaultTokenBalance: BaseAmount): TeardownState {
  *
  * `NETWORK` is included because the script defaults to testnet and a mainnet
  * teardown run against the wrong network is a confusing no-op at best.
+ *
+ * EVERY VARIABLE IS EMITTED, AND THE OMISSION USED TO BE DANGEROUS. This
+ * returned only NETWORK and VAULT, leaving OWNER and TOKEN to fall back to
+ * the script's defaults — which were the author's dev accounts and the mock
+ * FT. A wrong TOKEN does not fail: `ft_balance_of` on a real-but-wrong token
+ * returns "0", so the teardown reports nothing to withdraw and deletes the
+ * vault with the balance still inside, at an address nobody can sign for
+ * again. Measured against a live vault holding 46.5 USDC.
+ *
+ * `EXPECT_TOKENS` is the belt to that braces: the script compares it to what
+ * it actually reads and refuses to touch anything on a mismatch. The number
+ * comes from the balance this page is ALREADY showing the user, so the
+ * assertion is free and states the expectation before the irreversible step
+ * rather than after it.
  */
-export function teardownCommand(vaultId: string, network: string): string {
-  return `NETWORK=${network} VAULT=${vaultId} node scripts/teardown-vault.mjs`;
+export function teardownCommand(
+  vaultId: string,
+  network: string,
+  owner: string,
+  token: string,
+  /**
+   * Whole units, as displayed — or null when the balance could not be read.
+   * Null OMITS the assertion rather than passing a guess: `EXPECT_TOKENS=0`
+   * on an unknown balance would turn "I could not read it" into "I checked
+   * and it is empty", which is the error this whole module exists to avoid.
+   */
+  expectTokens: string | null,
+): string {
+  const parts = [
+    `NETWORK=${network}`,
+    `VAULT=${vaultId}`,
+    `OWNER=${owner}`,
+    `TOKEN=${token}`,
+  ];
+  if (expectTokens !== null) parts.push(`EXPECT_TOKENS=${expectTokens}`);
+  return `${parts.join(" ")} node scripts/teardown-vault.mjs`;
 }
