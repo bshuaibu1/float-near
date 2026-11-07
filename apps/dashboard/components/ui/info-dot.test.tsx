@@ -226,4 +226,55 @@ describe("InfoDot", () => {
       "tracking-normal",
     );
   });
+
+  /**
+   * THE TOUCH TARGET, which is invisible by construction and so is exactly
+   * the kind of thing that gets tidied away.
+   *
+   * The dot is 15x15 - right for a glyph beside a heading, half the 44px a
+   * finger needs (WCAG 2.5.5). It was the smallest control on /agents at
+   * 375px. Growing the button would push the heading's line box around, so
+   * the hit area is a transparent `::after` centred on the dot: it belongs
+   * to the button, so a tap in it activates the button, and it is out of
+   * flow, so nothing moves.
+   *
+   * SAME CAVEAT AS THE TEST ABOVE, stated rather than implied: happy-dom has
+   * no CSS engine, so this asserts the classes are present, not that they
+   * compute to 44px. It catches a deletion. The 44px itself was measured in
+   * a browser and is recorded in the component.
+   *
+   * `max-md:` is asserted too, and that is not pedantry. Written as a plain
+   * `after:size-11` the overlay would also exist on desktop, where it would
+   * swallow mouse clicks meant for the heading text beside it - a 44px
+   * invisible box over prose, for no benefit, since a mouse hits 15px fine.
+   */
+  it("extends the tap target to 44px on touch widths without moving the dot", () => {
+    render(dot);
+    const cls = trigger().className;
+
+    // The visible dot is unchanged at every width.
+    expect(cls, "the dot is no longer 15px; it was sized to sit beside a heading").toContain(
+      "size-[15px]",
+    );
+
+    // The overlay exists, is 44px, and is centred on the dot.
+    for (const part of [
+      "max-md:after:size-11",
+      "max-md:after:absolute",
+      "max-md:after:-translate-x-1/2",
+      "max-md:after:-translate-y-1/2",
+      "max-md:after:content-['']",
+    ]) {
+      expect(cls, `${part} removed; the tap target drops back to 15px`).toContain(part);
+    }
+
+    // And the button is a positioning context, or the overlay centres on
+    // whatever ancestor happens to be positioned instead.
+    expect(cls, "relative removed; the overlay will centre on an ancestor").toContain("relative");
+
+    // NOT on desktop. A bare `after:size-11` would cover the heading text.
+    expect(cls, "the overlay is unguarded; it will cover desktop text too").not.toMatch(
+      /(^|\s)after:size-11/,
+    );
+  });
 });

@@ -8,6 +8,7 @@ import { useWallet, type WalletLoginMethod } from "@/components/wallet-provider"
 import { clearFloatOwnerSession, getFloatOwnerSession } from "@/lib/float-session";
 import { CARD, DANGER, INK, LINE, MUTED, SUCCESS } from "@/lib/colors";
 import { shortAccount } from "@/lib/short-account";
+import { NAV_TABS, DOCS_URL } from "@/lib/nav-tabs";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
@@ -31,25 +32,14 @@ function shortVaultName(vaultId: string): string {
 }
 
 
-// Registry tab hidden — planned as standalone registry.usefloat.xyz once
-// APIs are natively x402. Not linked until that work is complete.
-//
-// DOCS IS NOT A TAB. Every other entry switches which part of this vault you
-// are looking at; Docs leaves the application entirely, and it was the only
-// one carrying a target="_blank". It also cost 51px in a strip that was
-// measured 42px short of fitting "Settings" at 900px — so the item that is
-// not a section is the item that gives up its seat.
-const tabs = [
-  { label: "Overview", href: "/" },
-  { label: "Budget Tree", href: "/agents" },
-  { label: "Policies", href: "/policies" },
-  { label: "Activity", href: "/activity" },
-  { label: "Fund", href: "/fund" },
-  { label: "Agent Keys", href: "/api-keys" },
-  { label: "Settings", href: "/settings" },
-];
-
-const DOCS_URL = "https://docs.usefloat.xyz/";
+/**
+ * The list moved to lib/nav-tabs, because the bottom bar renders it too.
+ *
+ * Two components holding two copies is how a new route ends up reachable
+ * from a desktop and invisible on a phone, with nothing failing to say so.
+ * The reasoning about what is and is not a tab lives there now.
+ */
+const tabs = NAV_TABS;
 
 export function TopNav() {
   const pathname = usePathname();
@@ -203,7 +193,12 @@ export function TopNav() {
                    screen with room to spare. The cap is meant to stop a
                    pathological label eating the toolbar, not to truncate the
                    ordinary case; 14rem clears a ~180px label and still caps. */
-                className="flex max-w-[7.5rem] items-center gap-1.5 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-chip lg:max-w-[14rem]"
+                /* `max-md:min-h-11` - 28px high is the chip on EVERY route,
+                   so it was the most-encountered under-sized target in the
+                   product. `max-md:` rather than `md:min-h-0`, because a
+                   `md:` reset declares a minimum where there was none and
+                   shows up as a real difference when diffed. */
+                className="flex max-w-[7.5rem] items-center gap-1.5 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-chip max-md:min-h-11 max-md:px-3 lg:max-w-[14rem]"
               >
                 {vault.paused ? (
                   <span
@@ -269,7 +264,19 @@ export function TopNav() {
           ) : null}
         </div>
 
-        <div className="relative flex h-full min-w-0 flex-1">
+        {/*
+          HIDDEN BELOW `md`, where the bottom bar has taken over.
+
+          This strip is where the seven tabs lived at every width. At 375px
+          it ran 327px past the viewport on every route — reachable by
+          dragging it sideways, which is precisely the interaction the
+          bottom bar exists to remove. Leaving both would give a phone two
+          navigations disagreeing about which one to use.
+
+          `hidden md:flex`, not a separate render path: the desktop strip
+          below is untouched, including its fade and its scroll handler.
+        */}
+        <div className="relative hidden h-full min-w-0 flex-1 md:flex">
         <nav
           ref={navRef}
           className="scrollbar-hide flex h-full flex-1 overflow-x-auto whitespace-nowrap"

@@ -82,7 +82,30 @@ export function InfoDot({
         aria-controls={open ? panelId : undefined}
         aria-label={open ? `Hide: ${label}` : `Explain ${label}`}
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex size-[15px] items-center justify-center rounded-full border text-[10px] font-semibold leading-none transition-colors cursor-pointer"
+        /**
+         * 15px TO LOOK AT, 44px TO TAP.
+         *
+         * The dot is 15x15. That is right for the glyph - it sits beside a
+         * heading and must not compete with it - and wrong for a finger,
+         * which needs 44px (WCAG 2.5.5, and Apple's HIG agrees). Measured on
+         * /agents at 375px: 15x15, the smallest control on the page.
+         *
+         * Growing the button would push the heading's line box around. So
+         * the hit area is a transparent pseudo-element centred on the dot:
+         * it belongs to the button, so a tap anywhere in it activates the
+         * button, and it is out of flow, so nothing moves. The visual dot is
+         * byte-identical at every width.
+         *
+         * IT CAN OVERLAP ITS NEIGHBOURS, which is the trade. Every current
+         * placement puts it after a heading with non-interactive text around
+         * it, so the overlap costs nothing. Dropping one next to another
+         * control would need a second look.
+         *
+         * `max-md:` only. On a desktop the pointer is a mouse and a 15px
+         * target is fine; extending it there would swallow clicks meant for
+         * the text beside it for no benefit.
+         */
+        className="relative inline-flex size-[15px] items-center justify-center rounded-full border text-[10px] font-semibold leading-none transition-colors cursor-pointer max-md:after:absolute max-md:after:left-1/2 max-md:after:top-1/2 max-md:after:size-11 max-md:after:-translate-x-1/2 max-md:after:-translate-y-1/2 max-md:after:content-['']"
         style={{
           borderColor: open ? MUTED : LINE,
           color: open ? MUTED : FAINT,

@@ -140,6 +140,262 @@ const border = { border: `1px solid ${LINE}` } as const;
 function utilColor(pct: number) { return pct >= 80 ? DANGER : pct >= 50 ? WARN : SUCCESS; }
 function utilTrack(pct: number) { return pct >= 80 ? DANGER_BG : pct >= 50 ? WARN_BG : SUCCESS_BG; }
 
+/**
+ * The exact figure, when an abbreviation is hiding something.
+ *
+ * THIS REPLACES A `title`, AND THE `title` WAS MY OWN MISTAKE. The stat
+ * cards show `usd(x, "compact")` because compact is bounded at eight
+ * characters and detailed is not — a 150px card can be designed against
+ * eight. Abbreviating loses precision, so I put the exact number in a
+ * `title` and called it recoverable.
+ *
+ * A `title` never fires on a touch screen. So the precision was recoverable
+ * on a desktop, where the card is wide enough that nothing was abbreviated
+ * in the first place, and gone on a phone, which is the only place the
+ * abbreviation happens. Exactly backwards.
+ *
+ * RENDERED ONLY WHEN IT DIFFERS. Below $1,000 compact and detailed are the
+ * same string, and a line repeating the figure above it is noise. So this
+ * is nothing at all for today's `$3.50`, and `$1,250,000.00` under `$1.3M`
+ * when there is something to say.
+ */
+function ExactFigure({ compact, exact, loading }: { compact: string; exact: string; loading: boolean }) {
+  if (loading || compact === exact) return null;
+  return <p className="mt-0.5 text-[11px] font-mono tabular-nums text-faint">{exact}</p>;
+}
+
+/**
+ * THE TWO PANELS BELOW ARE FIXED-WIDTH GRIDS, AND ON A PHONE THAT HID THEM.
+ *
+ * `grid-cols-[1fr_7rem_10rem]` and `grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem]`
+ * name their columns in rem, so the columns do not yield as the viewport
+ * narrows - the `1fr` collapses to nothing and everything after it is pushed
+ * off the right edge. Measured at 375px: "Status" ended 161px past the
+ * viewport, the status badge 146px past, a payment's note 281px past.
+ *
+ * And `documentElement.scrollWidth` was still 375, because the panel is
+ * `overflow-hidden`. So there was no scrollbar, no fade, nothing. Seven
+ * elements were simply absent from the page with no way for a user to learn
+ * they existed. That is worse than an ugly layout: the status of a payment
+ * is the single thing a person opens this page to check.
+ *
+ * WHY A ROW COMPONENT PER PANEL, WITH TWO LAYOUTS INSIDE IT.
+ *
+ * The desktop grid and the phone card are genuinely different shapes - the
+ * card regroups six columns onto three lines and needs its own labels, since
+ * the column headings it would have inherited are not on screen. Expressing
+ * both from one piece of markup needs `display: contents` tricks and CSS
+ * `order`, which is where a layout becomes something nobody can safely edit.
+ *
+ * So each row renders twice, `hidden md:grid` and `md:hidden`. The cost of
+ * that is divergence, and it is paid down the only way that works: every
+ * value is computed ONCE at the top of the component and both layouts read
+ * the same constant. Neither branch recomputes anything.
+ */
+
+/**
+ * One agent in "Today's spend by agent".
+ *
+ * `isLast` IS NOT A CONVENIENCE - it replaces a `last:border-b-0` that this
+ * refactor silently broke. That variant compiles to `:last-child`, which is
+ * relative to the PARENT, and each row is now a fragment of two divs. So the
+ * desktop row stopped being the last child, kept a border it used to drop,
+ * grew from 48px to 49px, and moved the whole Recent Activity panel below it
+ * down by one pixel.
+ *
+ * Found by diffing computed styles against main, not by looking at it. One
+ * pixel on the last row of one panel is not something anyone notices, and it
+ * is exactly the drift that accumulates until a layout is quietly wrong
+ * everywhere with no way to say when it started.
+ */
+function AgentSpendRow({ agent, isLast }: { agent: ApiAgent; isLast: boolean }) {
+  // Computed once. Both layouts below read these and never recompute.
+  const spentToday = parseFloat(agent.dailySpent || "0");
+  const pct = Math.min(agent.dailyBudgetUsedPercent ?? 0, 100);
+  const col = utilColor(pct);
+  const trk = utilTrack(pct);
+  const name = agent.displayName ?? agent.agentId;
+  const indent = { paddingLeft: `${(agent.depth ?? 0) * 1.1}rem` };
+
+  const identity = (
+    <div className="flex items-center gap-2.5 min-w-0" style={indent}>
+      <div className="relative shrink-0">
+        <AgentAvatar seed={agentSeed(agent.agentId)} hue={agentHue(agent.agentId)} size={24} animated />
+        <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white" style={{ background: SUCCESS }} />
+      </div>
+      {/* displayName, not agentId: agentId is `node-<id>` for a team node,
+          which rendered as "node-1" and hid who the row was. Depth arrives
+          separately as a number and is drawn as padding. */}
+      <span className="text-[13px] font-medium truncate text-ink">{name}</span>
+    </div>
+  );
+
+  const meter = (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: trk }}>
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: col }} />
+      </div>
+      <span className="text-[11px] font-medium w-8 text-right shrink-0" style={{ color: col }}>
+        {percent(pct, { decimals: 0 })}
+      </span>
+    </div>
+  );
+
+  return (
+    <>
+      {/*
+        DESKTOP: unchanged, verified against main down to the pixel.
+
+        The border is still CLASSES, with `border-b-0` applied explicitly
+        instead of via `last:`. An inline `borderBottom: "none"` renders the
+        same - zero width either way - but computes to `0px none` where the
+        class computes to `0px solid rgb(234,234,234)`, and that showed up as
+        the one remaining difference against main. Matching exactly is
+        cheaper than keeping a note explaining why a difference is harmless.
+      */}
+      <div className={`hidden md:grid grid-cols-[1fr_7rem_10rem] gap-4 items-center px-6 py-3 border-b border-line hover:bg-canvas transition-colors duration-100 ${isLast ? "border-b-0" : ""}`}>
+        {identity}
+        <span className="text-[12px] font-mono text-right tabular-nums text-ink">{usd(spentToday)}</span>
+        {meter}
+      </div>
+
+      {/* PHONE: the column headings are not on screen, so each figure says
+          what it is. Without that the card is two numbers and a bar. */}
+      <div className={`md:hidden px-4 py-3.5 border-b border-line ${isLast ? "border-b-0" : ""}`}>
+        {identity}
+        <div className="mt-3 flex items-baseline justify-between gap-3">
+          <span className="text-[12px] text-muted">Spent today</span>
+          <span className="text-[13px] font-mono tabular-nums text-ink">{usd(spentToday)}</span>
+        </div>
+        <div className="mt-2.5">
+          <span className="mb-1.5 block text-[12px] text-muted">Daily budget</span>
+          {meter}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** One payment in "Recent Activity". */
+function ActivityRow({ item, isLast, delayMs, mounted }: {
+  item: ActivityItem;
+  isLast: boolean;
+  delayMs: number;
+  mounted: boolean;
+}) {
+  // Computed once. Both layouts below read these and never recompute.
+  const approved = APPROVED.includes(item.status?.toLowerCase());
+  const who = item.recipient ?? resolveVenue(item.venue, item.modelName);
+  const note = item.memo ? resolveVenue(item.memo, item.modelName) : null;
+  const rail = resolveRail(item.rail);
+  const when = formatTime(item.time);
+  const reveal = {
+    opacity: mounted ? 1 : 0,
+    transition: `opacity 400ms cubic-bezier(0.16,1,0.3,1) ${delayMs}ms`,
+  } as const;
+
+  const avatar = <AgentAvatar seed={agentSeed(item.agentId) || item.agent} hue={agentHue(item.agentId)} size={16} animated />;
+  const badge = (
+    <span
+      className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
+      style={approved ? { background: SUCCESS_BG, color: SUCCESS } : { background: DANGER_BG, color: DANGER }}
+    >
+      {item.status}
+    </span>
+  );
+
+  return (
+    <>
+      {/* DESKTOP: unchanged, down to the class string. */}
+      <div
+        className="hidden md:grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 items-center px-6 py-3 transition-colors duration-100 hover:bg-canvas"
+        style={{ borderBottom: isLast ? "none" : `1px solid ${LINE}`, ...reveal }}
+      >
+        <span className="text-[12px] font-mono tabular-nums text-muted">{when}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          {avatar}
+          <span className="text-[12px] font-mono truncate text-ink">{item.agent.slice(0, 8)}…</span>
+        </div>
+        {/*
+          ONE LINE, TWO FACTS, RECIPIENT ALWAYS FIRST.
+
+          This column was `memo || recipient`, so one row showed an account
+          and the next showed a sentence under the same heading, with no way
+          to tell which you were looking at. Both of the live payments went
+          to work12.testnet and the table made them look like different
+          destinations.
+
+          A second COLUMN was the obvious fix and is the wrong one: the MCP
+          defaults memo to "" and nothing requires it, so it would be blank
+          on most rows, and a mostly-empty column in a six-column table is
+          dead width.
+
+          TWO LINES was the next attempt, and it made the rows ragged -
+          measured 45px without a note against 61px with one, which in a
+          six-row summary card reads as a mistake rather than as a design.
+
+          So: one line, fixed height. The recipient is always first, which is
+          what disambiguates the two facts; the note follows in muted text
+          after a separator, and truncates as a unit so the account survives
+          a narrow column.
+        */}
+        {/* `title` stays on the DESKTOP row only. Here the line truncates, so
+            the tooltip is the only way to read a long note — and a mouse is
+            present to trigger it. The phone card below wraps the note in
+            full instead, which is the better answer where hover does not
+            exist at all. */}
+        <div className="text-[13px] truncate min-w-0" title={item.memo ?? undefined}>
+          <span className="font-medium text-ink">{who}</span>
+          {note ? <span className="text-muted">{" · "}{note}</span> : null}
+        </div>
+        <span className="text-[12px] font-mono text-right tabular-nums text-ink">
+          {item.amount} <span className="text-muted">USDC</span>
+        </span>
+        <span className="text-[11px] uppercase tracking-wider text-center font-medium text-muted">{rail}</span>
+        <div className="flex justify-end">{badge}</div>
+      </div>
+
+      {/*
+        PHONE: three lines, in the order the question is asked.
+
+        "What happened" is who was paid and why, so that is the headline and
+        it WRAPS rather than truncating - the desktop column truncates
+        because it is 1fr of a six-column grid, which is not a constraint
+        here, and a note cut to "· first payment from a vault c" was the
+        single worst thing on the page at this width.
+
+        The amount and the status sit on the last line together, because
+        "how much" and "did it work" are read as one answer.
+      */}
+      <div
+        className="md:hidden px-4 py-3.5"
+        style={{ borderBottom: isLast ? "none" : `1px solid ${LINE}`, ...reveal }}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {avatar}
+            <span className="text-[12px] font-mono truncate text-ink">{item.agent}</span>
+          </div>
+          <span className="shrink-0 text-[12px] font-mono tabular-nums text-muted">{when}</span>
+        </div>
+        <p className="mt-2 text-[13px] leading-5">
+          <span className="font-medium text-ink">{who}</span>
+          {note ? <span className="text-muted">{" · "}{note}</span> : null}
+        </p>
+        <div className="mt-2.5 flex items-center justify-between gap-3">
+          <span className="text-[13px] font-mono tabular-nums text-ink">
+            {item.amount} <span className="text-muted">USDC</span>
+          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] uppercase tracking-wider font-medium text-muted">{rail}</span>
+            {badge}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function Overview() {
   const { walletAddress } = useWallet();
   const ownerSessionAvailable = useOwnerSessionAvailable();
@@ -274,7 +530,7 @@ export default function Overview() {
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Total Spent</p>
           <div className="flex items-baseline gap-1 mb-1">
             {/*
-              COMPACT, and the exact figure on hover.
+              COMPACT, and the exact figure beneath it.
 
               Two columns gives this card 117px of content box on a phone,
               which is about eight characters at this size. `$12,345.60` is
@@ -283,18 +539,19 @@ export default function Overview() {
               widest an abbreviation gets, so the figure fits at EVERY width
               rather than up to whatever the next test value happened to be.
 
-              Abbreviating does lose precision, and there is no detail view
-              for lifetime spend to recover it from, so `title` carries the
-              exact number. Below $1,000 the two are identical and nothing
-              changes — which is why today's $3.50 looks the same.
+              THE EXACT FIGURE WAS A `title`, AND THAT WAS WRONG. A title
+              never fires on a touch screen, so the precision this
+              abbreviation gives up was recoverable on a desktop and gone on
+              a phone — the one device the abbreviation exists for. It is now
+              a second line, rendered only when it differs from what is
+              already shown, so below $1,000 nothing is added and today's
+              $3.50 looks exactly as it did.
             */}
-            <span
-              title={loading ? undefined : usd(totalSpent)}
-              className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink"
-            >
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">
               {loading ? "—" : usd(totalSpent, "compact")}
             </span>
           </div>
+          <ExactFigure compact={usd(totalSpent, "compact")} exact={usd(totalSpent)} loading={loading} />
           <p className="text-[12px] text-muted">lifetime, all agents</p>
         </div>
 
@@ -314,13 +571,11 @@ export default function Overview() {
         <div className={statCard} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Avg TX Size</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span
-              title={loading ? undefined : usd(avgTx)}
-              className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink"
-            >
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">
               {loading ? "—" : usd(avgTx, "compact")}
             </span>
           </div>
+          <ExactFigure compact={usd(avgTx, "compact")} exact={usd(avgTx)} loading={loading} />
           <p className="text-[12px] text-muted">per payment</p>
         </div>
       </div>
@@ -452,7 +707,7 @@ export default function Overview() {
       <div className="bg-white rounded-lg overflow-hidden mb-6" style={border}>
         <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom:`1px solid ${LINE}` }}>
           <p className="text-[13px] font-semibold text-ink">Today's spend by agent</p>
-          <Link href="/agents" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted">
+          <Link href="/agents" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted max-md:-my-2 max-md:min-h-11 max-md:px-2 max-md:-mr-2">
             Manage agents <ArrowRight size={12}/>
           </Link>
         </div>
@@ -499,7 +754,10 @@ export default function Overview() {
             </div>
           </div>
         )}
-        <div className="grid grid-cols-[1fr_7rem_10rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted border-b border-line">
+        {/* The column headings belong to the grid. On a phone each card
+            carries its own labels instead, so this would be three words
+            describing a layout that is not there. */}
+        <div className="hidden md:grid grid-cols-[1fr_7rem_10rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted border-b border-line">
           <span>Agent</span><span className="text-right">Spent today</span><span className="text-center">Daily budget</span>
         </div>
         {!dashboardAuthorized ? (
@@ -516,40 +774,9 @@ export default function Overview() {
                 until you add one.
               </div>
             )}
-            {fleet.map((a) => {
-              const spentToday = parseFloat(a.dailySpent || "0");
-              const pct    = Math.min(a.dailyBudgetUsedPercent ?? 0, 100);
-              const col    = utilColor(pct);
-              const trk    = utilTrack(pct);
-              return (
-                <div key={a.agentId}
-                  className="grid grid-cols-[1fr_7rem_10rem] gap-4 items-center px-6 py-3 border-b border-line last:border-b-0 hover:bg-canvas transition-colors duration-100"
-                >
-                  <div
-                    className="flex items-center gap-2.5 min-w-0"
-                    style={{ paddingLeft: `${(a.depth ?? 0) * 1.1}rem` }}
-                  >
-                    <div className="relative shrink-0">
-                      <AgentAvatar seed={agentSeed(a.agentId)} hue={agentHue(a.agentId)} size={24} animated />
-                      <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-white" style={{ background:SUCCESS }}/>
-                    </div>
-                    {/* displayName, not agentId: agentId is `node-<id>` for a team
-                        node, which rendered as "node-1" and hid who the row was.
-                        Depth arrives separately as a number and is drawn as padding. */}
-                    <span className="text-[13px] font-medium truncate text-ink">
-                      {a.displayName ?? a.agentId}
-                    </span>
-                  </div>
-                  <span className="text-[12px] font-mono text-right tabular-nums text-ink">{usd(spentToday)}</span>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: trk }}>
-                      <div className="h-full rounded-full transition-all duration-500" style={{ width:`${pct}%`, background: col }}/>
-                    </div>
-                    <span className="text-[11px] font-medium w-8 text-right shrink-0" style={{ color: col }}>{percent(pct, { decimals: 0 })}</span>
-                  </div>
-                </div>
-              );
-            })}
+            {fleet.map((a, i) => (
+              <AgentSpendRow key={a.agentId} agent={a} isLast={i === fleet.length - 1} />
+            ))}
           </div>
         )}
       </div>
@@ -561,11 +788,12 @@ export default function Overview() {
             <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background:SUCCESS }}/>
             <p className="text-[13px] font-semibold text-ink">Recent Activity</p>
           </div>
-          <Link href="/activity" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted">
+          <Link href="/activity" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted max-md:-my-2 max-md:min-h-11 max-md:px-2 max-md:-mr-2">
             View all <ArrowRight size={12}/>
           </Link>
         </div>
-        <div className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider" style={{ color:MUTED, borderBottom:`1px solid ${LINE}` }}>
+        {/* Column headings, desktop only - the phone cards label themselves. */}
+        <div className="hidden md:grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 px-6 py-2.5 text-[11px] font-medium uppercase tracking-wider" style={{ color:MUTED, borderBottom:`1px solid ${LINE}` }}>
           <span>Time</span><span>Agent</span><span>To</span><span className="text-right">Amount</span><span className="text-center">Rail</span><span className="text-right">Status</span>
         </div>
         {activity.length === 0 ? (
@@ -574,79 +802,15 @@ export default function Overview() {
           </div>
         ) : (
           <div>
-            {activity.slice(0, 6).map((r, i) => {
-              const approved = APPROVED.includes(r.status?.toLowerCase());
-              return (
-                <div key={r.id}
-                  className="grid grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem] gap-4 items-center px-6 py-3 transition-colors duration-100 hover:bg-canvas"
-                  style={{ borderBottom: i < Math.min(activity.length,6)-1 ? `1px solid ${LINE}` : "none", opacity: mounted ? 1 : 0, transition:`opacity 400ms cubic-bezier(0.16,1,0.3,1) ${200+i*60}ms` }}
-                >
-                  <span className="text-[12px] font-mono tabular-nums text-muted">{formatTime(r.time)}</span>
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <AgentAvatar seed={agentSeed(r.agentId) || r.agent} hue={agentHue(r.agentId)} size={16} animated />
-                    <span className="text-[12px] font-mono truncate text-ink">{r.agent.slice(0,8)}…</span>
-                  </div>
-                  {/*
-                      ONE COLUMN, TWO FACTS, AND THE SECOND IS OPTIONAL.
-
-                      This was a single line reading `memo || recipient`, so
-                      one row showed an account and the next showed a
-                      sentence, with nothing to say which. A second COLUMN
-                      would have been blank on most rows - the MCP defaults
-                      memo to "" and nothing requires it - and a mostly-empty
-                      column in a six-column table is dead width.
-
-                      So: who was paid, always, as the primary line. What it
-                      was for underneath, only when the agent said. The
-                      absence of a note now looks like an absence instead of
-                      looking like a recipient.
-                    */}
-                    {/*
-                      ONE LINE, TWO FACTS, RECIPIENT ALWAYS FIRST.
-
-                      This column was `memo || recipient`, so one row showed an
-                      account and the next showed a sentence under the same
-                      heading, with no way to tell which you were looking at.
-                      Both of the live payments went to work12.testnet and the
-                      table made them look like different destinations.
-
-                      A second COLUMN was the obvious fix and is the wrong one:
-                      the MCP defaults memo to "" and nothing requires it, so
-                      it would be blank on most rows, and a mostly-empty column
-                      in a six-column table is dead width.
-
-                      TWO LINES was the next attempt, and it made the rows
-                      ragged - measured 45px without a note against 61px with
-                      one, which in a six-row summary card reads as a mistake
-                      rather than as a design.
-
-                      So: one line, fixed height. The recipient is always
-                      first, which is what disambiguates the two facts; the
-                      note follows in muted text after a separator, and
-                      truncates as a unit so the account survives a narrow
-                      column.
-                    */}
-                    <div className="text-[13px] truncate min-w-0" title={r.memo ?? undefined}>
-                      <span className="font-medium text-ink">
-                        {r.recipient ?? resolveVenue(r.venue, r.modelName)}
-                      </span>
-                      {r.memo && (
-                        <span className="text-muted">
-                          {" · "}
-                          {resolveVenue(r.memo, r.modelName)}
-                        </span>
-                      )}
-                    </div>
-                  <span className="text-[12px] font-mono text-right tabular-nums text-ink">{r.amount} <span className="text-muted">USDC</span></span>
-                  <span className="text-[11px] uppercase tracking-wider text-center font-medium text-muted">{resolveRail(r.rail)}</span>
-                  <div className="flex justify-end">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full"
-                      style={approved ? { background:SUCCESS_BG, color:SUCCESS } : { background:DANGER_BG, color:DANGER }}
-                    >{r.status}</span>
-                  </div>
-                </div>
-              );
-            })}
+            {activity.slice(0, 6).map((r, i) => (
+              <ActivityRow
+                key={r.id}
+                item={r}
+                isLast={i >= Math.min(activity.length, 6) - 1}
+                delayMs={200 + i * 60}
+                mounted={mounted}
+              />
+            ))}
           </div>
         )}
       </div>
