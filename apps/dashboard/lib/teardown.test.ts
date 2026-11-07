@@ -8,7 +8,7 @@
  * recovers them.
  */
 import { describe, it, expect } from "vitest";
-import { teardownState, teardownCommand } from "./teardown";
+import { teardownState, teardownCommand, baseToDecimal } from "./teardown";
 
 describe("teardownState", () => {
   /**
@@ -137,10 +137,105 @@ describe("teardownCommand", () => {
    * a confusing no-op if you are lucky.
    */
   it("names the network and the vault", () => {
-    const c = teardownCommand("v.fac.near", "mainnet");
+    const c = teardownCommand("v.fac.near", "mainnet", "me.near", "usdc.near", "1.000000");
     expect(c).toContain("NETWORK=mainnet");
     expect(c).toContain("VAULT=v.fac.near");
     expect(c).toContain("scripts/teardown-vault.mjs");
+  });
+
+  /**
+   * THE REGRESSION THAT MATTERS. This emitted only NETWORK and VAULT, so
+   * OWNER and TOKEN fell through to the script's defaults — the author's dev
+   * account and the mock FT. A wrong TOKEN is not an error: `ft_balance_of`
+   * on a real-but-wrong token returns "0", the teardown reports nothing to
+   * withdraw, and the delete strands the real balance at an address nobody
+   * can sign for again. Reproduced on a live vault holding 46.5 USDC.
+   *
+   * So the test is not "contains OWNER" — it is that the command carries the
+   * CALLER'S values and none of the script's old defaults survive anywhere
+   * in it.
+   */
+  it("passes the owner and token through, leaving nothing to default", () => {
+    const c = teardownCommand("v.fac.testnet", "testnet", "you.testnet", "usdc.fakes.testnet", null);
+    expect(c).toContain("OWNER=you.testnet");
+    expect(c).toContain("TOKEN=usdc.fakes.testnet");
+    // The dev defaults the script used to fall back to. If either appears in
+    // a command built for someone else's vault, the bug is back.
+    expect(c).not.toContain("floatv4.testnet node");
+    expect(c).not.toContain("ft.floatv4.testnet");
+    expect(c).not.toContain("OWNER=floatv4.testnet");
+  });
+
+  /**
+   * The assertion is only as good as its honesty about not knowing. An
+   * unreadable balance must OMIT `EXPECT_TOKENS`, because `EXPECT_TOKENS=0`
+   * would tell the script "I checked, it is empty" when the truth is "I
+   * could not read it" — and the script would then happily delete.
+   */
+  it("omits the expectation when the balance is unknown, rather than asserting zero", () => {
+    const c = teardownCommand("v.fac.testnet", "testnet", "you.testnet", "usdc.fakes.testnet", null);
+    expect(c).not.toContain("EXPECT_TOKENS");
+  });
+
+  it("states the expectation when the balance is known", () => {
+    const c = teardownCommand("v.fac.testnet", "testnet", "you.testnet", "t.testnet", "46.500000");
+    expect(c).toContain("EXPECT_TOKENS=46.500000");
+  });
+
+  /**
+   * The emitted string is pasted into a shell. A vault id or token id is a
+   * NEAR account name, which cannot contain a space, quote, or shell
+   * metacharacter — so nothing here needs quoting. This pins that assumption
+   * instead of leaving it implicit: if an id ever reaches this function with
+   * a space in it, the command would silently truncate at that point and the
+   * script would see a different vault than the page displayed.
+   */
+  it("produces a single shell word per variable", () => {
+    const c = teardownCommand("v.fac.testnet", "testnet", "you.testnet", "t.testnet", "1.000000");
+    const words = c.split(" ");
+    expect(words.filter((w) => w.includes("="))).toHaveLength(5);
+    for (const w of words) expect(w).not.toMatch(/["'`$;&|<>]/);
+  });
+});
+
+describe("baseToDecimal", () => {
+  it("converts ordinary balances at 6dp", () => {
+    expect(baseToDecimal("46500000", 6)).toBe("46.500000");
+    expect(baseToDecimal("3500000", 6)).toBe("3.500000");
+    expect(baseToDecimal("0", 6)).toBe("0.000000");
+  });
+
+  /** Under one whole unit: the integer part must still be there as "0". */
+  it("keeps a zero integer part rather than emitting a bare dot", () => {
+    expect(baseToDecimal("1", 6)).toBe("0.000001");
+    expect(baseToDecimal("500000", 6)).toBe("0.500000");
+  });
+
+  /**
+   * THE REASON THIS IS STRING SURGERY. Past 2^53 the float route loses
+   * precision, and this value guards an irreversible delete: a near-miss
+   * aborts a legitimate teardown, and a round-into-agreement defeats the
+   * guard entirely. Compared against the float route directly so the claim
+   * is evidence rather than assertion.
+   */
+  it("is exact where the float route is not", () => {
+    const base = "123456789012345678";
+    expect(baseToDecimal(base, 6)).toBe("123456789012.345678");
+    expect(
+      (Number(base) / 10 ** 6).toFixed(6),
+      "the float route no longer loses this; the premise has moved",
+    ).not.toBe("123456789012.345678");
+  });
+
+  it("handles a zero-decimal token", () => {
+    expect(baseToDecimal("42", 0)).toBe("42");
+  });
+
+  /** A non-numeric balance must throw, not produce a plausible number. */
+  it("refuses anything that is not base units", () => {
+    for (const bad of ["", "1.5", "0x10", "-1", "1e6", " 1 "]) {
+      expect(() => baseToDecimal(bad, 6), `accepted ${JSON.stringify(bad)}`).toThrow();
+    }
   });
 
   /** The script it names has to exist, or this is a dead instruction. */

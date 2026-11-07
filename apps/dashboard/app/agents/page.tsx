@@ -68,6 +68,16 @@ type VaultInfo = {
   currentDay?: number | null;
   /** Declared because the signing link needs it; the adapter always sent it. */
   network: string;
+  /**
+   * Both sent by the adapter all along (`owner`, `tokenId` in vault-info) and
+   * simply never declared here — which is how the Danger Zone came to build a
+   * teardown command without them, letting the script fall back to its
+   * author's dev account and the mock FT. A wrong token reads as a zero
+   * balance and the delete strands the real one, so these are required rather
+   * than optional: the only safe teardown command is a complete one.
+   */
+  owner: string;
+  tokenId: string;
   explorerBase: string;
   paused: boolean;
   strictAllocation: boolean;

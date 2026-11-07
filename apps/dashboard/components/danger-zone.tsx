@@ -24,12 +24,22 @@
 
 import { useState } from "react";
 import { DANGER, SUCCESS, WARN } from "@/lib/colors";
-import { teardownState, teardownCommand } from "@/lib/teardown";
+import { teardownState, teardownCommand, baseToDecimal } from "@/lib/teardown";
 import { usdc } from "@/lib/money";
 
 export type DangerZoneVault = {
   vaultId: string;
   network: string;
+  /**
+   * Both REQUIRED, and that is deliberate rather than tidy. The handed-over
+   * command needs `OWNER` and `TOKEN`; while they were optional the command
+   * omitted them and the script fell back to its author's dev accounts and
+   * the mock FT — a wrong token reads as a zero balance and the delete
+   * strands the real one. Making them optional here is what let that ship,
+   * so the type refuses to build a command it cannot fill in.
+   */
+  owner: string;
+  tokenId: string;
   tokenDecimals?: number;
   vaultTokenBalance?: string | null;
   currentDay?: number | null;
@@ -51,8 +61,31 @@ export function DangerZone({
   const [copied, setCopied] = useState(false);
 
   const state = teardownState(info.vaultTokenBalance);
-  const cmd = teardownCommand(info.vaultId, info.network);
   const decimals = info.tokenDecimals ?? 6;
+
+  /**
+   * The expectation passed to the script, and NULL when the balance is not
+   * known to be a clean base-unit string.
+   *
+   * `teardownState` is the only thing that has validated it, so the guard is
+   * its verdict rather than a second opinion: anything other than
+   * withdrawable-or-empty means the value was unreadable, and an unreadable
+   * balance must omit `EXPECT_TOKENS` entirely. Sending `0` there would
+   * convert "I could not read this" into "I checked, it is empty" — the exact
+   * substitution that makes a silent delete look verified.
+   */
+  const expectTokens =
+    (state.canWithdraw || state.isEmpty) && typeof info.vaultTokenBalance === "string"
+      ? baseToDecimal(info.vaultTokenBalance, decimals)
+      : null;
+
+  const cmd = teardownCommand(
+    info.vaultId,
+    info.network,
+    info.owner,
+    info.tokenId,
+    expectTokens,
+  );
 
   /**
    * Hoisted so the narrowing survives into the click handler. TypeScript
