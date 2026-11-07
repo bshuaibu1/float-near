@@ -1,4 +1,4 @@
-<!-- STAMP commit=b837edc date=2026-11-07 -->
+<!-- STAMP commit=98e6cd4 date=2026-11-07 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -49,7 +49,10 @@ so drift fails two suites.
 - **Intents cross-chain round trip** end to end with live 1Click pricing; the vault registers
   the solver's deposit address itself.
 - **Factory 12/12 on testnet** — `CreateAccount + Transfer + UseGlobalContract + new()` in one batch.
-- **Shipped to npm:** `@floatonnear/create-float` 0.4.0, `@floatonnear/mcp` 0.3.0 (24 tools),
+- **Shipped to npm:** `@floatonnear/create-float` 0.4.0 (**0.5.0 is cut, tested and
+  tarball-audited but NOT PUBLISHED** — `npm whoami` was 401; until someone runs
+  `npm publish`, every user still installs the 0.4.0 whose `float-exit` tells them their
+  deposit is unrecoverable), `@floatonnear/mcp` 0.3.0 (24 tools),
   `@floatonnear/float-adapter` 0.2.1 — verified by installing from the registry and driving them.
 - Next.js dashboard (`apps/dashboard`), mobile build done. 37 of 38 reason codes tested.
 
