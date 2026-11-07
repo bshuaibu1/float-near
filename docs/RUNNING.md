@@ -80,9 +80,13 @@ pool is genuinely spent afterwards.
 export NEAR_VAULT_CONTRACT=v4.floatv4.testnet
 export NEAR_VAULT_TOKEN=ft.floatv4.testnet    # the NEP-141 the vault pays in
 export NEAR_VAULT_TOKEN_DECIMALS=6
-# only needed for the pay flow - the RESTRICTED key from create_agent_account:
-export NEAR_VAULT_AGENT_ID=a0.your-vault.testnet
-export NEAR_VAULT_AGENT_KEY=ed25519:...
+# only needed for the pay flow - the RESTRICTED key from create_agent_account.
+# PREFER THE FILE FORM: a path is not a secret, so checking which vault is
+# configured stops printing a live private key into your scrollback.
+export NEAR_VAULT_AGENT_KEY_FILE=~/.near-credentials/testnet/your-vault.testnet.json
+# ...or inline, which still works:
+#   export NEAR_VAULT_AGENT_ID=a0.your-vault.testnet
+#   export NEAR_VAULT_AGENT_KEY=ed25519:...
 
 npm -w @floatonnear/mcp run build
 npm -w @floatonnear/float-adapter run build
@@ -187,3 +191,23 @@ no agent. If several agents are loaded and a request names none, the adapter
 returns `400` rather than guessing — picking arbitrarily would charge a budget
 nobody chose, and the payment would *succeed*, surfacing later as an
 inexplicable balance instead of an error.
+
+### Keys as a path, not a value
+
+`NEAR_VAULT_AGENT_KEY_FILE` and `FLOAT_QUOTE_SIGNER_KEY_FILE` take a **path**
+instead of the secret itself. The file can be the `~/.near-credentials` shape
+(`{"account_id", "public_key", "private_key"}` — `account_id` then supplies
+`NEAR_VAULT_AGENT_ID` too) or the bare key on one line.
+
+Prefer them. The inline variables are not a leak in themselves — `.mcp.json`
+and `.float/adapter.env` are both gitignored — but *reading* either file to
+check which vault is wired up is routine, and it prints a live private key into
+a terminal scrollback and into the transcript of whatever agent is driving. A
+path survives that. It is the same reason NEAR CLI signing in this repo uses
+`sign-with-access-key-file` rather than `sign-with-plaintext-private-key`.
+
+The inline variables keep working. If both are set the **file wins** and the
+inline one is reported as ignored. A file that is named but cannot be read is
+never silently replaced by the inline value — paying fails and names the path,
+because "your key file is broken" and "no key is configured" need different
+fixes, and the second reads as advice to paste the secret back inline.

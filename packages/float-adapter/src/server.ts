@@ -12,8 +12,17 @@
  *   NEAR_VAULT_RPC_URL         default https://test.rpc.fastnear.com
  *   NEAR_VAULT_TOKEN           required (the NEP-141 the vault pays in)
  *   NEAR_VAULT_TOKEN_DECIMALS  default 6
- *   NEAR_VAULT_AGENT_ID        only needed for POST /v1/pay
+ *   NEAR_VAULT_AGENT_ID        only needed for POST /v1/pay. Taken from the key
+ *                              file's `account_id` when one is given.
  *   NEAR_VAULT_AGENT_KEY       only needed for POST /v1/pay (the restricted key)
+ *   NEAR_VAULT_AGENT_KEY_FILE  PREFERRED over the inline value above: a PATH to
+ *                              a ~/.near-credentials-shaped JSON file or a bare
+ *                              key file. See key-file.ts — a path is not a
+ *                              secret, so reading this config to check which
+ *                              vault is wired up stops printing a live private
+ *                              key. If both are set the FILE wins.
+ *   FLOAT_QUOTE_SIGNER_KEY     32-byte hex, for rail=intents
+ *   FLOAT_QUOTE_SIGNER_KEY_FILE  the same, as a path
  *   PORT                       default 8787 (Float's dashboard default)
  */
 
@@ -46,6 +55,7 @@ import {
   type BlockedStore,
 } from "./blocked-scan.js";
 import { parseEnvFile, applyEnvFile } from "./env-file.js";
+import { resolveKeySource } from "@floatonnear/mcp/key-file";
 
 // Load FLOAT_ENV_FILE before anything reads process.env.
 //
@@ -72,6 +82,52 @@ if (process.env.FLOAT_ENV_FILE) {
   console.log(`env file: ${envPath} — set ${applied.length} (${applied.join(", ") || "none"})`);
 }
 
+/**
+ * Secrets, from a FILE where one is named. See key-file.ts for why.
+ *
+ * AFTER the FLOAT_ENV_FILE block above, deliberately: the env file may be where
+ * NEAR_VAULT_AGENT_KEY_FILE itself is set, so resolving a path before that file
+ * has been applied would miss it.
+ */
+const agentKeySource = resolveKeySource({
+  inline: process.env.NEAR_VAULT_AGENT_KEY,
+  file: process.env.NEAR_VAULT_AGENT_KEY_FILE,
+  inlineVar: "NEAR_VAULT_AGENT_KEY",
+  fileVar: "NEAR_VAULT_AGENT_KEY_FILE",
+});
+const quoteSignerSource = resolveKeySource({
+  inline: process.env.FLOAT_QUOTE_SIGNER_KEY,
+  file: process.env.FLOAT_QUOTE_SIGNER_KEY_FILE,
+  inlineVar: "FLOAT_QUOTE_SIGNER_KEY",
+  fileVar: "FLOAT_QUOTE_SIGNER_KEY_FILE",
+});
+// NAMES only, never values: this goes to pm2's log on every restart.
+for (const note of [...agentKeySource.warnings, ...quoteSignerSource.warnings]) {
+  console.log(`key source: ${note}`);
+}
+
+/**
+ * LOUD, BUT NOT FATAL — and the choice is not obvious, so here is the argument.
+ *
+ * The missing-FLOAT_ENV_FILE case above exits, and this looks like the same
+ * thing. It is not: without that file NOTHING is configured, so the process
+ * cannot do its job at all. A missing agent key leaves every READ working, and
+ * reads are most of what the dashboard asks for. Exiting would turn a mistyped
+ * path into a pm2 crash-loop that takes the whole dashboard down.
+ *
+ * The decisive argument is consistency with what this adapter already does: an
+ * ABSENT NEAR_VAULT_AGENT_KEY has always started fine and failed at /v1/pay
+ * with a message from `selectAgent`. A key file that cannot be read is the same
+ * category of problem, so it travels the same route — carried into the keyring
+ * as `agentKeyError`, which reports it there INSTEAD of the generic "set
+ * NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY". That generic message is the
+ * one thing this must never say here, because it reads as advice to paste the
+ * secret back inline.
+ */
+for (const err of [agentKeySource.error, quoteSignerSource.error]) {
+  if (err) console.error(`key source: ${err} — reads are unaffected; paying will fail.`);
+}
+
 const env = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
   // See DEFAULT_RPC_URL in @floatonnear/mcp: the old public testnet endpoint
@@ -85,8 +141,14 @@ const env = {
   // Exact-match CORS origin; the dashboard's dev server by default.
   allowedOrigin: process.env.FLOAT_ALLOWED_ORIGIN ?? "http://localhost:3000",
   decimals: Number(process.env.NEAR_VAULT_TOKEN_DECIMALS ?? "6"),
-  agentId: process.env.NEAR_VAULT_AGENT_ID,
-  agentKey: process.env.NEAR_VAULT_AGENT_KEY,
+  // The credentials file carries the account as well as the key, so one path
+  // supplies both halves. An explicit NEAR_VAULT_AGENT_ID still wins.
+  agentId: process.env.NEAR_VAULT_AGENT_ID ?? agentKeySource.accountId,
+  agentKey: agentKeySource.secret,
+  // WHY THIS IS THREADED THROUGH rather than handled here: an empty keyring has
+  // three possible causes and they need different fixes. `loadKeyring` already
+  // distinguishes two of them (`skippedOtherVault`); this is the third.
+  agentKeyError: agentKeySource.error,
   port: Number(process.env.PORT ?? "8787"),
   // Where the relayer records Base deliveries. Read fresh on each request so a
   // delivery that lands while this server is running appears without a
@@ -116,7 +178,8 @@ const env = {
   // Binds a payee to a one-time deposit address for the cross-chain rail.
   // Absent by default: whoever holds it can redirect any Intents payment the
   // budget allows, so it is opt-in and belongs to the operator.
-  quoteSignerKey: process.env.FLOAT_QUOTE_SIGNER_KEY,
+  quoteSignerKey: quoteSignerSource.secret,
+  quoteSignerError: quoteSignerSource.error,
 };
 
 const keyring = loadKeyring(env);
@@ -382,10 +445,16 @@ const server = createServer(async (req, res) => {
           // NEAR rail. Quietly paying on the wrong chain would look like
           // success and leave the payee unpaid.
           return send(400, {
-            error:
-              "rail=intents requires FLOAT_QUOTE_SIGNER_KEY (32-byte hex). That key " +
-              "binds a payee to a one-time deposit address, so it belongs to the vault " +
-              "operator. Without it the cross-chain rail is closed.",
+            // A named-but-broken FILE is a cause; "the variable is unset" is a
+            // description of the result. Saying the second when the first
+            // applies sends the operator to set something already set.
+            error: env.quoteSignerError
+              ? `rail=intents needs the quote signer, and the key file could not be ` +
+                `read. ${env.quoteSignerError}`
+              : "rail=intents requires FLOAT_QUOTE_SIGNER_KEY (32-byte hex), or " +
+                "FLOAT_QUOTE_SIGNER_KEY_FILE pointing at a file that holds it. That key " +
+                "binds a payee to a one-time deposit address, so it belongs to the vault " +
+                "operator. Without it the cross-chain rail is closed.",
           });
         }
         try {

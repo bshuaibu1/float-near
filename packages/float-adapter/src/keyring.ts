@@ -74,6 +74,17 @@ export interface Keyring {
    */
   skippedOtherVault: number;
   /**
+   * Why `NEAR_VAULT_AGENT_KEY_FILE` yielded no key, when one was named.
+   *
+   * THE THIRD CAUSE OF AN EMPTY RING, and the same reason
+   * `skippedOtherVault` is carried rather than discarded. The generic refusal
+   * says "Set NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY" — which, for an
+   * operator whose key file is simply mistyped, is advice to paste the secret
+   * back inline. That is the exposure the file option exists to remove, so
+   * misreporting this case actively undoes the change.
+   */
+  agentKeyError?: string;
+  /**
    * Used when a request names no agent. Preserves the previous single-agent
    * behaviour exactly, so existing deployments and the dashboard's own calls
    * keep working untouched.
@@ -121,8 +132,15 @@ export function loadKeyring(env: {
    * rudeisland4178's agent and named it in a refusal.
    */
   vault?: string;
+  /**
+   * Passed through from `resolveKeySource` when NEAR_VAULT_AGENT_KEY_FILE was
+   * named but unreadable. Carried, not acted on: a broken default must not
+   * stop the agents that DID load from being selected by name.
+   */
+  agentKeyError?: string;
 }): Keyring {
   const ring = emptyKeyring();
+  ring.agentKeyError = env.agentKeyError;
 
   const add = (c: AgentCredential) => {
     ring.all.push(c);
@@ -244,6 +262,16 @@ export function selectAgent(
 
   if (ring.fallback) return ring.fallback;
 
+  // A BROKEN KEY FILE IS WHAT REMOVED THE DEFAULT. Appended to the ambiguity
+  // error below as well as replacing the empty-ring one, because with a fleet
+  // on disk the ring is NOT empty and "pass role, agent or nodeId" is a true
+  // statement that hides a regression — a deployment that had a default and
+  // silently lost it reads as a caller bug.
+  const keyFileNote = ring.agentKeyError
+    ? ` The default agent is ALSO missing because a key file was named and could ` +
+      `not be read: ${ring.agentKeyError}`
+    : "";
+
   if (ring.all.length > 1) {
     // Refuse rather than guess. Picking arbitrarily would charge a budget the
     // caller did not choose, and the payment would succeed — so the mistake
@@ -255,7 +283,23 @@ export function selectAgent(
     // on the way past. The refusal below never fired and the wrong agent paid.
     throw new AgentSelectionError(
       `several agents are loaded and the request named none, so there is no ` +
-        `safe default. Pass "role", "agent" or "nodeId". Loaded agents: ${known()}.`,
+        `safe default. Pass "role", "agent" or "nodeId". Loaded agents: ${known()}.` +
+        keyFileNote,
+    );
+  }
+
+  // BEFORE the other-vault and nothing-configured branches. A named-but-broken
+  // key file is a cause; both of those are descriptions of an empty result, and
+  // the nothing-configured one would tell the operator to paste the secret
+  // inline — undoing the reason the file option exists.
+  if (ring.agentKeyError) {
+    throw new AgentSelectionError(
+      `no agent key could be loaded: ${ring.agentKeyError} Fix the path or the file — ` +
+        `or unset the _FILE variable to fall back to an inline NEAR_VAULT_AGENT_KEY.` +
+        (ring.skippedOtherVault > 0
+          ? ` (${ring.skippedOtherVault} credential(s) in the keyring file belong to a ` +
+            `different vault and were skipped.)`
+          : ""),
     );
   }
 

@@ -23,6 +23,22 @@
  *      just to start the adapter locally.
  *
  * One parser, tested, used by both.
+ *
+ * ---- WHERE THIS ARGUMENT STOPS
+ *
+ * Everything above is about how a secrets file is LOADED: as data, never as
+ * something a shell executes. It says nothing about whether the secret should
+ * be sitting in an env value in the first place — and it should not. Reading
+ * this file to check which vault is configured is routine, and it prints a live
+ * private key into a terminal scrollback and into the transcript of whatever
+ * agent is driving.
+ *
+ * So the keys named above have a second, preferred form: NEAR_VAULT_AGENT_KEY
+ * and FLOAT_QUOTE_SIGNER_KEY each accept a `*_FILE` variant holding a PATH.
+ * The reasoning, the accepted file shapes, and why a broken path must never
+ * fall back to the inline value all live in ONE place rather than being
+ * restated here — `@floatonnear/mcp`'s `key-file.ts`. The two variables still
+ * travel through this parser; it is only their VALUES that stop being secrets.
  */
 
 /**

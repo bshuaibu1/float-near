@@ -19,8 +19,20 @@
  *   NEAR_VAULT_RPC_URL         default https://test.rpc.fastnear.com
  *   NEAR_VAULT_TOKEN           default token for pay/budget calls
  *   NEAR_VAULT_TOKEN_DECIMALS  default 6
- *   NEAR_VAULT_AGENT_ID        only needed to PAY
- *   NEAR_VAULT_AGENT_KEY       only needed to PAY. The restricted key.
+ *   NEAR_VAULT_AGENT_ID        only needed to PAY. Taken from the key file's
+ *                              `account_id` when one is given.
+ *   NEAR_VAULT_AGENT_KEY       only needed to PAY. The restricted key, inline.
+ *   NEAR_VAULT_AGENT_KEY_FILE  PREFERRED over the inline value above: a PATH to
+ *                              a ~/.near-credentials-shaped JSON file
+ *                              ({"account_id","public_key","private_key"}) or a
+ *                              bare key file. A path is not a secret, so the
+ *                              routine act of reading this config to see which
+ *                              vault is wired up stops printing a live private
+ *                              key into a terminal and an agent transcript.
+ *                              Same reason NEAR CLI signing in this repo uses
+ *                              `sign-with-access-key-file`. If both are set the
+ *                              FILE wins and the inline one is reported as
+ *                              ignored on stderr.
  *   NEAR_VAULT_NETWORK         mainnet | testnet, default testnet
  *   NEAR_VAULT_FACTORY         only needed to CREATE. No mainnet default
  *                              exists on purpose — guessing it wrong would
@@ -67,6 +79,7 @@ import {
   viewFunction,
 } from "./rpc.js";
 import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
+import { resolveKeySource } from "./key-file.js";
 import { dirname } from "node:path";
 
 import { listRoles, selectRole } from "./roles.js";
@@ -90,13 +103,59 @@ import { getQuote, signBinding, toBase64 } from "./quote.js";
  *  enough that a stale price is not honoured. */
 const QUOTE_TTL_MS = 20 * 60 * 1000;
 
+/**
+ * Secrets, from a FILE where one is named. See key-file.ts for why.
+ *
+ * Resolved once at startup rather than per call, so a broken path is reported
+ * in the client's server log at launch instead of only when someone tries to
+ * pay.
+ */
+const agentKeySource = resolveKeySource({
+  inline: process.env.NEAR_VAULT_AGENT_KEY,
+  file: process.env.NEAR_VAULT_AGENT_KEY_FILE,
+  inlineVar: "NEAR_VAULT_AGENT_KEY",
+  fileVar: "NEAR_VAULT_AGENT_KEY_FILE",
+});
+const quoteSignerSource = resolveKeySource({
+  inline: process.env.FLOAT_QUOTE_SIGNER_KEY,
+  file: process.env.FLOAT_QUOTE_SIGNER_KEY_FILE,
+  inlineVar: "FLOAT_QUOTE_SIGNER_KEY",
+  fileVar: "FLOAT_QUOTE_SIGNER_KEY_FILE",
+});
+
+/**
+ * STDERR, NEVER STDOUT. This process speaks JSON-RPC over stdout, so a single
+ * stray `console.log` corrupts the stream and the client reports a protocol
+ * error rather than the configuration problem being described. There is no
+ * other `console.*` call in this file — that is deliberate, and this one is
+ * `console.error` for the same reason.
+ *
+ * NAMES ONLY, never values: this goes to a log file the user may well paste.
+ */
+for (const note of [...agentKeySource.warnings, ...quoteSignerSource.warnings]) {
+  console.error(`float: ${note}`);
+}
+// A named-but-unreadable key file is reported at startup AND again, with the
+// same text, if someone tries to pay. The server must still start: reads,
+// payload planning and `vault_create` need no key at all, and onboarding a user
+// who has no vault yet is the whole point of this server being runnable with
+// nothing configured.
+for (const err of [agentKeySource.error, quoteSignerSource.error]) {
+  if (err) console.error(`float: ${err}`);
+}
+
 const cfg = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
   rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? DEFAULT_RPC_URL,
   token: process.env.NEAR_VAULT_TOKEN ?? "",
   decimals: Number(process.env.NEAR_VAULT_TOKEN_DECIMALS ?? "6"),
-  agentId: process.env.NEAR_VAULT_AGENT_ID,
-  agentKey: process.env.NEAR_VAULT_AGENT_KEY,
+  // The credentials file carries the account as well as the key, so one path
+  // can supply both halves. An explicit NEAR_VAULT_AGENT_ID still wins, and
+  // `requireAgentKey` refuses the pair if the two disagree.
+  agentId: process.env.NEAR_VAULT_AGENT_ID ?? agentKeySource.accountId,
+  agentKey: agentKeySource.secret,
+  agentKeyError: agentKeySource.error,
+  agentKeyAccountId: agentKeySource.accountId,
   network: process.env.NEAR_VAULT_NETWORK ?? "testnet",
   // Onboarding only. Both have safe defaults and neither is needed by any
   // tool that touches an existing vault.
@@ -482,12 +541,19 @@ server.tool(
       // does not live where agents run, because whoever holds it can bind any
       // deposit address to any payee. So this path only works when the MCP
       // server is the operator's own.
-      const signerHex = process.env.FLOAT_QUOTE_SIGNER_KEY;
+      const signerHex = quoteSignerSource.secret;
       if (!signerHex) {
         throw new Error(
-          "rail=intents needs FLOAT_QUOTE_SIGNER_KEY (32-byte hex). " +
-            "That key binds a payee to a deposit address, so it belongs to the " +
-            "vault operator, not to an agent. Without it the cross-chain rail is closed.",
+          // A named-but-broken FILE is a cause; "the variable is unset" is a
+          // description. Reporting the second when the first applies sends the
+          // operator to set something they have already set.
+          quoteSignerSource.error
+            ? `rail=intents needs the quote signer, and the key file could not be read. ` +
+              `${quoteSignerSource.error}`
+            : "rail=intents needs FLOAT_QUOTE_SIGNER_KEY (32-byte hex), or " +
+              "FLOAT_QUOTE_SIGNER_KEY_FILE pointing at a file that holds it. " +
+              "That key binds a payee to a deposit address, so it belongs to the " +
+              "vault operator, not to an agent. Without it the cross-chain rail is closed.",
         );
       }
       const sk = Uint8Array.from(Buffer.from(signerHex.replace(/^0x/, ""), "hex"));

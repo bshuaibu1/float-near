@@ -37,6 +37,10 @@
     "./quote": {
       "types": "./dist/quote.d.ts",
       "import": "./dist/quote.js"
+    },
+    "./key-file": {
+      "types": "./dist/key-file.d.ts",
+      "import": "./dist/key-file.js"
     }
   }
 }
