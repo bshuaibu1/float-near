@@ -97,7 +97,7 @@ so drift fails two suites.
    therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
    realised, not theoretical — reading a config to answer "which vault is this pointed at"
    prints a live private key into scrollback and into the driving agent's transcript.
-5. **`float-exit` is PUBLISHED AND BROKEN — it IS the refund path users are told to run.** Ships
+5. **`float-exit` — FIXED in the repo, still BROKEN on npm. It IS the refund path.** Ships
    as a bin in `@floatonnear/create-float@0.4.0`. Verified by running it against the live
    fixture 2026-11-07. It (a) demands `~/.near-credentials/<net>/<vault>.json`, which a factory
    vault never has, so it **refuses to start**; (b) then states the stake is *"unrecoverable —
@@ -107,22 +107,33 @@ so drift fails two suites.
    contract; (d) has no `purge_settled` and no stub deploy, so `deleteAccount` is **refused at
    300 KB**; (e) ignores NEP-611 gas keys, whose balance the delete then destroys (`DeleteKey`
    burns it — 0.08322 measured, tx reported success). `scripts/teardown-vault.mjs` does all six
-   steps correctly and is proven 3× (**99.96% returns**) but lives in the repo, so **no user can
-   reach it**. Fix = port its six steps into `float-exit`. **Status: open, NOT deferred** — it
-   was raised against README/pitch for the final week and the owner has not chosen yet.
-6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
-7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
+   steps correctly and is proven 3× (**99.96% returns**) but lived only in the repo.
+   **FIXED IN THE REPO, STILL BROKEN ON npm.** `float-exit` was rewritten with all six steps;
+   a `--dry-run` against the live fixture now resolves the owner's key, finds the token from
+   `get_tree`, finds the gas key and quotes **3.465732 back = 3.348190 account + 0.117542 gas
+   key**. A fifth defect was found while fixing it: it signed `withdraw` AS THE VAULT, and
+   `assert_owner` compares `predecessor_account_id()` to the owner, so that step could never
+   have worked. **Users still have the broken 0.4.0 until a release ships — blocked on item 6.**
+6. **`res/vault.wasm` is STALE, so create-float CANNOT BE PUBLISHED.** `prepack` runs
+   `bundle-wasm --assert-current`, which refuses: *"built from different source bytes than are
+   on disk now (recorded `b044ad32d3fe…`, current `8c1970e25f3f…`)"*. Two tests fail on this and
+   both are positive controls ("ACCEPTS the current contract", proving the guard is not
+   always-fail) — confirmed identical on a clean worktree at `ebd4c5a`, so it predates the
+   `float-exit` work. Fix: `cd contracts/vault && cargo near build non-reproducible-wasm
+   --no-abi`, then re-bundle. **This is what stands between the `float-exit` fix and users.**
+7. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
+8. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
-8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
-9. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
-10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
+9. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
+10. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
+11. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
 
 ## Next 3 steps
 
-**Unresolved ordering question, raised 2026-11-07 and NOT yet answered:** fixing `float-exit`
-(item 5) is a correctness bug in a *published* package that tells users their money is
-unrecoverable when it is not — roughly an hour's work. It was argued as outranking step 1. The
-owner has not chosen, so the list below is unchanged rather than silently reordered.
+**Resolved 2026-11-07:** the ordering question above `float-exit` was answered — fix it first,
+and it is done (item 5). What is left of it is a RELEASE, not code: `res/vault.wasm` is stale,
+`prepack` refuses, and until that is rebuilt every user still installs the broken 0.4.0. That
+rebuild is the shortest path between a fixed refund and a user who can run it (item 6).
 
 1. **Write the README + pitch + demo script.** Nothing exists. The demo path is already one
    command (`seed-fixture.mjs` → adapter → dashboard → signing page :8788), and the strongest
