@@ -69,6 +69,16 @@ delete without it.
 **Local dev loop.** `start-stack.ps1`, `restart-*.ps1`,
 `undo-preview-pollution.mjs`.
 
+Run `undo-preview-pollution.mjs` BEFORE staging anything, not after noticing
+a problem. Starting the preview rewrites `next-env.d.ts` and `tsconfig.json`
+to point at `.next-preview`, which only exists while the preview is running —
+committed, it breaks the build for everyone else. The script reverts both and
+proves it with `git diff --exit-code`, and it now also lists any untracked
+file under `apps/dashboard` without deleting it, because the two config edits
+are a keep-list and the harness has already produced exhaust outside it (a
+generated `README.md`, swept into a commit by `git add -A` and amended back
+out).
+
 ## What was removed, and why those three groups
 
 1. **Applied codemods.** The source already contains their output, so
