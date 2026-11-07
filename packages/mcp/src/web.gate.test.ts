@@ -452,11 +452,27 @@ describe("the completed-action panel", () => {
       m[1].trim(),
     );
     expect(titles.length, "both flows should set the done title").toBeGreaterThanOrEqual(2);
-    expect(titles.some((t) => /Vault created/.test(t)), "the create flow sets its own").toBe(true);
+    /**
+     * DISTINCTNESS, not wording — and this assertion has now been bitten
+     * twice by the same thing its own docblock warns about.
+     *
+     * It first pinned `"Vault created."` with a full stop, and broke when
+     * the string became a heading. It was then rewritten to pin
+     * `/Vault created/`, and broke again when the create flow's heading
+     * became "Your vault is live" and "Vault created" moved to the page
+     * title. Both times the behaviour was correct and the test was
+     * describing a design decision it has no opinion about.
+     *
+     * The invariant that actually matters has never changed: no two flows
+     * may report the same outcome, because the bug this guards against is
+     * one panel hardcoding "Vault created" and a freeze announcing a vault
+     * that does not exist. Set equality says exactly that and says nothing
+     * about the prose.
+     */
     expect(
-      titles.filter((t) => /Vault created/.test(t)).length,
-      "only ONE flow may claim a vault was created",
-    ).toBe(1);
+      new Set(titles).size,
+      `two flows report the same outcome: ${titles.join(" | ")}`,
+    ).toBe(titles.length);
   });
 
   /**
@@ -587,5 +603,80 @@ describe("no em dashes in anything the user reads", () => {
   it("would notice a dash if one came back", () => {
     const planted = 'const msg = `Needs 3.348 NEAR — you have 0.158`;';
     expect(/`[^`]*—[^`]*`/.test(planted)).toBe(true);
+  });
+});
+
+/**
+ * THE DONE SCREEN, after a create.
+ *
+ * It used to be a dead end: a green tick, the same sentence said twice (the
+ * card header "Done / Your vault is live" above the panel's "Vault created /
+ * It is live and owned by your wallet"), the account id wrapping mid-token
+ * in a left-aligned box inside a centred block, and nowhere to go.
+ *
+ * The part that actually cost a user something was none of those. NOTHING
+ * TELLS THE MCP A VAULT EXISTS — this page is static, there is no callback,
+ * and `vault_create` only ever built the link. Someone who follows one
+ * without an agent handing it to them ends up with a live vault their
+ * tooling has never heard of, and no screen said so.
+ *
+ * Source assertions, with the same caveat as the rest of this file: they pin
+ * shape, not behaviour. They catch a deletion, which is the regression that
+ * would otherwise be silent.
+ */
+describe("the done screen tells you how to connect the vault", () => {
+  it("shows the env line the MCP actually reads", () => {
+    const src = html();
+    // Not a prose instruction — the literal line, copyable.
+    expect(src).toMatch(/NEAR_VAULT_CONTRACT=\$\{vault\}/);
+    expect(src).toMatch(/id="d-env"/);
+    expect(src).toMatch(/id="d-env-copy"/);
+  });
+
+  /**
+   * AND SAYS WHAT IT DOES NOT BUY. Setting the contract makes an agent able
+   * to READ the vault. Paying needs a bound agent key, and a link without
+   * `agent_pk` binds none — so "you are connected" would be the wrong
+   * sentence for the commonest case.
+   */
+  it("distinguishes reading from spending, on the no-key path", () => {
+    const src = html();
+    const m = src.match(/\$\("d-wire-note"\)\.textContent = bindAgent\s*\?\s*(.+?)\s*:\s*(.+?);/s);
+    expect(m, "the wiring note is no longer conditional on bindAgent").not.toBeNull();
+    const [, withKey, withoutKey] = m!;
+    expect(withKey).toMatch(/pay/i);
+    expect(withoutKey).toMatch(/read/i);
+    expect(withoutKey).toMatch(/cannot spend|not spend/i);
+  });
+
+  /** The wiring block is for CREATE. A freeze does not need connecting. */
+  it("hides the wiring block on an owner action", () => {
+    expect(html()).toMatch(/\$\("d-wire"\)\.classList\.add\("hide"\)/);
+  });
+
+  /**
+   * THE DASHBOARD LINK IS NEVER GUESSED.
+   *
+   * This page and the dashboard are separate deployments on separate ports,
+   * so a relative link cannot work and a hardcoded host would be a guess
+   * printed beside a real account id. Localhost is the only case that can be
+   * inferred; anything else renders no button at all, because an absent link
+   * is a smaller failure than one that goes somewhere wrong.
+   */
+  it("resolves the dashboard from the url or localhost, and otherwise not at all", () => {
+    const src = html();
+    expect(src).toMatch(/q\.get\("dashboard"\)/);
+    expect(src).toMatch(/127\.0\.0\.1.*:3000|:3000/);
+    // The guard: only http(s) survives, so `javascript:` cannot reach href.
+    expect(src).toMatch(/u\.protocol === "http:" \|\| u\.protocol === "https:"/);
+    // And no invented production host.
+    expect(src).not.toMatch(/https:\/\/app\.usefloat\.xyz\/?["'`]/);
+  });
+
+  /** The generic success tick is gone and must not come back. */
+  it("has no circled checkmark", () => {
+    const src = html();
+    expect(src).not.toMatch(/class="tick"/);
+    expect(src).not.toMatch(/\.tick\s*\{/);
   });
 });

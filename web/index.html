@@ -171,6 +171,25 @@
         font-size: 13px; font-weight: 400; border-color: transparent;
       }
       button.ghost:hover:not(:disabled) { background: var(--chip); color: var(--ink); }
+      /**
+       * 38px IS DELIBERATE AND IT IS ALSO UNDER THE TOUCH FLOOR.
+       *
+       * The shorter secondary is the whole point of the rule above: on an
+       * approval screen "Approve in my wallet" and "Use a different wallet"
+       * must not weigh the same, and height is how that reads at a glance.
+       *
+       * But 38px is below the 44px a finger needs (WCAG 2.5.5), and the
+       * hierarchy here is carried by fill, weight and colour as much as by
+       * height - so on a touch device it can reach the floor and still read
+       * as secondary.
+       *
+       * `pointer: coarse`, not a width breakpoint. This page is one 448px
+       * column at every size, so width says nothing about the input device.
+       * What matters is whether a finger or a mouse is doing the pointing.
+       */
+      @media (pointer: coarse) {
+        button.ghost { height: 44px; }
+      }
       .note { color: var(--faint); font-size: 12px; text-align: center; line-height: 1.5; }
 
       /**
@@ -225,21 +244,56 @@
         .pulse { animation: none; opacity: 0.85; }
       }
 
-      .tick {
-        width: 34px; height: 34px; border-radius: 9999px; margin-bottom: 14px;
-        background: var(--success-bg); color: var(--success);
-        display: flex; align-items: center; justify-content: center;
-      }
+      /* `.tick` is gone with the circled checkmark it drew. The heading
+         already says the thing succeeded; a green tick above it was the house
+         style of every generated success screen and added no fact. */
+
       /* The machine detail, under the human sentence rather than beside it.
          "Unfreeze node 1. freeze_node on work12-testnet-fleet.fac..." ran a
          sentence and an account id together in one green box; they are
-         different kinds of fact and read better apart. */
+         different kinds of fact and read better apart.
+
+         `anywhere`, NOT `break-all`. Measured at 375px: break-all split
+         `flatdata6673-testnet.fac.floatv4.testnet` mid-token across two lines
+         with no regard for the dots, which is what made the id look broken
+         rather than merely long. `overflow-wrap: anywhere` prefers the
+         existing break opportunities - the dots and hyphens an account id is
+         full of - and only splits a token when there is genuinely nowhere
+         else to go. */
       .detail {
-        margin-top: 14px; width: 100%; background: var(--chip);
-        border: 1px solid var(--line); border-radius: var(--r-panel);
-        padding: 10px 12px; font-family: var(--mono); font-size: 11.5px;
-        color: var(--muted); word-break: break-all; text-align: left; line-height: 1.5;
+        width: 100%; background: var(--chip);
+        border: 1px solid var(--line); border-radius: var(--r-control);
+        padding: 10px 12px; font-family: var(--mono); font-size: 12px;
+        color: var(--ink); overflow-wrap: anywhere; text-align: left; line-height: 1.5;
+        user-select: all;
       }
+
+      /* A label for a machine value, so the box underneath is not an
+         unexplained grey rectangle. Matches the dashboard's own eyebrow
+         style. */
+      .field-label {
+        margin: 0 0 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.08em; color: var(--muted); text-align: left;
+      }
+
+      /* The value and its copy button. The button is `height: 44px` from the
+         base rule and `width: auto` here, because a full-width copy control
+         beside a full-width value is two slabs competing. */
+      .copyrow { display: flex; align-items: stretch; gap: 8px; }
+      .copyrow .detail { flex: 1; min-width: 0; }
+      button.copy {
+        width: auto; flex: 0 0 auto; padding: 0 14px;
+        background: var(--card); color: var(--muted); border-color: var(--line);
+        font-size: 13px;
+      }
+      button.copy:hover { background: var(--chip); }
+
+      /* Each block of the done screen separated by a rule, so "what happened",
+         "what it is called" and "what to do next" read as three answers rather
+         than one run-on panel. */
+      #d-detail-wrap, #d-wire { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+      #d-actions { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+      #d-actions a { display: block; text-decoration: none; }
       /* The agent key is rendered IN FULL and never truncated — an ellipsis in
          the middle is exactly where a swapped key hides. `break-all` because
          a base58 key has no break opportunities and would otherwise overflow
@@ -475,29 +529,77 @@
           </div>
         </div>
 
+        <!--
+          THE DONE SCREEN.
+
+          "Vault created." used to be hardcoded here, so EVERY completed
+          action reported it. Freezing an agent ended on a panel announcing a
+          vault had been created - which is not what happened, and is the kind
+          of thing that makes someone go looking for a vault they now believe
+          exists. The strings are set by whichever flow finished.
+
+          WHAT CHANGED, and why, from the owner looking at a real one:
+
+            THE MESSAGE WAS SAID TWICE. The card header read "Done / Your
+            vault is live." and the panel under it read "Vault created / It is
+            live and owned by your wallet." Two headings and two sentences for
+            one fact. The header is now the only place it is said.
+
+            THE GREEN TICK IS GONE. A circled checkmark is the house style of
+            every generated success screen on the internet, and it earns
+            nothing here: the heading already says the vault is live. What a
+            person needs at this moment is the id and the next step.
+
+            THE ID WAS CENTRE-ALIGNED PROSE IN A LEFT-ALIGNED BOX, wrapping
+            mid-token onto two lines at 375px because `break-all` has no
+            opinion about where an account id should break. It is now its own
+            labelled, copyable field that breaks on the dots.
+
+            THERE WAS NO NEXT STEP. The flow ended on a dead end: no way to
+            the dashboard, and nothing about the one thing that has to happen
+            before an agent can use this vault.
+        -->
         <div id="done" class="hide">
-          <!--
-            "Vault created." used to be hardcoded here, so EVERY completed
-            action reported it. Freezing an agent ended on a green panel
-            announcing a vault had been created - which is not what happened,
-            and is the kind of thing that makes someone go looking for a vault
-            they now believe exists.
-          -->
           <div class="state">
-            <div class="tick" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-                   stroke="currentColor" stroke-width="2.5"
-                   stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
-            </div>
             <h2 id="d-title">Done</h2>
             <p id="d-note">The change is on chain.</p>
-            <div class="detail" id="d-vault"></div>
           </div>
-          <a id="d-explorer" target="_blank" rel="noopener" style="display:block;margin-top:18px">
-            <button class="ghost">View on explorer</button>
-          </a>
+
+          <div id="d-detail-wrap">
+            <p class="field-label" id="d-vault-label">Vault account</p>
+            <div class="copyrow">
+              <div class="detail" id="d-vault"></div>
+              <button class="copy" id="d-copy" type="button" aria-label="Copy the vault account id">Copy</button>
+            </div>
+          </div>
+
+          <!--
+            THE WIRING STEP, shown only after a CREATE.
+
+            An owner who follows a create link without an agent having given
+            it to them ends up with a live vault their tooling has never heard
+            of. Nothing tells the MCP a vault exists - the page is static,
+            there is no callback, and `vault_create` only ever built the link.
+            So the connection is manual, and this is the only moment anyone is
+            looking at both the vault id and the question "what now".
+          -->
+          <div id="d-wire" class="hide">
+            <p class="field-label">Connect your agent</p>
+            <div class="copyrow">
+              <div class="detail" id="d-env"></div>
+              <button class="copy" id="d-env-copy" type="button" aria-label="Copy the environment line">Copy</button>
+            </div>
+            <p class="note" id="d-wire-note"></p>
+          </div>
+
+          <div id="d-actions">
+            <a id="d-dash" class="hide" style="display:none">
+              <button class="primary" type="button">Open the dashboard</button>
+            </a>
+            <a id="d-explorer" target="_blank" rel="noopener">
+              <button class="ghost" type="button">View on explorer</button>
+            </a>
+          </div>
         </div>
 
         <div id="error" class="hide"><div class="err" id="err-text"></div></div>
@@ -883,6 +985,88 @@
       function accountId() {
         return account;
       }
+
+      /**
+       * WHERE THE DASHBOARD IS, without inventing it.
+       *
+       * This page and the dashboard are separate deployments on separate
+       * ports in development, so a relative link cannot work and a hardcoded
+       * production host would be a guess printed next to a real account id -
+       * exactly the plausible-wrong-value this page is built to avoid.
+       *
+       * So, in order:
+       *
+       *   ?dashboard=<url>   explicit, and what a deployment should pass
+       *   localhost          default to :3000, which is where `npm run dev`
+       *                      puts it and the only case that can be inferred
+       *                      safely
+       *   anything else      NO BUTTON. An absent link is a smaller failure
+       *                      than one that goes somewhere wrong.
+       *
+       * Same-origin and http(s) only. The value arrives in a URL that anyone
+       * can edit, and a success screen is a good place to put a link someone
+       * will trust - `javascript:` and a stranger's host both stop here.
+       */
+      function dashboardUrl() {
+        const raw = q.get("dashboard");
+        if (raw) {
+          try {
+            const u = new URL(raw, location.origin);
+            if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+          } catch {
+            // Unparseable is the same as absent.
+          }
+          return null;
+        }
+        const h = location.hostname;
+        if (h === "localhost" || h === "127.0.0.1" || h === "[::1]") {
+          return `${location.protocol}//${h}:3000/`;
+        }
+        return null;
+      }
+
+      /** Reveal the dashboard button only when there is a real place to go. */
+      function showDashboardLink() {
+        const url = dashboardUrl();
+        const a = $("d-dash");
+        if (!url) return;
+        a.href = url;
+        a.classList.remove("hide");
+        a.style.display = "block";
+      }
+
+      /**
+       * Copy, with the result said out loud.
+       *
+       * A copy button that looks identical before and after is one people
+       * press three times because nothing told them it worked. The label is
+       * the feedback; `user-select: all` on the value is the fallback for
+       * when the clipboard API is unavailable, which it is on any page not
+       * served over https or localhost.
+       */
+      function wireCopy(btnId, srcId) {
+        const btn = $(btnId);
+        if (!btn) return;
+        btn.onclick = async () => {
+          const text = $(srcId).textContent ?? "";
+          try {
+            await navigator.clipboard.writeText(text);
+            btn.textContent = "Copied";
+          } catch {
+            // No clipboard permission, or an insecure origin. Select it so
+            // the user can copy by hand rather than being told nothing.
+            const r = document.createRange();
+            r.selectNodeContents($(srcId));
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+            btn.textContent = "Select+copy";
+          }
+          setTimeout(() => { btn.textContent = "Copy"; }, 1800);
+        };
+      }
+      wireCopy("d-copy", "d-vault");
+      wireCopy("d-env-copy", "d-env");
 
       function render() {
         /**
@@ -1346,6 +1530,10 @@
            * sentence and a machine string run together.
            */
           $("d-title").textContent = "Done";
+          // "What changed", not "Vault account" — the same box carries a
+          // different kind of fact on this path, and a label that says the
+          // wrong one is worse than none.
+          $("d-vault-label").textContent = "What changed";
           $("d-vault").textContent = `${ACTION.methodName} on ${ACTION.receiverId}`;
           $("d-note").textContent =
             "The change is on chain. Your dashboard will show it on its next refresh.";
@@ -1353,6 +1541,11 @@
             NETWORK === "mainnet"
               ? `https://explorer.near.org/accounts/${ACTION.receiverId}`
               : `https://explorer.testnet.near.org/accounts/${ACTION.receiverId}`;
+          // No wiring block here: this vault is already connected to whatever
+          // produced the link. Showing "connect your agent" after a freeze
+          // would be advice for a problem the reader does not have.
+          $("d-wire").classList.add("hide");
+          showDashboardLink();
           show("done");
         } catch (e) {
           $("err-text").textContent = `The wallet refused or the call failed:\n\n${e.message}`;
@@ -1454,16 +1647,46 @@
               },
             ],
           });
-          // The create flow keeps its own wording, now set rather than assumed.
-          $("d-title").textContent = "Vault created";
-          $("d-note").textContent = "It is live and owned by your wallet.";
+          /**
+           * The create flow keeps its own wording, now set rather than
+           * assumed - and says it ONCE. The card header carries the message;
+           * the panel beneath used to repeat it ("Done / Your vault is live"
+           * above "Vault created / It is live and owned by your wallet"),
+           * which is two headings and two sentences for one fact.
+           */
+          $("d-title").textContent = "Your vault is live";
+          $("d-note").textContent = "It is owned by the wallet you just signed with.";
+          $("d-vault-label").textContent = "Vault account";
           $("d-vault").textContent = vault;
           $("d-explorer").href =
             NETWORK === "mainnet"
               ? `https://explorer.near.org/accounts/${vault}`
               : `https://explorer.testnet.near.org/accounts/${vault}`;
-          $("title").textContent = "Done";
-          $("sub").textContent = "Your vault is live.";
+          $("title").textContent = "Vault created";
+          $("sub").textContent = "";
+
+          /**
+           * THE WIRING STEP. Create only.
+           *
+           * Nothing tells the MCP that a vault now exists: this page is
+           * static, there is no callback, and `vault_create` only ever built
+           * the link. An owner who followed one without an agent handing it
+           * to them ends up with a live vault their tooling has never heard
+           * of, and no screen in the product says so.
+           *
+           * AND THE SECOND HALF, which is the one that bites later: setting
+           * the contract makes an agent able to READ this vault. Paying also
+           * needs a bound agent key, and a link without `agent_pk` binds
+           * none - so the honest sentence is not "you are connected", it is
+           * "you can read, not spend, and here is why".
+           */
+          $("d-env").textContent = `NEAR_VAULT_CONTRACT=${vault}`;
+          $("d-wire-note").textContent = bindAgent
+            ? "Add that to your agent's MCP config. An agent key was bound in this transaction, so it can also pay."
+            : "Add that to your agent's MCP config. No agent key is bound yet, so an agent can read this vault and plan changes, but cannot spend from it until one is.";
+          $("d-wire").classList.remove("hide");
+
+          showDashboardLink();
           show("done");
         } catch (e) {
           const m = e?.message ?? String(e);
