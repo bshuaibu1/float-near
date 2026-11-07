@@ -1,4 +1,5 @@
 import {
+  planAddRole,
   planFreezeNode,
   planPurgeSettled,
   planSetCooldown,
@@ -48,7 +49,36 @@ export type OwnerPlanRequest =
    *              delete is refused outright
    */
   | { action: "withdraw"; token?: string; amountBase?: string; receiverId?: string }
-  | { action: "purge"; beforeDay?: number; limit?: number };
+  | { action: "purge"; beforeDay?: number; limit?: number }
+  /**
+   * Give an agent key spending authority, AFTER the vault already exists.
+   *
+   * `add_role` is the method and `bind_virtual_agent` is not, which is not
+   * obvious and matters. Binding alone grants authority and leaves the key
+   * unable to transact: it still needs installing as a NEP-611 gas key ON
+   * the vault, and that `AddKey` would need the VAULT as signer — the same
+   * wall the teardown runs into.
+   *
+   * `add_role` does the whole thing in one owner-signed call, and the
+   * contract says why in its own comment: "THE KEY IS ADDED TO THIS
+   * ACCOUNT, BY THIS ACCOUNT. That is the only way an AddKey can reach the
+   * vault from a browser signature." The attached deposit funds the gas key
+   * and the vault nets zero.
+   *
+   * The cost is that it creates a NEW node under root rather than attaching
+   * to an existing one. That is the honest trade: the alternative is not
+   * "attach to an existing node", it is "cannot be done from a browser".
+   */
+  | {
+      action: "role";
+      label?: string;
+      dailyCap?: string;
+      perTxCap?: string;
+      cooldownSec?: number;
+      recipients?: string[] | null;
+      publicKey?: string;
+      fundingYocto?: string;
+    };
 
 /**
  * The action name is not one we serve.
@@ -109,6 +139,29 @@ export function planOwnerAction(b: OwnerPlanRequest, env: OwnerPlanEnv) {
         b.amountBase,
         b.receiverId,
         env.decimals,
+      );
+    case "role":
+      // NOTHING IS DEFAULTED that the user has to confirm. A label, a key
+      // and a funding amount are all things an owner approves in a wallet,
+      // and a guessed one would be approved by someone who never chose it.
+      if (!b.label) throw new Error("role needs a label");
+      if (!b.publicKey) throw new Error("role needs the agent's publicKey");
+      if (!b.fundingYocto) throw new Error("role needs fundingYocto for the gas key");
+      return planAddRole(
+        env.vault,
+        b.label,
+        [
+          {
+            token: env.token,
+            dailyCap: b.dailyCap ?? "0",
+            perTxCap: b.perTxCap ?? "0",
+            decimals: env.decimals,
+          },
+        ],
+        b.cooldownSec ?? 0,
+        b.recipients ?? null,
+        b.publicKey,
+        b.fundingYocto,
       );
     case "purge":
       // `before_day` is read from the contract's own `current_day` by the

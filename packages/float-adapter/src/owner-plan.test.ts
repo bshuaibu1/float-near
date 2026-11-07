@@ -211,4 +211,89 @@ describe("planOwnerAction", () => {
       expect(() => planOwnerAction({ action: "purge" }, ENV)).toThrow(/beforeDay/);
     });
   });
+
+  /**
+   * BINDING AN AGENT KEY AFTER THE VAULT EXISTS.
+   *
+   * The method is `add_role`, not `bind_virtual_agent`, and the difference
+   * is the whole feature. Binding alone grants authority and leaves the key
+   * unable to transact — it still needs installing as a NEP-611 gas key ON
+   * the vault, and that AddKey needs the VAULT as signer, which a browser
+   * cannot provide. `add_role` does both in one owner-signed call because
+   * the contract issues the AddKey to itself.
+   */
+  describe("binding an agent key after creation", () => {
+    const KEY = "ed25519:9ErYvQWQeQNFRAVW4qsaNiPVf4zSQFidTPdeJMCXXDvJ";
+    const FUND = (6n * 10n ** 22n).toString(); // MIN_AGENT_GAS_FUNDING
+
+    it("plans add_role, which installs and funds the gas key too", () => {
+      const p = planOwnerAction(
+        {
+          action: "role",
+          label: "research",
+          dailyCap: "25",
+          perTxCap: "5",
+          publicKey: KEY,
+          fundingYocto: FUND,
+        },
+        ENV,
+      );
+      expect(p.methodName).toBe("add_role");
+      expect(p.args).toMatchObject({ label: "research", public_key: KEY });
+      // The deposit IS the gas-key funding, not a fee.
+      expect(p.depositYocto).toBe(FUND);
+    });
+
+    /**
+     * REFUSES RATHER THAN DEFAULTS. A label, a key and a funding amount are
+     * all things an owner approves in a wallet; a guessed one would be
+     * approved by someone who never chose it.
+     */
+    it("refuses to invent a label, a key or a funding amount", () => {
+      const base = {
+        action: "role" as const,
+        label: "research",
+        publicKey: KEY,
+        fundingYocto: FUND,
+      };
+      for (const missing of ["label", "publicKey", "fundingYocto"] as const) {
+        const b = { ...base };
+        delete (b as Record<string, unknown>)[missing];
+        let thrown: unknown;
+        try {
+          planOwnerAction(b, ENV);
+        } catch (e) {
+          thrown = e;
+        }
+        expect(thrown, `${missing} was defaulted`).toBeInstanceOf(Error);
+        expect(thrown).not.toBeInstanceOf(UnknownActionError);
+        expect(String((thrown as Error).message)).toContain(missing);
+      }
+    });
+
+    /**
+     * The underfunded case reaches the user as the planner's own sentence.
+     * NEAR reserves `prepaid_gas * 1e9` up front, so a key funded to the
+     * expected BURN cannot make a single call — and the contract refuses it
+     * too, so the alternative is paying gas to learn that.
+     */
+    it("passes the underfunded-key explanation through, rather than a generic error", () => {
+      let thrown: unknown;
+      try {
+        planOwnerAction(
+          {
+            action: "role",
+            label: "research",
+            publicKey: KEY,
+            fundingYocto: "1",
+          },
+          ENV,
+        );
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).not.toBeInstanceOf(UnknownActionError);
+      expect(String((thrown as Error).message)).toMatch(/0\.06 NEAR|reserves prepaid gas/i);
+    });
+  });
 });

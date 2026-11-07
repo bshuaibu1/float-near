@@ -12,6 +12,7 @@ import { DANGER, DANGER_BG, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/col
 import { InfoDot } from "@/components/ui/info-dot";
 import { agentHue, agentSeed } from "@/lib/agent-hue";
 import { DangerZone } from "@/components/danger-zone";
+import { BindAgent } from "@/components/bind-agent";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
@@ -277,15 +278,18 @@ export default function AgentsPage() {
         <h2 className="text-[22px] font-semibold tracking-tight text-ink flex items-center gap-2">
           Budget tree
           <InfoDot label="why agents are not added from this page">
-            Agents are added with{" "}
+            A key is never GENERATED here. Creating one needs a keypair whose secret
+            has to reach whatever runs the agent, and a browser can only put that on a
+            screen or hand it to a server — so{" "}
             <code className="rounded px-1 py-0.5 font-mono text-[11.5px] bg-chip">
               vault_add_role
-            </code>
-            , not from here. Creating one needs a keypair whose secret has to reach
-            whatever runs the agent, and a browser can only put that on a screen or
-            hand it to a server. So the tool generates the key on your own machine,
-            writes the secret to disk there, and returns an unsigned payload for the
-            owner to approve in their wallet.
+            </code>{" "}
+            generates it on your own machine and writes the secret to disk there.
+            {" "}
+            What this page can do is the owner&apos;s half: paste the PUBLIC key your
+            agent printed and it builds the transaction for your wallet. That matters
+            for a vault created by following a link, which binds no key at all — before
+            this, the only way back was the command line.
           </InfoDot>
         </h2>
         <p className="text-[13px] mt-1.5 max-w-2xl text-muted">
@@ -515,6 +519,8 @@ export default function AgentsPage() {
             See lib/teardown.ts for the guard. The short version: an
             UNREADABLE balance is not an empty one, so it blocks.
           */}
+          <BindAgent onPlan={buildTeardownStep} />
+
           {info ? <DangerZone info={info} onPlan={buildTeardownStep} /> : null}
 
           <p className="mt-4 text-[11.5px] leading-5 text-muted">
