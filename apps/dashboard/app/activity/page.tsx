@@ -874,11 +874,19 @@ export default function Activity() {
     <>
       <div className="px-8 py-8 max-w-6xl mx-auto">
 
-        {/* Page header */}
-        <div className="flex items-end justify-between mb-8">
+        {/*
+          Page header.
+
+          STACKS BELOW `md`. Side by side on a 375px screen the right column
+          squeezed the left until "AGENT CONSOLE" wrapped onto two lines, and
+          a two-word eyebrow label broken in half reads as a layout accident.
+          There is room for both stacked, and the caveat gains a full line
+          instead of being right-aligned ragged over two.
+        */}
+        <div className="flex flex-col mb-8 max-md:gap-1 max-md:items-start md:flex-row md:items-end md:justify-between">
           <div>
             <p
-              className="text-[11px] font-medium uppercase tracking-widest mb-1 text-muted"
+              className="text-[11px] font-medium uppercase tracking-widest mb-1 text-muted whitespace-nowrap"
             >
               Agent Console
             </p>
@@ -888,7 +896,7 @@ export default function Activity() {
               Activity
             </h2>
           </div>
-          <div className="text-right">
+          <div className="max-md:text-left md:text-right">
             {payments.length > 0 && (
               <p className="text-[12px] font-mono text-muted">
                 {rows.length - blockedCount} payment{rows.length - blockedCount !== 1 ? "s" : ""}&nbsp;·&nbsp;
