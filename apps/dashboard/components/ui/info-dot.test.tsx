@@ -277,4 +277,78 @@ describe("InfoDot", () => {
       /(^|\s)after:size-11/,
     );
   });
+
+  /**
+   * KEEPING THE PANEL ON SCREEN, which is real logic and so is testable
+   * properly rather than by asserting class names.
+   *
+   * The panel is a fixed 330px anchored to the DOT, so whether it fits
+   * depends on where the dot sits. Both failures were measured in a browser
+   * at 375px before this existed:
+   *
+   *   the coverage banner's dot, `align="end"`, put the panel at x = -2
+   *   the budget tree's dot, `align="start"`, put it 114px off the RIGHT
+   *
+   * `align` cannot fix that: it is a guess made at the call site about a
+   * position only known at render time, and the same dot is fine on a
+   * desktop and wrong on a phone.
+   *
+   * happy-dom has no layout engine, so every rect is zeroes. That is
+   * usually a limitation; here it is the lever — the component's only input
+   * is `getBoundingClientRect`, so mocking it drives the real branch.
+   */
+  describe("nudges itself back on screen", () => {
+    const openWithRect = (rect: { left: number; right: number }) => {
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+        ...rect,
+        top: 0, bottom: 0, x: rect.left, y: 0,
+        width: rect.right - rect.left, height: 0,
+        toJSON: () => ({}),
+      } as DOMRect);
+      render(dot);
+      click(trigger());
+      return panel()!;
+    };
+
+    it("shifts RIGHT when the panel starts off the left edge", () => {
+      // The coverage banner's case, exaggerated: 50px off the left.
+      const el = openWithRect({ left: -50, right: 280 });
+      // MARGIN is 8, so the nudge is 8 - (-50).
+      expect(el.style.transform).toBe("translateX(58px)");
+    });
+
+    it("shifts LEFT when the panel runs off the right edge", () => {
+      // The budget tree's case: window.innerWidth is happy-dom's default.
+      const over = window.innerWidth + 100;
+      const el = openWithRect({ left: over - 330, right: over });
+      // Target right edge is innerWidth - 8, so the shift is -(100 + 8).
+      expect(el.style.transform).toBe("translateX(-108px)");
+    });
+
+    /**
+     * AND LEAVES IT ALONE WHEN IT ALREADY FITS. Without this the other two
+     * pass for a component that shifts unconditionally, which would move
+     * every panel on every desktop for no reason.
+     */
+    it("does not move a panel that already fits", () => {
+      const el = openWithRect({ left: 20, right: 350 });
+      expect(el.style.transform).toBeFalsy();
+    });
+
+    /**
+     * The WIDTH cap is a different half of the same problem and is a class,
+     * so it gets the weaker check — see the typography test above for why
+     * that distinction is called out rather than glossed. 330px is wider
+     * than a 320px phone, so there is no position that works and no nudge
+     * can help; only a cap can.
+     */
+    it("caps its width so a 320px phone has a position that works", () => {
+      render(dot);
+      click(trigger());
+      expect(
+        panel()!.className,
+        "max-w removed; on a 320px screen the panel is wider than the screen",
+      ).toContain("max-w-[calc(100vw-1rem)]");
+    });
+  });
 });

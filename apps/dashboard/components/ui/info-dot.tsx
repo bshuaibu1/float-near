@@ -46,6 +46,43 @@ export function InfoDot({
   const panelId = useId();
   const wrapRef = useRef<HTMLSpanElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLSpanElement>(null);
+  /** Horizontal nudge, in px, to keep the panel on screen. See the effect. */
+  const [shiftX, setShiftX] = useState(0);
+
+  /**
+   * KEEP THE PANEL ON SCREEN.
+   *
+   * The panel is a fixed 330px anchored to the DOT, so whether it fits
+   * depends entirely on where the dot happens to sit. Measured at 375px
+   * with the dot near the right edge of the coverage banner: the panel
+   * rendered at x = -2, two pixels of the explanation off the left of the
+   * screen with no way to scroll to them.
+   *
+   * `align` cannot fix this, because it is a guess made at the call site
+   * about a position that is only known at render time - and the same dot
+   * is fine on a desktop and wrong on a phone. So the component measures
+   * itself and nudges.
+   *
+   * MEASURED AT shiftX = 0, ALWAYS. The effect runs only when `open`
+   * flips, and the nudge is reset on close, so the rect read here is the
+   * un-nudged one. Reading a shifted rect and adding another shift is how
+   * this becomes a feedback loop that walks the panel off the other side.
+   */
+  useEffect(() => {
+    if (!open) {
+      setShiftX(0);
+      return;
+    }
+    const el = panelRef.current;
+    if (!el) return;
+    const MARGIN = 8;
+    const r = el.getBoundingClientRect();
+    if (r.left < MARGIN) setShiftX(MARGIN - r.left);
+    else if (r.right > window.innerWidth - MARGIN) {
+      setShiftX(window.innerWidth - MARGIN - r.right);
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -117,6 +154,7 @@ export function InfoDot({
 
       {open && (
         <span
+          ref={panelRef}
           id={panelId}
           role="note"
           aria-live="polite"
@@ -129,10 +167,24 @@ export function InfoDot({
            * reasserted here, because the dot is meant to be droppable
            * anywhere.
            */
-          className={`absolute top-[22px] z-20 block w-[330px] rounded-xl border px-4 py-3 text-left text-[12.5px] font-normal normal-case leading-5 tracking-normal shadow-sm ${
+          /**
+           * `max-w` AS WELL AS THE NUDGE. They solve different halves: the
+           * nudge moves a panel that does not fit where it is, and this
+           * caps one that cannot fit anywhere. 330px is wider than a 320px
+           * phone, so on the narrowest device this product will meet there
+           * is no position that works.
+           */
+          className={`absolute top-[22px] z-20 block w-[330px] max-w-[calc(100vw-1rem)] rounded-xl border px-4 py-3 text-left text-[12.5px] font-normal normal-case leading-5 tracking-normal shadow-sm ${
             align === "end" ? "right-0" : "left-0"
           }`}
-          style={{ background: CARD, borderColor: LINE, color: MUTED }}
+          style={{
+            background: CARD,
+            borderColor: LINE,
+            color: MUTED,
+            // 0 until measured, so the first paint is the un-nudged
+            // position the effect reads.
+            transform: shiftX ? `translateX(${shiftX}px)` : undefined,
+          }}
         >
           {children}
         </span>

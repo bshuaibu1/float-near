@@ -12,6 +12,7 @@ import {
 } from "@/lib/float-session";
 import { usdc } from "@/lib/money";
 import { agentHue, agentSeed } from "@/lib/agent-hue";
+import { InfoDot } from "@/components/ui/info-dot";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 const FETCH_LIMIT = 200;
@@ -712,6 +713,20 @@ export default function Activity() {
     scanned: boolean;
     unreadBlocks: number;
     text: string;
+    /**
+     * OPTIONAL, and that is not defensive boilerplate.
+     *
+     * The adapter is deployed separately from this page. Checked against the
+     * one running locally while building this: it answered `/v1/dashboard`
+     * with no `short` at all, because it was a build from before the field
+     * existed. A page that assumed it would have rendered the caveat as
+     * "undefined" — or, worse, as nothing.
+     *
+     * The fallback is the LONG text. A coverage caveat that is too big is a
+     * layout problem; one that is missing is a page claiming completeness it
+     * does not have, which is the thing this banner exists to stop.
+     */
+    short?: string;
   } | null>(null);
   useEffect(() => {
     fetch(`${API_BASE_URL}/v1/dashboard`, { cache: "no-store" })
@@ -893,7 +908,36 @@ export default function Activity() {
                 : { background: CANVAS, border: `1px solid ${LINE}`, color: MUTED }
             }
           >
-            {coverage.text}
+            {/*
+              DESKTOP: the full sentence, exactly as before.
+
+              PHONE: the one-line form, with the full sentence behind the
+              `i`. At 375px the paragraph was three amber lines and the
+              largest thing on the page - bigger than the payments it
+              qualifies, which inverts their importance.
+
+              The short form is the ADAPTER'S, not this page's. The module
+              that builds it owns the distinction between "we did not look"
+              and "nothing happened", and its comment is explicit that a
+              formatter duplicated in JSX drifts toward claiming more
+              coverage than exists. Shortening it here would have been that
+              exact mistake.
+
+              `?? coverage.text` because the adapter deploys separately and
+              an older build sends no `short` - measured against the one
+              running locally, which did exactly that. Too long beats
+              missing: this banner exists to stop the page implying a
+              completeness it does not have.
+            */}
+            <span className="max-md:hidden">{coverage.text}</span>
+            <span className="inline-flex items-start gap-1.5 md:hidden">
+              <span>{coverage.short ?? coverage.text}</span>
+              {coverage.short ? (
+                <InfoDot label="what the refusal history covers" align="end">
+                  {coverage.text}
+                </InfoDot>
+              ) : null}
+            </span>
           </div>
         )}
 
