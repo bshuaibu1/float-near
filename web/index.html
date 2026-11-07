@@ -5,13 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Create your Float vault</title>
     <!--
-      wallet-selector's modal ships its own stylesheet and renders unstyled
-      without it — a broken-looking wallet picker reads as "this site is
-      broken", which is the worst possible first impression at the exact moment
-      a user is deciding whether to trust it with a key.
-    -->
-    <link rel="stylesheet" href="https://esm.sh/@near-wallet-selector/modal-ui@8.9.13/styles.css" />
-    <!--
       THE CREATE PAGE. One plain FunctionCall to a FACTORY.
 
       It did NOT start this way. The first version built the transaction
@@ -257,99 +250,34 @@
       .hide { display: none; }
       a { color: var(--ink); }
 
-      /* ------------------------------------------------------------------
-         THE WALLET PICKER, IN FLOAT'S PALETTE.
+      /*
+        NO WALLET-MODAL OVERRIDES HERE ANY MORE.
 
-         wallet-selector's modal ships its own stylesheet and arrives in a
-         stock blue — #4F7CD1 and three siblings appear 34 times across it —
-         which is why the picker looked like a different product from the
-         card that opened it. That seam lands at exactly the wrong moment: a
-         user is deciding whether to trust this page with a wallet.
+        Ninety lines of `--wallet-selector-*` variables and `.nws-modal-*`
+        rules used to sit here, repainting a modal this page no longer loads.
+        near-connect ships its own picker, so every one of them targeted a
+        selector that will never match.
 
-         THE REAL API IS THE `--wallet-selector-*` PREFIX, and it is small.
-         The sheet reads twelve of them, always as the FIRST fallback:
+        They are not ported across, and nothing replaces them. The old set
+        existed because the wallet-selector sheet arrived stock-blue and had to
+        be argued with property by property. near-connect's picker was then
+        opened and looked at rather than assumed, and the answer came out
+        differently, for two reasons:
 
-           background-color: var(--wallet-selector-selected-wallet-bg,
-                                 var(--selected-wallet-bg));
+        1. THERE IS NO HOOK. Its stylesheet is injected at runtime and declares
+           no custom properties at all — every colour is a literal, on classes
+           like `.na3cke15keb7` beside the one stable `.hot-connector-popup`.
+           That hash is build-generated, so any override written against it is
+           a rule that silently stops matching on the next version bump. The
+           failure mode is not a crash; it is the sheet quietly reverting to
+           its own colours months later, in front of someone about to sign.
 
-         The unprefixed names are its internal defaults. Setting those looks
-         like it should work and mostly does not — four of the ones tried
-         here (`--confirm-button-bg`, `--spinner-color`,
-         `--wallet-option-border-color`, `--selected-wallet-bg-hover`) are
-         declared by the sheet and then never read by it, exactly like
-         `--border`. `scripts/check-wallet-modal-overrides.mjs` finds them.
-
-         SCOPED TO THE ID, matching the sheet's own `#near-wallet-selector-modal`
-         block. An ID outranks a class, so a `.nws-modal-wrapper` override
-         would have lost on specificity if the two ever land on the same
-         element — and the failure mode is a modal that looks untouched while
-         the code says it was restyled.
-
-         PINNED TO 8.9.13 by the <link> above. These names are that version's
-         API. Bumping the version without re-reading the stylesheet would
-         leave the modal silently stock again — the page would still work,
-         which is exactly why it would go unnoticed.
+        2. IT SHOULD NOT MATCH US ANYWAY. A wallet chooser that looks like the
+           page asking for the signature is the shape a phishing page wants. It
+           arrives as a dark system sheet, the same one these wallets present
+           on every other NEAR site, and that discontinuity is a signal worth
+           keeping rather than a blemish to sand off.
       */
-      #near-wallet-selector-modal {
-        /* Darker than the sheet's own #26262630. At 15% the page behind read
-           almost as bright as the modal, so the dialog sat flat on it instead
-           of above it — and a modal that does not feel lifted does not read
-           as the only thing you are meant to act on. */
-        --wallet-selector-backdrop-bg: #11111159;
-        --wallet-selector-content-bg: var(--card);
-        --wallet-selector-heading-color: var(--ink);
-        --wallet-selector-text-color: var(--muted);
-        --wallet-selector-sidebar-border-color: var(--line);
-
-        /* DARK ON PURPOSE. This one paints both the selected wallet row AND
-           the "Get a Wallet" button — and that button's text is hardcoded
-           `color: #FFFFFF` in the sheet. Setting it to a light neutral, which
-           is what the rest of this palette wants, produces white text on a
-           near-white button: invisible, and invisible in the one place a
-           first-time user is looking. */
-        --wallet-selector-selected-wallet-bg: var(--ink);
-        --wallet-selector-wallet-option-bg-hover: #f3f3f1;
-
-        --wallet-selector-close-button-bg-color: var(--chip);
-        --wallet-selector-close-button-fill-icon-color: var(--muted);
-        --wallet-selector-home-button-bg: var(--chip);
-        --wallet-selector-mobile-bottom-section: var(--chip);
-
-        /* NOT EVERY BLUE HAS A PREFIXED HOOK. These four are read directly —
-           `var(--selected-wallet-bg)` with no `--wallet-selector-*` fallback
-           in front — so the prefixed names above never reach them, and
-           setting only those left the toggle, the icon tiles and the "what is
-           a wallet" glyphs stock blue while the rest of the modal turned.
-           The bare names are the only way in. */
-        /* MUTED, not ink. This name is read bare in 7 places and all of them
-           are secondary: the Remember-wallets toggle, the Ledger path link,
-           the Ledger account button, the QR copy button. In ink the toggle
-           competed with the primary CTA for attention, which inverts their
-           importance — one remembers a preference, the other gets you a
-           wallet.
-           The CTA is unaffected: it reads the PREFIXED name above, which
-           stays ink. */
-        --selected-wallet-bg: var(--muted);
-        --gradient-dark-icon: var(--chip);      /* the two icon tiles */
-        --what-wallet-icon-color: var(--ink);   /* the glyphs on them */
-        --gray: var(--line);                    /* the toggle's off state */
-      }
-
-      /* Radius and depth are hardcoded in the sheet rather than exposed, so
-         these three need the real selectors. The POINT is to match our own
-         card — and these were literals pinned to 24px/14px because that is
-         what the card used. The card now uses the radius tokens, so the
-         literals had quietly become the mismatch this block exists to
-         prevent: the wallet picker would have opened at 24px on top of a 12px
-         card, which is the "two design languages side by side" the original
-         comment was written to stop. */
-      .nws-modal-wrapper .nws-modal {
-        border-radius: var(--r-panel);
-        box-shadow: 0 1px 2px rgba(17, 17, 17, 0.04), 0 12px 32px rgba(17, 17, 17, 0.08);
-        border: 1px solid var(--line);
-      }
-      .nws-modal-wrapper .nws-modal .single-wallet { border-radius: var(--r-control); }
-      .nws-modal-wrapper .nws-modal .modal-left-title h2 { letter-spacing: -0.02em; }
     </style>
   </head>
   <body>
@@ -824,7 +752,15 @@
       /** The factory's own derivation, mirrored. Must agree byte for byte. */
       const derivePrefix = (owner) => owner.replaceAll(".", "-");
 
-      let selector, modal, wasm;
+      let connector, wasm;
+
+      /**
+       * The connected account, mirrored from the connector's events.
+       *
+       * Not derived on demand: `getConnectedWallet()` is async and
+       * `render()` is not. See the event wiring in the boot block.
+       */
+      let account = null;
 
       // Anything that escapes — including an error inside a library's own async
       // code — lands on screen instead of in the console.
@@ -854,8 +790,27 @@
         return fn;
       }
 
-      const CDN = "https://esm.sh/@near-wallet-selector";
-      const V = "8.9.13";
+      /**
+       * NEAR CONNECT, not wallet-selector.
+       *
+       * What NEAR's own docs now point at. The practical differences for this
+       * page, checked rather than taken from the pitch:
+       *
+       *   - ZERO dependencies against wallet-selector's nine, and ONE import
+       *     instead of seven. The old loader fetched core, modal-ui and five
+       *     wallet packages separately, each able to fail on its own, which is
+       *     why it needed a per-wallet try/catch and a "skipped" list.
+       *   - Wallets come from a MANIFEST the library fetches, so the list is
+       *     not pinned to our version. We hardcoded five; the manifest carries
+       *     twelve, including any wallet over WalletConnect.
+       *   - It knows about NEP-611 gas keys (`isGasKeyAction`), which is what
+       *     this vault's agents are.
+       *
+       * 0.12.0 is PINNED, not floated. It is pre-1.0 on a page where people
+       * approve transactions, and an automatic minor bump is not something to
+       * learn about from a user.
+       */
+      const CONNECT_CDN = "https://esm.sh/@hot-labs/near-connect@0.12.0";
 
       try {
         step_ = "Fetching the contract";
@@ -866,68 +821,67 @@
         if (!res.ok) throw new Error(`vault.wasm ${res.status}`);
         wasm = new Uint8Array(await res.arrayBuffer());
 
-        const setupWalletSelector = await need("wallet-selector", `${CDN}/core@${V}`, "setupWalletSelector");
-        const setupModal = await need("the wallet picker", `${CDN}/modal-ui@${V}`, "setupModal");
+        const NearConnector = await need("the wallet connector", CONNECT_CDN, "NearConnector");
 
-        // WALLETS ARE OPTIONAL, INDIVIDUALLY. One wallet's CDN module failing
-        // must not take the page down — the user only needs ONE of these to
-        // work, and which one is none of our business.
-        //
-        // Worth having several: the original NEAR Wallet
-        // (wallet.testnet.near.org) is retired and its account creation is
-        // disabled, which is the dead end people hit first. MyNearWallet is its
-        // replacement; Meteor and Nightly are extensions that make a testnet
-        // account without any website at all.
-        const WALLETS = [
-          ["MyNearWallet", "my-near-wallet", "setupMyNearWallet"],
-          ["Meteor", "meteor-wallet", "setupMeteorWallet"],
-          ["Bitte", "bitte-wallet", "setupBitteWallet"],
-          ["HERE", "here-wallet", "setupHereWallet"],
-          ["Nightly", "nightly", "setupNightly"],
-        ];
-        const modules = [];
-        const skipped = [];
-        for (const [label, pkg, fn] of WALLETS) {
-          try {
-            const setup = await need(label, `${CDN}/${pkg}@${V}`, fn);
-            modules.push(setup());
-          } catch (e) {
-            skipped.push(`${label}: ${String(e?.message ?? e).slice(0, 60)}`);
-          }
-        }
-        if (!modules.length) {
-          throw new Error(`no wallet module loaded.\n${skipped.join("\n")}`);
-        }
-        if (skipped.length) console.warn("wallets skipped:", skipped);
-
-        step_ = "Starting the wallet selector";
+        step_ = "Starting the wallet connector";
         loading("connecting to NEAR…");
-        selector = await setupWalletSelector({ network: NETWORK, modules });
-        modal = setupModal(selector, { contractId: TOKEN });
+        /**
+         * NETWORK ONLY. NO `signIn: { contractId }`.
+         *
+         * The old `setupModal(selector, { contractId: TOKEN })` asked the
+         * wallet to grant a limited-access key for the token contract at the
+         * moment of connecting. That key could never have signed anything on
+         * this page: every method it calls carries a 1-yocto deposit for
+         * near-sdk's `assert_one_yocto`, and a function-call access key cannot
+         * attach a deposit. So it bought nothing and charged the user an
+         * on-chain transaction to connect.
+         *
+         * near-connect reached the same conclusion — its equivalent option is
+         * marked `@deprecated` in the shipped types, advising that a key be
+         * added later if it is ever actually needed. It is not dropped by
+         * oversight.
+         */
+        connector = new NearConnector({ network: NETWORK });
         step_ = "";
 
-        // `store.observable.subscribe`, NOT `store.observe`.
-        //
-        // Read out of the shipped bundle rather than guessed: the store is
-        // built as `{ observable: subject.asObservable(), getState: () =>
-        // subject.getValue() }`, so it is an rxjs observable and `observe` has
-        // never existed. The first version called `observe` and the page died
-        // AFTER every module had loaded and the selector had initialised —
-        // which is why it looked like a CDN problem and was not.
-        if (typeof selector.store?.observable?.subscribe !== "function") {
-          throw new Error(
-            `the wallet store has an unexpected shape. keys: ${Object.keys(selector.store ?? {}).join(", ")}`,
-          );
+        /**
+         * THE ACCOUNT IS CACHED, because `render()` is synchronous.
+         *
+         * wallet-selector exposed a synchronous store, so `accountId()` could
+         * read it mid-render. near-connect's `getConnectedWallet()` returns a
+         * promise, and making render async would force every caller of it to
+         * be async too. So the account is held here and these events keep it
+         * true.
+         */
+        connector.on("wallet:signIn", (t) => {
+          account = t?.accounts?.[0]?.accountId ?? null;
+          render();
+        });
+        connector.on("wallet:signOut", () => {
+          account = null;
+          render();
+        });
+
+        /**
+         * AND RESTORED ON LOAD, or a returning user with a live session is
+         * shown the connect screen and asked to do something already done.
+         * It rejects when nothing is connected, which is the ordinary first
+         * visit, so the catch is the expected path and not an error.
+         */
+        try {
+          const existing = await connector.getConnectedWallet();
+          account = existing?.accounts?.[0]?.accountId ?? null;
+        } catch {
+          account = null;
         }
-        selector.store.observable.subscribe(render);
+
         render();
       } catch (e) {
         trap(e);
       }
 
       function accountId() {
-        const s = selector?.store?.getState?.();
-        return s?.accounts?.find((a) => a.active)?.accountId ?? s?.accounts?.[0]?.accountId ?? null;
+        return account;
       }
 
       function render() {
@@ -1248,10 +1202,16 @@
         }
       }
 
-      $("btn-connect").onclick = () => modal.show();
+      $("btn-connect").onclick = () => {
+        // connect() opens the picker AND signs in. There is no separate modal
+        // object to show; the "wallet:signIn" handler does the rest.
+        connector.connect().catch(trap);
+      };
       const disconnect = async () => {
-        const w = await selector.wallet();
-        await w.signOut();
+        // disconnect() on the CONNECTOR, not signOut() on the wallet. It
+        // clears the stored session and emits "wallet:signOut", which is what
+        // updates the cached account and re-renders.
+        await connector.disconnect();
       };
       // BOTH escape hatches run the SAME handler. The gate sits in front of
       // the plan now, so the plan's button is unreachable from it — and a
@@ -1358,7 +1318,7 @@
         $("sub").textContent = "";
         show("signing");
         try {
-          const wallet = await selector.wallet();
+          const wallet = await connector.wallet();
           await wallet.signAndSendTransaction({
             receiverId: ACTION.receiverId,
             actions: [
@@ -1419,7 +1379,7 @@
         $("sub").textContent = "";
         show("signing");
         try {
-          const wallet = await selector.wallet();
+          const wallet = await connector.wallet();
           const rootLimits = [
             {
               token: TOKEN,
