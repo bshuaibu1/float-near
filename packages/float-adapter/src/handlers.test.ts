@@ -770,6 +770,74 @@ describe("coverageNote states what the refusal history actually covers", () => {
      * the one measured here. The long form is ~230 characters for the same
      * input, which is what made it the biggest thing on the page.
      */
+    /**
+     * THE HEADLINE, which is the version that actually goes on the page.
+     *
+     * `text` and `short` both lead with block heights. A height is for
+     * checking the claim; it is not something a person reading their
+     * payments can act on, and leading with it is why the caveat read as
+     * noise. The owner's words on seeing it: "i dont understand it and also
+     * i dont like it showing up on our page".
+     *
+     * So it says the one thing a reader needs — whether the refusal list
+     * can be trusted as complete — and the heights stay behind it.
+     */
+    it("states the trust question in words, with no block heights", () => {
+      const note = coverageNote({ from: 275882255, to: 275883754, holes: [] });
+      expect(note.headline).toMatch(/incomplete/i);
+      // The identifiers belong in `text`, not here.
+      expect(note.headline).not.toMatch(/\d{6,}/);
+      expect(note.headline).not.toMatch(/block/i);
+    });
+
+    /**
+     * "IS" WHEN BLOCKS ARE KNOWN MISSING, "MAY BE" OTHERWISE, and that is a
+     * real distinction rather than hedging. Specific unread blocks are a
+     * fact; a clean range is still only a window, and everything outside it
+     * is unknown. Collapsing the two would either overstate a gap or
+     * understate one.
+     */
+    it("distinguishes a known gap from an unbounded one", () => {
+      const withHole = coverageNote({ from: 1000, to: 2000, holes: [{ from: 1100, to: 1109 }] });
+      const clean = coverageNote({ from: 1000, to: 2000, holes: [] });
+      expect(withHole.headline).toBe("refusal history is incomplete");
+      expect(clean.headline).toBe("refusal history may be incomplete");
+      expect(withHole.headline).not.toBe(clean.headline);
+    });
+
+    it("says nobody has looked, rather than implying nothing happened", () => {
+      for (const c of [null, undefined]) {
+        const h = coverageNote(c).headline;
+        expect(h).toMatch(/not been scanned|not scanned/i);
+        expect(h).not.toMatch(/\bnone\b|\bno refusals\b/i);
+      }
+    });
+
+    /**
+     * THERE IS NO "COMPLETE" STATE TO REPORT, and that is a property of the
+     * data rather than a gap in the wording. The adapter cannot know whether
+     * a range covers the vault's whole life without its creation height and
+     * the chain head, and it has neither. A headline that ever said
+     * "complete" would be inventing that.
+     */
+    it("never claims the history is complete", () => {
+      for (const scan of [
+        null,
+        { from: 1, to: 10, holes: [] },
+        { from: 1, to: 1_000_000, holes: [] },
+        { from: 1, to: 10, holes: [{ from: 2, to: 3 }] },
+      ]) {
+        const h = coverageNote(scan).headline;
+        // Strip "incomplete" FIRST, then look for "complete". A naive
+        // /complete/ match is satisfied by the substring inside
+        // "incomplete", so it would pass for every string here and prove
+        // nothing — a check that cannot fail is not a check.
+        expect(h.replace(/incomplete/gi, ""), `headline claims completeness: ${h}`).not.toMatch(
+          /complete/i,
+        );
+      }
+    });
+
     it("fits on a phone, where the long form did not", () => {
       const worst = coverageNote({
         from: 275882255,

@@ -337,6 +337,29 @@ export interface CoverageNote {
    * for checking the claim, and the full `text` is one tap away.
    */
   short: string;
+  /**
+   * The state of the refusal history, in words a user can act on.
+   *
+   * `text` and `short` both lead with block heights. A height is an
+   * identifier for checking the claim; it is not something a person reading
+   * their payments can do anything with, and leading with it is why the
+   * caveat read as noise rather than as information — the owner's words:
+   * "i dont understand it and also i dont like it showing up on our page".
+   *
+   * So this is the version that goes on the page. It states the only thing
+   * a reader needs: whether the refusal list can be trusted as complete.
+   * The heights stay available behind it.
+   *
+   * MAY BE vs IS, and the difference is real:
+   *   nothing scanned   — nobody has looked at all
+   *   unread blocks     — IS incomplete; specific blocks are known missing
+   *   a clean range     — MAY BE incomplete, because the range is still a
+   *                       window and outside it is unknown. There is no
+   *                       "complete" state to report: the adapter cannot
+   *                       know one without the vault's creation height and
+   *                       the chain head, neither of which it has.
+   */
+  headline: string;
 }
 
 /**
@@ -371,6 +394,7 @@ export function coverageNote(
         "emitted as an event — so nothing can show them until " +
         "scripts/scan-blocked.mjs has read the blocks.",
       short: "Refusals not scanned — unknown, not absent.",
+      headline: "refusal history has not been scanned",
     };
   }
 
@@ -397,7 +421,14 @@ export function coverageNote(
   let short = `${n(span)} blocks read · outside them, unknown`;
   if (unreadBlocks > 0) short += ` · ${n(unreadBlocks)} unread inside`;
 
-  return { scanned: true, unreadBlocks, text, short };
+  // "is" when blocks are known missing, "may be" when the only gap is
+  // everything outside the scanned window. See the `headline` field note.
+  const headline =
+    unreadBlocks > 0
+      ? "refusal history is incomplete"
+      : "refusal history may be incomplete";
+
+  return { scanned: true, unreadBlocks, text, short, headline };
 }
 
 /** One access key, flattened, whichever permission variant NEAR reported. */
