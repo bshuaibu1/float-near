@@ -144,7 +144,7 @@ console.log(`Scanning blocks ${from}..${to} (head ${head}) for refusals by ${VAU
 const BATCH = 500;
 let next = store;
 let added = 0;
-const totals = { blocksSeen: 0, chunksFetched: 0, chunksSkipped: 0 };
+const totals = { blocksSeen: 0, chunksFetched: 0, chunksSkipped: 0, absentHeights: 0 };
 
 mkdirSync(dirname(STORE), { recursive: true });
 for (let lo = from; lo <= to; lo += BATCH) {
@@ -156,6 +156,7 @@ for (let lo = from; lo <= to; lo += BATCH) {
   totals.blocksSeen += res.blocksSeen;
   totals.chunksFetched += res.chunksFetched;
   totals.chunksSkipped += res.chunksSkipped;
+  totals.absentHeights += res.absentHeights.length;
   next.vault = VAULT;
 
   // Atomic replace: a reader must never catch a half-written file.
@@ -171,6 +172,18 @@ for (let lo = from; lo <= to; lo += BATCH) {
 console.log(
   `  blocks ${totals.blocksSeen}  chunks fetched ${totals.chunksFetched}, skipped empty ${totals.chunksSkipped}`,
 );
+if (totals.absentHeights) {
+  // SAID, NOT SWALLOWED. NEAR gives every slot a height and a producer that
+  // misses its slot leaves that height empty forever — about 0.5% of them on
+  // testnet. They are not gaps in coverage: there is nothing at them to read.
+  //
+  // But printing "1,604 blocks, 1,596 seen" with no explanation looks like an
+  // arithmetic error, and the previous version counted these as UNREAD, which
+  // is why a scan could never report a clean range.
+  console.log(
+    `  ${totals.absentHeights} height(s) had no block — never produced, nothing to read (not a gap)`,
+  );
+}
 console.log(`  NEW refusals recorded: ${added}  (total known ${Object.keys(next.blocked).length})`);
 if (next.holes.length) {
   // Said loudly. A range containing unread blocks is not covered, and
