@@ -714,6 +714,12 @@ export default function Activity() {
     unreadBlocks: number;
     text: string;
     /**
+     * The plain-words status, which is what the page now renders.
+     * See the adapter's `headline` field for why it exists and why there is
+     * no "complete" state for it to report.
+     */
+    headline?: string;
+    /**
      * OPTIONAL, and that is not defensive boilerplate.
      *
      * The adapter is deployed separately from this page. Checked against the
@@ -882,64 +888,60 @@ export default function Activity() {
               Activity
             </h2>
           </div>
-          {payments.length > 0 && (
-            <p className="text-[12px] font-mono text-muted">
-              {rows.length - blockedCount} payment{rows.length - blockedCount !== 1 ? "s" : ""}&nbsp;·&nbsp;
-              {usdc(totalUsdc)} USDC
-              {blockedCount > 0 && (
-                <span style={{ color: WARN }}>&nbsp;·&nbsp;{blockedCount} blocked</span>
-              )}
-            </p>
-          )}
-        </div>
-
-        {/* THE COVERAGE CAVEAT.
-            Rendered whatever the blocked count is, because it qualifies BOTH
-            readings: a zero that was never looked for, and a non-zero that is
-            only part of the story. Amber when nothing has been scanned or
-            blocks are unread, grey when the range is clean — the colour
-            tracks whether a reader should doubt the number above. */}
-        {coverage && (
-          <div
-            className="mb-4 rounded-lg px-3.5 py-2.5 text-[12px] leading-5"
-            style={
-              !coverage.scanned || coverage.unreadBlocks > 0
-                ? { background: WARN_BG, border: "1px solid #F0E0B0", color: WARN }
-                : { background: CANVAS, border: `1px solid ${LINE}`, color: MUTED }
-            }
-          >
+          <div className="text-right">
+            {payments.length > 0 && (
+              <p className="text-[12px] font-mono text-muted">
+                {rows.length - blockedCount} payment{rows.length - blockedCount !== 1 ? "s" : ""}&nbsp;·&nbsp;
+                {usdc(totalUsdc)} USDC
+                {blockedCount > 0 && (
+                  <span style={{ color: WARN }}>&nbsp;·&nbsp;{blockedCount} blocked</span>
+                )}
+              </p>
+            )}
             {/*
-              DESKTOP: the full sentence, exactly as before.
+              THE COVERAGE CAVEAT, ON THE NUMBER IT QUALIFIES.
 
-              PHONE: the one-line form, with the full sentence behind the
-              `i`. At 375px the paragraph was three amber lines and the
-              largest thing on the page - bigger than the payments it
-              qualifies, which inverts their importance.
+              It was a page-wide amber block above everything, opening with
+              "Refusals have been read from blocks 276175483–276177086". The
+              owner's reaction was the correct one: "i dont understand it and
+              also i dont like it showing up on our page".
 
-              The short form is the ADAPTER'S, not this page's. The module
-              that builds it owns the distinction between "we did not look"
-              and "nothing happened", and its comment is explicit that a
-              formatter duplicated in JSX drifts toward claiming more
-              coverage than exists. Shortening it here would have been that
-              exact mistake.
+              Both halves of that were fair. A block height is an identifier
+              for CHECKING the claim — it is not something a person reading
+              their payments can act on, and leading with it made a footnote
+              look like an alarm. And the thing it qualifies is the blocked
+              count, which is here, not the payment list it was sitting on
+              top of.
 
-              `?? coverage.text` because the adapter deploys separately and
-              an older build sends no `short` - measured against the one
-              running locally, which did exactly that. Too long beats
-              missing: this banner exists to stop the page implying a
-              completeness it does not have.
+              So: one muted line beside the count, saying the only thing a
+              reader needs — whether the refusal list can be trusted as
+              complete — with the heights, the range and the unread count
+              still one tap away behind the `i`.
+
+              IT IS NOT HIDDEN WHEN THINGS ARE FINE, because there is no
+              "fine" to detect. A scanned range is still a window, and the
+              adapter cannot know whether it covers the vault's whole life
+              without its creation height and the chain head. The wording
+              carries that instead: "is incomplete" when blocks are known
+              missing, "may be" when the only gap is everything outside the
+              window.
+
+              `?? coverage.short ?? coverage.text` — the adapter deploys
+              separately, and the one running locally answered with neither
+              `headline` nor `short` while this was being built, being an
+              older build. Degrading to a longer sentence is right; dropping
+              the caveat is not.
             */}
-            <span className="max-md:hidden">{coverage.text}</span>
-            <span className="inline-flex items-start gap-1.5 md:hidden">
-              <span>{coverage.short ?? coverage.text}</span>
-              {coverage.short ? (
+            {coverage && (
+              <p className="mt-0.5 inline-flex items-center gap-1.5 text-[12px]" style={{ color: coverage.unreadBlocks > 0 || !coverage.scanned ? WARN : MUTED }}>
+                {coverage.headline ?? coverage.short ?? coverage.text}
                 <InfoDot label="what the refusal history covers" align="end">
                   {coverage.text}
                 </InfoDot>
-              ) : null}
-            </span>
+              </p>
+            )}
           </div>
-        )}
+        </div>
 
         {/*
           PHONE: one button, and the three groups move into a sheet.
