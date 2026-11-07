@@ -193,7 +193,12 @@ export function TopNav() {
                    screen with room to spare. The cap is meant to stop a
                    pathological label eating the toolbar, not to truncate the
                    ordinary case; 14rem clears a ~180px label and still caps. */
-                className="flex max-w-[7.5rem] items-center gap-1.5 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-chip lg:max-w-[14rem]"
+                /* `max-md:min-h-11` - 28px high is the chip on EVERY route,
+                   so it was the most-encountered under-sized target in the
+                   product. `max-md:` rather than `md:min-h-0`, because a
+                   `md:` reset declares a minimum where there was none and
+                   shows up as a real difference when diffed. */
+                className="flex max-w-[7.5rem] items-center gap-1.5 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:bg-chip max-md:min-h-11 max-md:px-3 lg:max-w-[14rem]"
               >
                 {vault.paused ? (
                   <span

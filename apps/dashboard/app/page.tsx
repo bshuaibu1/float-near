@@ -141,6 +141,30 @@ function utilColor(pct: number) { return pct >= 80 ? DANGER : pct >= 50 ? WARN :
 function utilTrack(pct: number) { return pct >= 80 ? DANGER_BG : pct >= 50 ? WARN_BG : SUCCESS_BG; }
 
 /**
+ * The exact figure, when an abbreviation is hiding something.
+ *
+ * THIS REPLACES A `title`, AND THE `title` WAS MY OWN MISTAKE. The stat
+ * cards show `usd(x, "compact")` because compact is bounded at eight
+ * characters and detailed is not — a 150px card can be designed against
+ * eight. Abbreviating loses precision, so I put the exact number in a
+ * `title` and called it recoverable.
+ *
+ * A `title` never fires on a touch screen. So the precision was recoverable
+ * on a desktop, where the card is wide enough that nothing was abbreviated
+ * in the first place, and gone on a phone, which is the only place the
+ * abbreviation happens. Exactly backwards.
+ *
+ * RENDERED ONLY WHEN IT DIFFERS. Below $1,000 compact and detailed are the
+ * same string, and a line repeating the figure above it is noise. So this
+ * is nothing at all for today's `$3.50`, and `$1,250,000.00` under `$1.3M`
+ * when there is something to say.
+ */
+function ExactFigure({ compact, exact, loading }: { compact: string; exact: string; loading: boolean }) {
+  if (loading || compact === exact) return null;
+  return <p className="mt-0.5 text-[11px] font-mono tabular-nums text-faint">{exact}</p>;
+}
+
+/**
  * THE TWO PANELS BELOW ARE FIXED-WIDTH GRIDS, AND ON A PHONE THAT HID THEM.
  *
  * `grid-cols-[1fr_7rem_10rem]` and `grid-cols-[3.5rem_7rem_1fr_5rem_3rem_5.5rem]`
@@ -506,7 +530,7 @@ export default function Overview() {
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Total Spent</p>
           <div className="flex items-baseline gap-1 mb-1">
             {/*
-              COMPACT, and the exact figure on hover.
+              COMPACT, and the exact figure beneath it.
 
               Two columns gives this card 117px of content box on a phone,
               which is about eight characters at this size. `$12,345.60` is
@@ -515,18 +539,19 @@ export default function Overview() {
               widest an abbreviation gets, so the figure fits at EVERY width
               rather than up to whatever the next test value happened to be.
 
-              Abbreviating does lose precision, and there is no detail view
-              for lifetime spend to recover it from, so `title` carries the
-              exact number. Below $1,000 the two are identical and nothing
-              changes — which is why today's $3.50 looks the same.
+              THE EXACT FIGURE WAS A `title`, AND THAT WAS WRONG. A title
+              never fires on a touch screen, so the precision this
+              abbreviation gives up was recoverable on a desktop and gone on
+              a phone — the one device the abbreviation exists for. It is now
+              a second line, rendered only when it differs from what is
+              already shown, so below $1,000 nothing is added and today's
+              $3.50 looks exactly as it did.
             */}
-            <span
-              title={loading ? undefined : usd(totalSpent)}
-              className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink"
-            >
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">
               {loading ? "—" : usd(totalSpent, "compact")}
             </span>
           </div>
+          <ExactFigure compact={usd(totalSpent, "compact")} exact={usd(totalSpent)} loading={loading} />
           <p className="text-[12px] text-muted">lifetime, all agents</p>
         </div>
 
@@ -546,13 +571,11 @@ export default function Overview() {
         <div className={statCard} style={border}>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-3 text-muted">Avg TX Size</p>
           <div className="flex items-baseline gap-1 mb-1">
-            <span
-              title={loading ? undefined : usd(avgTx)}
-              className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink"
-            >
+            <span className="text-[28px] font-semibold tracking-tight tabular-nums leading-none text-ink">
               {loading ? "—" : usd(avgTx, "compact")}
             </span>
           </div>
+          <ExactFigure compact={usd(avgTx, "compact")} exact={usd(avgTx)} loading={loading} />
           <p className="text-[12px] text-muted">per payment</p>
         </div>
       </div>
@@ -684,7 +707,7 @@ export default function Overview() {
       <div className="bg-white rounded-lg overflow-hidden mb-6" style={border}>
         <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom:`1px solid ${LINE}` }}>
           <p className="text-[13px] font-semibold text-ink">Today's spend by agent</p>
-          <Link href="/agents" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted">
+          <Link href="/agents" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted max-md:-my-2 max-md:min-h-11 max-md:px-2 max-md:-mr-2">
             Manage agents <ArrowRight size={12}/>
           </Link>
         </div>
@@ -765,7 +788,7 @@ export default function Overview() {
             <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background:SUCCESS }}/>
             <p className="text-[13px] font-semibold text-ink">Recent Activity</p>
           </div>
-          <Link href="/activity" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted">
+          <Link href="/activity" className="flex items-center gap-1 text-[12px] transition-colors duration-150 text-muted max-md:-my-2 max-md:min-h-11 max-md:px-2 max-md:-mr-2">
             View all <ArrowRight size={12}/>
           </Link>
         </div>

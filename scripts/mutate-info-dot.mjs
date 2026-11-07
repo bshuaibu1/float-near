@@ -68,6 +68,28 @@ const MUTANTS = [
     from: "text-[12.5px] font-normal normal-case leading-5 tracking-normal",
     to: "text-[12.5px] normal-case leading-5 tracking-normal",
   },
+  /**
+   * M11 and M12 guard the TOUCH TARGET, which is invisible by construction:
+   * a transparent 44px pseudo-element over a 15px dot. Nothing about the
+   * rendered page changes if it is deleted, so without a test it is the
+   * first thing a tidy-up removes.
+   */
+  {
+    name: "M11 the 44px tap overlay is deleted, leaving a 15px target on a phone",
+    from: " max-md:after:absolute max-md:after:left-1/2 max-md:after:top-1/2 max-md:after:size-11 max-md:after:-translate-x-1/2 max-md:after:-translate-y-1/2 max-md:after:content-['']",
+    to: "",
+  },
+  {
+    /**
+     * The guard, not the overlay. Unguarded it also exists on desktop,
+     * where a 44px invisible box sits over the heading text beside the dot
+     * and swallows clicks meant for it - for no gain, since a mouse hits
+     * 15px perfectly well.
+     */
+    name: "M12 the overlay loses its max-md: guard and covers desktop text too",
+    from: "max-md:after:size-11",
+    to: "after:size-11",
+  },
 ];
 
 let survived = 0;

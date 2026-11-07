@@ -960,7 +960,7 @@ function AgentPicker({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex h-[34px] min-w-[11rem] items-center gap-2 rounded-lg border border-line bg-card pl-3 pr-2.5 text-left shadow-[0_1px_2px_rgba(17,17,17,0.04)] transition-colors hover:border-ink/25 focus:outline-none focus:ring-2 focus:ring-ink/10"
+        className="flex h-[34px] min-w-[11rem] items-center gap-2 rounded-lg border border-line bg-card pl-3 pr-2.5 text-left shadow-[0_1px_2px_rgba(17,17,17,0.04)] transition-colors hover:border-ink/25 focus:outline-none focus:ring-2 focus:ring-ink/10 max-md:h-11"
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="truncate text-[13px] font-semibold text-ink">
@@ -1144,7 +1144,7 @@ function ActionButton({
   return (
     <button
       onClick={onClick}
-      className="inline-flex h-[40px] items-center rounded-md border border-line bg-card px-3.5 text-[12px] font-medium text-ink transition-colors hover:bg-chip"
+      className="inline-flex h-[40px] items-center rounded-md border border-line bg-card px-3.5 text-[12px] font-medium text-ink transition-colors hover:bg-chip max-md:h-11"
       style={colour ? { color: colour } : undefined}
     >
       {children}
@@ -1178,7 +1178,7 @@ function Select({
         id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-[40px] appearance-none rounded-lg border border-line bg-card pl-3 pr-8 text-[13px] font-medium text-ink shadow-[0_1px_2px_rgba(17,17,17,0.04)] transition-colors hover:border-ink/25 focus:outline-none focus:ring-2 focus:ring-ink/10"
+        className="h-[40px] appearance-none rounded-lg border border-line bg-card pl-3 pr-8 text-[13px] font-medium text-ink shadow-[0_1px_2px_rgba(17,17,17,0.04)] transition-colors hover:border-ink/25 focus:outline-none focus:ring-2 focus:ring-ink/10 max-md:h-11"
       >
         {children}
       </select>
@@ -1277,7 +1277,11 @@ function NumInput({
   const lg = size === "lg";
   return (
     <div
-      className={`flex items-baseline gap-1.5 rounded-lg border border-line bg-card focus-within:ring-2 focus-within:ring-ink/10 ${
+      /* `max-md:min-h-11` takes the small variant from its measured 30px to
+         the 44px touch floor. The `lg` variant is already 40px and gets the
+         same floor. Desktop keeps the aligned 40px control column exactly -
+         `max-md:` declares nothing above the breakpoint. */
+      className={`flex items-baseline gap-1.5 rounded-lg border border-line bg-card focus-within:ring-2 focus-within:ring-ink/10 max-md:min-h-11 max-md:items-center ${
         lg ? "px-3 py-1" : "px-2.5 py-1.5"
       }`}
     >

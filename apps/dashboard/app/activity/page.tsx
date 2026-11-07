@@ -317,6 +317,151 @@ function ActivityRow({ item, isLast, explorerBase, vaultId, onOpen }: {
 }
 
 // ---------------------------------------------------------------------------
+// Filters, on a phone
+// ---------------------------------------------------------------------------
+/**
+ * ONE CONTROL INSTEAD OF THREE STACKED ONES.
+ *
+ * Making the chips 44px fixed the touch targets and made the layout worse.
+ * The desktop bar is one line: agent dropdown, then rail and status chips
+ * separated by a hairline rule that implies the grouping. Stacked on a
+ * phone it became three rows, ~180px - 22% of the viewport before a single
+ * payment - and the rule is gone, so it reads as eight unlabelled buttons
+ * containing two "All"s and two "Blocked"s with nothing to say which is
+ * which.
+ *
+ * Bigger is not the same as better. The chips needed room for a LABEL more
+ * than they needed height, and there is no room for one on a 375px row.
+ *
+ * So on a phone the whole bar collapses to a single 44px button carrying a
+ * count of what is active, and the groups get their labels back inside a
+ * sheet where there is space for them. Same sheet mechanics as the nav's
+ * More: scrim is a real button, body scroll locked, Escape closes.
+ */
+function FilterSheet({
+  open, onClose, agents, agentFilter, setAgentFilter,
+  railFilter, setRailFilter, statusFilter, setStatusFilter, onReset,
+}: {
+  open: boolean;
+  onClose: () => void;
+  agents: { id: string; name: string }[];
+  agentFilter: string;
+  setAgentFilter: (v: string) => void;
+  railFilter: RailFilter;
+  setRailFilter: (v: RailFilter) => void;
+  statusFilter: StatusFilter;
+  setStatusFilter: (v: StatusFilter) => void;
+  onReset: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", onKey); };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const group = <T extends string>(
+    label: string,
+    values: readonly T[],
+    current: T,
+    set: (v: T) => void,
+    cap: boolean,
+  ) => (
+    <div>
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted">{label}</p>
+      <div className="flex flex-wrap gap-2">
+        {values.map((v) => (
+          <button
+            key={v}
+            onClick={() => set(v)}
+            className={`min-h-[2.75rem] rounded-lg px-4 text-[13px] font-medium transition-colors ${cap ? "capitalize" : "uppercase tracking-wider"}`}
+            style={current === v
+              ? { background: INK, color: CARD }
+              : { background: CANVAS, color: MUTED, border: `1px solid ${LINE}` }}
+          >
+            {v}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 md:hidden">
+      <button type="button" aria-label="Close filters" onClick={onClose} className="absolute inset-0 bg-ink/20" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Filter payments"
+        className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto rounded-t-2xl border-t border-line bg-card pb-[calc(1rem+env(safe-area-inset-bottom))]"
+      >
+        <div className="flex items-center justify-between px-5 pt-4 pb-1">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">Filters</p>
+          <button onClick={onClose} aria-label="Close filters" className="-mr-2 flex h-11 w-11 items-center justify-center rounded-lg text-muted">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="space-y-5 px-5 pt-2">
+          <div>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted">Agent</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setAgentFilter("all")}
+                className="min-h-[2.75rem] rounded-lg px-4 text-[13px] font-medium transition-colors"
+                style={agentFilter === "all"
+                  ? { background: INK, color: CARD }
+                  : { background: CANVAS, color: MUTED, border: `1px solid ${LINE}` }}
+              >
+                All agents
+              </button>
+              {agents.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => setAgentFilter(a.id)}
+                  className="flex min-h-[2.75rem] items-center gap-2 rounded-lg px-4 text-[13px] font-medium transition-colors"
+                  style={agentFilter === a.id
+                    ? { background: INK, color: CARD }
+                    : { background: CANVAS, color: MUTED, border: `1px solid ${LINE}` }}
+                >
+                  <AgentAvatar seed={agentSeed(a.id)} hue={agentHue(a.id)} size={14} animated={false} />
+                  {a.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {group("Rail", ["all", "near", "base", "blocked"] as const, railFilter, setRailFilter, false)}
+          {group("Status", ["all", "success", "failed", "blocked"] as const, statusFilter, setStatusFilter, true)}
+        </div>
+
+        <div className="mt-6 flex gap-2 px-5">
+          <button
+            onClick={onReset}
+            className="h-12 flex-1 rounded-lg border border-line text-[14px] font-medium text-muted transition-colors active:bg-chip"
+          >
+            Reset
+          </button>
+          <button
+            onClick={onClose}
+            className="h-12 flex-[1.5] rounded-lg text-[14px] font-medium"
+            style={{ background: INK, color: CARD }}
+          >
+            Show results
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Detail Modal
 // ---------------------------------------------------------------------------
 function PaymentDialog({ item, onClose }: { item: Payment; onClose: () => void }) {
@@ -539,6 +684,7 @@ export default function Activity() {
   const [agentFilter, setAgentFilter]   = useState<string>("all");
   const [railFilter, setRailFilter]     = useState<RailFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const agentMenuRef = useRef<HTMLDivElement>(null);
 
@@ -645,6 +791,25 @@ export default function Activity() {
     return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
   }, [payments]);
 
+  /**
+   * How many filters are narrowing the list.
+   *
+   * The collapsed button has to say whether anything is on, or hiding the
+   * controls hides the fact that a list is filtered - and "no payments"
+   * looks identical to "no payments matching a filter you forgot about".
+   */
+  const activeFilterCount =
+    (agentFilter !== "all" ? 1 : 0) +
+    (railFilter !== "all" ? 1 : 0) +
+    (statusFilter !== "all" ? 1 : 0);
+
+  const resetFilters = () => {
+    setAgentFilter("all");
+    setRailFilter("all");
+    setStatusFilter("all");
+    setCurrentPage(1);
+  };
+
   // Client-side filter
   const rows = payments.filter(p => {
     if (agentFilter !== "all" && p.agentId !== agentFilter) return false;
@@ -732,8 +897,37 @@ export default function Activity() {
           </div>
         )}
 
-        {/* Filter bar */}
-        <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
+        {/*
+          PHONE: one button, and the three groups move into a sheet.
+          See FilterSheet for why bigger chips alone made this worse.
+        */}
+        <button
+          onClick={() => setFilterSheetOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={filterSheetOpen}
+          className="mb-4 flex h-11 w-full items-center justify-between rounded-lg border border-line bg-card px-4 text-[13px] font-medium text-ink md:hidden"
+        >
+          <span className="flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+              <path d="M1 3h12M3 7h8M5.5 11h3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            Filters
+          </span>
+          {activeFilterCount > 0 ? (
+            <span
+              className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
+              style={{ background: INK, color: CARD }}
+            >
+              {activeFilterCount}
+            </span>
+          ) : (
+            <span className="text-[12px] text-muted">All</span>
+          )}
+        </button>
+
+        {/* Filter bar — DESKTOP. Unchanged; `max-md:hidden` leaves nothing
+            declared above the breakpoint. */}
+        <div className="flex items-center justify-between mb-4 gap-4 flex-wrap max-md:hidden">
 
           {/* Agent dropdown */}
           <div ref={agentMenuRef} className="relative">
@@ -950,6 +1144,19 @@ export default function Activity() {
           )}
         </div>
       </div>
+
+      <FilterSheet
+        open={filterSheetOpen}
+        onClose={() => setFilterSheetOpen(false)}
+        agents={agents}
+        agentFilter={agentFilter}
+        setAgentFilter={(v) => { setAgentFilter(v); setCurrentPage(1); }}
+        railFilter={railFilter}
+        setRailFilter={(v) => { setRailFilter(v); setCurrentPage(1); }}
+        statusFilter={statusFilter}
+        setStatusFilter={(v) => { setStatusFilter(v); setCurrentPage(1); }}
+        onReset={resetFilters}
+      />
 
       {selected && (
         <PaymentDialog item={selected} onClose={() => setSelected(null)} />
