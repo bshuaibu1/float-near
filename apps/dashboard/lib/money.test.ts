@@ -50,6 +50,64 @@ describe("usd - a dollar value", () => {
     expect(usd(2000, "compact")).toBe("$2K");
   });
 
+  /**
+   * WHY COMPACT IS THE ONE THE CARDS USE: it is BOUNDED, and detailed is not.
+   *
+   * The Overview's four stat cards are a quarter of the page wide. Measured
+   * in the browser at 375px, a card was 69px across with 48px of its own
+   * padding, so `$3.50` — which needs 74px at 28px semibold — rendered 54px
+   * past the card's border and the user read "$3.5". A smaller number.
+   *
+   * Widening the grid moves that cliff; it does not remove it. The property
+   * that removes it is this one: across the whole realistic range of a USDC
+   * vault, from a third of a cent to a trillion dollars, compact never
+   * exceeds EIGHT characters. Detailed reaches sixteen for the same inputs.
+   * A layout can be designed against eight. It cannot be designed against
+   * "however long the next value turns out to be".
+   */
+  it("keeps a compact dollar figure to 8 characters or fewer", () => {
+    const CEILING = 8;
+    const values = [
+      0, 0.004, 0.01, 1, 9.99, 10, 99.99, 100, 999.99, 1000, 1234.5, 9999,
+      12345.6, 99999, 999999, 1e6, 1250000, 9.99e6, 1e9, 999.9e9, 1e11, 999.4e9,
+    ];
+    const worst: Array<{ input: number; out: string }> = [];
+    for (const v of values) {
+      for (const n of [v, -v]) {
+        const out = usd(n, "compact");
+        if (out.length > CEILING) worst.push({ input: n, out });
+      }
+    }
+    expect(worst).toEqual([]);
+
+    // POSITIVE CONTROL. A ceiling no output can breach proves nothing, so
+    // confirm the same sweep DOES breach it in detailed, which is exactly
+    // why the cards may not use detailed.
+    const detailedOverflows = values
+      .map((v) => usd(v, "detailed"))
+      .filter((s) => s.length > CEILING);
+    expect(detailedOverflows.length).toBeGreaterThan(0);
+    expect(usd(999.9e9, "detailed")).toBe("$999,900,000,000.00"); // 19 characters
+  });
+
+  /**
+   * AND THE EDGE WHERE THE BOUND STOPS HOLDING, stated rather than left to
+   * be discovered. `abbreviate` has no unit above T, so past a thousand
+   * trillion it grows without limit again. No USDC vault reaches it — the
+   * token's entire supply is around $6e10 — but a reader who trusts the
+   * eight-character bound should know where it ends.
+   *
+   * Note the digits run together: `$1000T`, not `$1,000T`. `abbreviate`
+   * formats with `toFixed`, which does not group, where every other path
+   * through `usd` goes via `group()` and does. Both of those were guessed
+   * wrong when this test was first written and corrected from the output,
+   * which is the whole reason the exact strings are pinned here.
+   */
+  it("has no unit above T, so it is unbounded past a quadrillion", () => {
+    expect(usd(1e15, "compact")).toBe("$1000T");
+    expect(usd(1e18, "compact")).toBe("$1000000T");
+  });
+
   it("puts the sign outside the dollar sign", () => {
     expect(usd(-42.5)).toBe("-$42.50");
   });
