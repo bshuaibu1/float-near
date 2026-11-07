@@ -1,4 +1,4 @@
-<!-- STAMP commit=98e6cd4 date=2026-11-07 -->
+<!-- STAMP commit=c84dd7d date=2026-11-07 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -49,11 +49,13 @@ so drift fails two suites.
 - **Intents cross-chain round trip** end to end with live 1Click pricing; the vault registers
   the solver's deposit address itself.
 - **Factory 12/12 on testnet** — `CreateAccount + Transfer + UseGlobalContract + new()` in one batch.
-- **Shipped to npm:** `@floatonnear/create-float` 0.4.0 (**0.5.0 is cut, tested and
-  tarball-audited but NOT PUBLISHED** — `npm whoami` was 401; until someone runs
-  `npm publish`, every user still installs the 0.4.0 whose `float-exit` tells them their
-  deposit is unrecoverable), `@floatonnear/mcp` 0.3.0 (24 tools),
+- **Shipped to npm:** `@floatonnear/create-float` **0.5.0** (2026-11-07T21:53:37Z, shasum
+  `e829de97…` matching the pre-publish secret audit), `@floatonnear/mcp` 0.3.0 (24 tools),
   `@floatonnear/float-adapter` 0.2.1 — verified by installing from the registry and driving them.
+- **A user can recover everything with one command.** `npx @floatonnear/float-exit` installed
+  FROM npm, run against the live fixture, resolves the owner's key, finds the token from
+  `get_tree`, finds the gas key and quotes **3.465732 back = 3.348190 account + 0.117542 gas
+  key**. The six-step sequence behind it is proven 3x on live vaults at **99.96% returns**.
 - Next.js dashboard (`apps/dashboard`), mobile build done. 37 of 38 reason codes tested.
 
 ## Live state right now
@@ -105,39 +107,21 @@ so drift fails two suites.
    therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
    realised, not theoretical — reading a config to answer "which vault is this pointed at"
    prints a live private key into scrollback and into the driving agent's transcript.
-5. **`float-exit` — FIXED in the repo, still BROKEN on npm. It IS the refund path.** Ships
-   as a bin in `@floatonnear/create-float@0.4.0`. Verified by running it against the live
-   fixture 2026-11-07. It (a) demands `~/.near-credentials/<net>/<vault>.json`, which a factory
-   vault never has, so it **refuses to start**; (b) then states the stake is *"unrecoverable —
-   there is no seed phrase and no recovery flow"*, which is **FALSE** — the owner's key IS the
-   vault's only FullAccess key (`3BMgTnLPdX…` on both, checked on chain), which is exactly how
-   `teardown-vault.mjs` signs; (c) deletes agent **sub-accounts**, a model removed from the
-   contract; (d) has no `purge_settled` and no stub deploy, so `deleteAccount` is **refused at
-   300 KB**; (e) ignores NEP-611 gas keys, whose balance the delete then destroys (`DeleteKey`
-   burns it — 0.08322 measured, tx reported success). `scripts/teardown-vault.mjs` does all six
-   steps correctly and is proven 3× (**99.96% returns**) but lived only in the repo.
-   **FIXED IN THE REPO, STILL BROKEN ON npm.** `float-exit` was rewritten with all six steps;
-   a `--dry-run` against the live fixture now resolves the owner's key, finds the token from
-   `get_tree`, finds the gas key and quotes **3.465732 back = 3.348190 account + 0.117542 gas
-   key**. A fifth defect was found while fixing it: it signed `withdraw` AS THE VAULT, and
-   `assert_owner` compares `predecessor_account_id()` to the owner, so that step could never
-   have worked. **Users still have the broken 0.4.0 until a release is PUBLISHED** — the
-   publish blocker is now cleared (see below), so cutting 0.5.0 is all that is left.
-6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
-7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
+5. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
+6. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
-8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
-9. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
-10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
+7. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
+8. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
+9. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
 
 ## Next 3 steps
 
-**Resolved 2026-11-07:** `float-exit` is fixed (item 5) and the publish blocker is cleared. The
-contract was rebuilt and came out **byte-identical** (`003568bcea22be80…`, 298,819 B) — the
-binary was never stale, only its provenance record, and the guard had a state no rebuild could
-clear. `prepack` passes, create-float is 248/248. **What remains is one command: publish 0.5.0.**
-Until it is published every user still installs the broken 0.4.0 that tells them their deposit
-is unrecoverable, so this outranks step 1 below.
+**Closed 2026-11-07:** `float-exit` is fixed AND **published as 0.5.0**, verified by installing
+from the registry and driving it against the live fixture — not by reading the publish output,
+which is how it first looked done while the registry still said 0.4.0. The contract rebuild came
+out **byte-identical** (`003568bcea22be80…`): the binary was never stale, only its provenance
+record, and the publish guard had a state no rebuild could clear. Nothing now stands between a
+user and their deposit, so **step 1 below is the whole remaining job.**
 
 1. **Write the README + pitch + demo script.** Nothing exists. The demo path is already one
    command (`seed-fixture.mjs` → adapter → dashboard → signing page :8788), and the strongest
