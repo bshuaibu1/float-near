@@ -90,6 +90,30 @@ const MUTANTS = [
     from: "max-md:after:size-11",
     to: "after:size-11",
   },
+  /**
+   * M13-M15 guard the on-screen nudge. Each is a plausible simplification
+   * of code whose whole purpose is invisible when it is working.
+   */
+  {
+    name: "M13 the panel never nudges, so it renders partly off screen",
+    from: "    if (r.left < MARGIN) setShiftX(MARGIN - r.left);",
+    to: "    if (false) setShiftX(MARGIN - r.left);",
+  },
+  {
+    name: "M14 only the left edge is corrected, so a right overflow survives",
+    from: "    else if (r.right > window.innerWidth - MARGIN) {\n      setShiftX(window.innerWidth - MARGIN - r.right);\n    }",
+    to: "",
+  },
+  {
+    /**
+     * The one that looks like a tidy-up. Shifting unconditionally passes
+     * both overflow tests and moves every panel on every desktop, which is
+     * exactly what the "already fits" test exists to catch.
+     */
+    name: "M15 the fits-already branch is dropped, so every panel moves",
+    from: "    if (r.left < MARGIN) setShiftX(MARGIN - r.left);",
+    to: "    setShiftX(MARGIN - r.left);\n    if (false)",
+  },
 ];
 
 let survived = 0;

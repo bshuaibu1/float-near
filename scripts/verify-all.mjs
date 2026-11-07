@@ -22,7 +22,25 @@ const LF_CHAR = String.fromCharCode(10);
 const steps = [
   {
     name: "dashboard typecheck",
-    cmd: "npx tsc --noEmit -p tsconfig.json",
+    /**
+     * `--incremental false`, AND THAT IS THE WHOLE POINT OF THIS STEP.
+     *
+     * tsconfig.json sets `incremental: true`, so tsc writes
+     * tsconfig.tsbuildinfo and skips files it believes are unchanged. This
+     * gate was passing on that cache while the project did not actually
+     * compile: `components/ui/button.tsx` imported `@base-ui/react/button`,
+     * a package declared in package.json, never present in the lockfile and
+     * never installed. A clean checkout — CI, a new machine, anyone — would
+     * have failed where this said "ok".
+     *
+     * Found by accident, which is the problem: nothing here was going to
+     * find it. A cache that can hide an error from a gate makes the gate
+     * report the cache's opinion rather than the code's.
+     *
+     * The cost is a few seconds. A typecheck that is fast and sometimes
+     * wrong is worth less than one that is slow and always right.
+     */
+    cmd: "npx tsc --noEmit --incremental false -p tsconfig.json",
     cwd: "apps/dashboard",
     // tsc prints nothing on success, so there is no success marker to require.
     mustNotMatch: /error TS/,

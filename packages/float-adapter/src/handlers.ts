@@ -321,6 +321,22 @@ export interface CoverageNote {
   unreadBlocks: number;
   /** A sentence safe to render verbatim. */
   text: string;
+  /**
+   * The same caveat in one line, for somewhere `text` does not fit.
+   *
+   * On a 375px screen `text` is a three-sentence amber paragraph that was
+   * the largest thing on the activity page — bigger than the payments it
+   * qualifies. The obvious fix is for the page to shorten it, and that is
+   * the fix this module exists to prevent: a formatter in JSX drifts, and
+   * the direction it drifts is toward claiming more coverage than exists.
+   *
+   * So the short form is built HERE, under the same tests, and it keeps the
+   * load-bearing word. "1,500 blocks read" alone is a boast; "outside them,
+   * unknown" is the part that stops a reader treating a quiet list as an
+   * empty one. The heights are dropped, not the distinction — a height is
+   * for checking the claim, and the full `text` is one tap away.
+   */
+  short: string;
 }
 
 /**
@@ -354,6 +370,7 @@ export function coverageNote(
         "UNKNOWN rather than absent. A refusal is never stored on chain — only " +
         "emitted as an event — so nothing can show them until " +
         "scripts/scan-blocked.mjs has read the blocks.",
+      short: "Refusals not scanned — unknown, not absent.",
     };
   }
 
@@ -373,7 +390,14 @@ export function coverageNote(
       ` ${n(unreadBlocks)} block${unreadBlocks === 1 ? "" : "s"} inside that range ` +
       `could not be read and remain unread.`;
   }
-  return { scanned: true, unreadBlocks, text };
+
+  // The short form keeps the count, the unknown-outside caveat and the hole
+  // count, and drops only the heights. See the `short` field's own note for
+  // why it is built here and not in a component.
+  let short = `${n(span)} blocks read · outside them, unknown`;
+  if (unreadBlocks > 0) short += ` · ${n(unreadBlocks)} unread inside`;
+
+  return { scanned: true, unreadBlocks, text, short };
 }
 
 /** One access key, flattened, whichever permission variant NEAR reported. */

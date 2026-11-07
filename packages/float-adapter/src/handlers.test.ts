@@ -709,4 +709,77 @@ describe("coverageNote states what the refusal history actually covers", () => {
     expect(note.unreadBlocks).toBe(0);
     expect(note.text).not.toMatch(/unread/i);
   });
+
+  /**
+   * THE SHORT FORM, which exists because `text` is a three-sentence amber
+   * paragraph and on a 375px screen it was the largest thing on the activity
+   * page — bigger than the payments it qualifies.
+   *
+   * The obvious fix was for the page to shorten it, and that is precisely
+   * what this module exists to prevent. A formatter in JSX drifts, and the
+   * direction it drifts is toward claiming more coverage than exists. So the
+   * short form is built here and tested here, to the SAME standard: these
+   * assertions are the long form's assertions, re-run against fewer words.
+   *
+   * What may be dropped is the block HEIGHTS — those are for checking the
+   * claim, and the full sentence is one tap away. What may never be dropped
+   * is the distinction between "we did not look" and "nothing happened".
+   */
+  describe("the one-line form carries the same caveat", () => {
+    it("never turns an unscanned range into an empty one", () => {
+      for (const c of [null, undefined]) {
+        const note = coverageNote(c);
+        expect(note.short).toMatch(/unknown|not scanned/i);
+        // The same forbidden words as the long form. "No refusals" would
+        // convert "we did not look" into "nothing happened".
+        expect(note.short).not.toMatch(/\bnone\b|\bno refusals\b/i);
+      }
+    });
+
+    /**
+     * THE LOAD-BEARING HALF. "1,500 blocks read" on its own is a boast; it
+     * invites a reader to treat a quiet list as a complete one. The clause
+     * that stops that is the one about everything outside the range, and it
+     * is the first thing a well-meaning edit would cut for length.
+     */
+    it("says that outside the scanned range refusals are unknown", () => {
+      const note = coverageNote({ from: 275882255, to: 275883754, holes: [] });
+      expect(note.short).toMatch(/unknown/i);
+      expect(note.short).toContain("1,500");
+    });
+
+    it("still reports unread blocks inside the range", () => {
+      const note = coverageNote({
+        from: 1000,
+        to: 2000,
+        holes: [{ from: 1100, to: 1109 }, { from: 1500, to: 1500 }],
+      });
+      expect(note.short).toMatch(/11/);
+      expect(note.short).toMatch(/unread/i);
+    });
+
+    it("says nothing about holes when there are none", () => {
+      expect(coverageNote({ from: 1, to: 10, holes: [] }).short).not.toMatch(/unread/i);
+    });
+
+    /**
+     * It has to actually BE short, or it is the long form with extra steps.
+     *
+     * 72 characters is roughly two lines at the size this renders on a
+     * 375px screen. The worst realistic case is a scan with holes, which is
+     * the one measured here. The long form is ~230 characters for the same
+     * input, which is what made it the biggest thing on the page.
+     */
+    it("fits on a phone, where the long form did not", () => {
+      const worst = coverageNote({
+        from: 275882255,
+        to: 275883754,
+        holes: [{ from: 275882300, to: 275882308 }],
+      });
+      expect(worst.short.length, `too long to be the short form: ${worst.short}`).toBeLessThanOrEqual(72);
+      // Positive control: the thing it replaces genuinely does not fit, so
+      // this bound is not one that any string would pass.
+      expect(worst.text.length).toBeGreaterThan(150);
+    });
+  });
 });
