@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { TopNav } from "@/components/top-nav";
+import { MobileTabBar } from "@/components/mobile-tab-bar";
 import { useWallet } from "@/components/wallet-provider";
 import { DANGER, DANGER_BG } from "@/lib/colors";
 
@@ -78,9 +79,23 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <>
       <TopNav />
-      <main>
+      {/*
+        ROOM FOR THE BOTTOM BAR, below `md` only.
+
+        The bar is `position: fixed`, so it is out of flow and the page does
+        not know it is there. Without this padding the last element of every
+        page sits underneath it — and the thing at the bottom of a page is
+        usually the last row of a list or a submit button, so the content
+        that disappears is the content you scrolled down to reach.
+
+        56px bar + 24px breathing room, plus the home-indicator inset, which
+        is added separately because its height is a runtime value the phone
+        reports and not something that can be baked into a number here.
+      */}
+      <main className="pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-0">
         <AuthGate>{children}</AuthGate>
       </main>
+      <MobileTabBar />
     </>
   );
 }
