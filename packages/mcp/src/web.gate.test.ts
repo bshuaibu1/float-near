@@ -118,7 +118,7 @@ describe("consent, not the link, decides what is signed", () => {
    * Observed live 2026-11-03: the gate read `work12-testnet.fac...` while the
    * intended owner was a different account.
    *
-   * Both buttons must share ONE handler. A second inline `signOut` is how the
+   * Both buttons must share ONE handler. A second inline teardown is how the
    * plan's button and this one drift into doing different things.
    */
   it("lets the user switch wallets from the gate, using the same handler", () => {
@@ -126,8 +126,18 @@ describe("consent, not the link, decides what is signed", () => {
     expect(src).toMatch(/id="btn-agent-switch"/);
     expect(src).toMatch(/\$\("btn-agent-switch"\)\.onclick = disconnect;/);
     expect(src).toMatch(/\$\("btn-disconnect"\)\.onclick = disconnect;/);
-    // Exactly one signOut implementation.
-    expect(src.match(/\.signOut\(\)/g)?.length).toBe(1);
+    /**
+     * Exactly one teardown call, and it is the CONNECTOR'S.
+     *
+     * This read `.signOut()` while the page used wallet-selector. The two are
+     * not interchangeable: near-connect's `wallet.signOut()` ends the session
+     * with that one wallet, while `connector.disconnect()` also clears the
+     * connector's own stored session. Calling the wallet's leaves the
+     * connector believing it is still signed in, so the next load restores a
+     * dead account and the page offers to sign with a wallet that has gone.
+     */
+    expect(src.match(/connector\.disconnect\(/g)?.length).toBe(1);
+    expect(src).not.toMatch(/\.signOut\(\)/);
   });
 
   /**
