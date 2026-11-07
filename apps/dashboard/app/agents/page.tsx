@@ -326,10 +326,16 @@ export default function AgentsPage() {
              crushed to zero width and the node labels disappeared entirely
              while still being present in the DOM. Scrolling is the honest
              behaviour; silently hiding the one column that identifies the row
-             is not. */
+             is not.
+
+             BELOW `md` NONE OF THAT APPLIES, because there is no table: the
+             rows render as cards that fit the viewport. `overflow-x-auto`
+             stays harmlessly (nothing inside is wider than the container at
+             that width), but the `min-w-[55rem]` must not - it is what made
+             a row run 538px past a 375px screen. */
           <div className="bg-card border border-line rounded-xl shadow-[0_1px_2px_rgba(17,17,17,0.04)] overflow-x-auto">
             <div
-              className="grid min-w-[55rem] grid-cols-[minmax(12rem,1.5fr)_7rem_6rem_6rem_9rem_7rem] gap-4 px-6 py-3 text-[11px] font-medium uppercase tracking-wider text-muted border-b border-line bg-canvas"
+              className="hidden md:grid min-w-[55rem] grid-cols-[minmax(12rem,1.5fr)_7rem_6rem_6rem_9rem_7rem] gap-4 px-6 py-3 text-[11px] font-medium uppercase tracking-wider text-muted border-b border-line bg-canvas"
             >
               <span>Agent</span>
               <span className="text-right">Daily cap</span>
@@ -339,96 +345,18 @@ export default function AgentsPage() {
               <span className="text-right">State</span>
             </div>
 
-            {fleet.map((a) => {
-              const pct = Math.min(a.dailyBudgetUsedPercent ?? 0, 100);
-              // nodeIdOf against the FULL list, not the filtered one: its
-              // fallback is `all.indexOf(a)`, so passing `fleet` would shift
-              // every id by one once root is removed.
-              const nodeId = nodeIdOf(a, agents);
-              return (
-                <div
-                  key={a.agentId}
-                  className="grid min-w-[55rem] grid-cols-[minmax(12rem,1.5fr)_7rem_6rem_6rem_9rem_7rem] gap-4 items-center px-6 py-3 border-b border-line last:border-b-0 hover:bg-canvas transition-colors duration-100"
-                >
-                  {/* The hierarchy, drawn with REAL padding.
-                      Depth used to arrive as U+00A0 characters inside the label,
-                      which is why it broke whenever anyone typed a plain space -
-                      and why agent names carried that invisible padding into the
-                      prose warning further up this page. */}
-                  {/* ALWAYS AN AVATAR.
-                      This was gated on `Boolean(a.walletAddress)` — a
-                      Solana-era field the NEAR adapter never populates,
-                      because a virtual agent's key is a gas key ON THE VAULT
-                      and it owns no wallet. The gate was therefore always
-                      false and no row ever got a face, while the Overview
-                      page drew one unconditionally from the same data.
-
-                      The node id moves to the tooltip. It is what `vault_pay`
-                      and `vault_add_role` key on, so it has to stay reachable
-                      — but it is the contract's vocabulary, not the reader's,
-                      and it was crowding the one column that says who a row
-                      is. */}
-                  <div
-                    className="flex items-center gap-2.5 min-w-0"
-                    style={{ paddingLeft: `${(a.depth ?? 0) * 1.1}rem` }}
-                  >
-                    <div className="relative shrink-0" title={`Budget node ${nodeId}`}>
-                      <AgentAvatar seed={agentSeed(a.agentId)} hue={agentHue(a.agentId)} size={22} animated />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-medium truncate text-ink">
-                        {a.displayName ?? a.agentId}
-                      </p>
-                    </div>
-                  </div>
-
-                  <Num value={a.policy?.dailyBudget} />
-                  <Num value={a.policy?.perTxLimit} />
-                  <Num value={a.dailySpent} />
-
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="h-1.5 flex-1 rounded-full overflow-hidden bg-chip">
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${pct}%`,
-                          background: pct >= 100 ? DANGER : pct >= 75 ? WARN : SUCCESS,
-                          transition: "width 400ms ease",
-                        }}
-                      />
-                    </div>
-                    <span
-                      className="text-[10px] font-mono tabular-nums w-8 text-right text-muted">
-                      {pct}%
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-end gap-1.5">
-                    <span
-                      className="whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
-                      style={
-                        a.status === "killed"
-                          ? { background: DANGER_BG, color: DANGER }
-                          : { background: SUCCESS_BG, color: SUCCESS }
-                      }
-                    >
-                      {a.status === "killed" ? "Frozen" : "Active"}
-                    </span>
-                    <button
-                      onClick={() => void buildFreeze(a)}
-                      title={
-                        a.status === "killed"
-                          ? "Build the unfreeze command for the owner to run"
-                          : "Build the freeze command for the owner to run"
-                      }
-                      className="rounded-md px-1.5 py-0.5 text-[10px] font-medium text-muted transition-colors hover:bg-chip">
-                      {a.status === "killed" ? "unfreeze" : "freeze"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+            {fleet.map((a, i) => (
+              <FleetRow
+                key={a.agentId}
+                agent={a}
+                // nodeIdOf against the FULL list, not the filtered one: its
+                // fallback is `all.indexOf(a)`, so passing `fleet` would shift
+                // every id by one once root is removed.
+                nodeId={nodeIdOf(a, agents)}
+                isLast={i === fleet.length - 1}
+                onToggleFreeze={() => void buildFreeze(a)}
+              />
+            ))}
           </div>
           )}
 
@@ -514,6 +442,178 @@ export default function AgentsPage() {
 
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
+  );
+}
+
+/**
+ * One agent, as a table row on a desktop and as a card on a phone.
+ *
+ * THE TABLE IS 880px WIDE AND WILL NOT NARROW. `min-w-[55rem]` on every row
+ * is deliberate - the comment on the scroll container explains why, and it
+ * is right: the fixed columns add up to 35rem, so letting them squeeze
+ * crushed the 1.5fr name column to zero and the node labels vanished while
+ * still being in the DOM. Scrolling beats silently hiding the column that
+ * says WHICH agent a row is.
+ *
+ * But measured at 375px that means a row extending 538px past the viewport.
+ * Reading one agent is two and a half screens of sideways dragging, and the
+ * freeze control - the only action on this page - is at the far end of it,
+ * 42x19px. Scrolling is the honest behaviour for a table; the answer on a
+ * phone is to stop being a table.
+ *
+ * The card surfaces two things the row could only imply:
+ *
+ *   THE NODE ID, as text. On the row it lives in a `title` on the avatar,
+ *   and a title never fires on a touch screen. It is what `vault_pay` and
+ *   `vault_add_role` key on, so "reachable only by hovering" means "not
+ *   reachable at all" on the device this card is for.
+ *
+ *   WHAT FREEZE DOES. "freeze" in 10px grey is the smallest thing on the
+ *   screen, and it is the destructive control. Here it is a full-width
+ *   button at the touch floor, saying "Freeze agent" rather than "freeze".
+ */
+function FleetRow({ agent, nodeId, isLast, onToggleFreeze }: {
+  agent: ApiAgent;
+  nodeId: number;
+  isLast: boolean;
+  onToggleFreeze: () => void;
+}) {
+  // Computed once; both layouts read these and neither recomputes.
+  const pct = Math.min(agent.dailyBudgetUsedPercent ?? 0, 100);
+  const frozen = agent.status === "killed";
+  const name = agent.displayName ?? agent.agentId;
+  const barColor = pct >= 100 ? DANGER : pct >= 75 ? WARN : SUCCESS;
+  const actionWord = frozen ? "unfreeze" : "freeze";
+  const actionTitle = frozen
+    ? "Build the unfreeze command for the owner to run"
+    : "Build the freeze command for the owner to run";
+
+  const stateChip = (
+    <span
+      className="whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
+      style={frozen ? { background: DANGER_BG, color: DANGER } : { background: SUCCESS_BG, color: SUCCESS }}
+    >
+      {frozen ? "Frozen" : "Active"}
+    </span>
+  );
+
+  const meter = (
+    <div className="flex items-center gap-2">
+      <div className="h-1.5 flex-1 rounded-full overflow-hidden bg-chip">
+        <div
+          className="h-full rounded-full"
+          style={{ width: `${pct}%`, background: barColor, transition: "width 400ms ease" }}
+        />
+      </div>
+      <span className="text-[10px] font-mono tabular-nums w-8 text-right text-muted">{pct}%</span>
+    </div>
+  );
+
+  return (
+    <>
+      {/* DESKTOP: unchanged, verified against main element by element. */}
+      <div
+        className={`hidden md:grid min-w-[55rem] grid-cols-[minmax(12rem,1.5fr)_7rem_6rem_6rem_9rem_7rem] gap-4 items-center px-6 py-3 border-b border-line hover:bg-canvas transition-colors duration-100 ${isLast ? "border-b-0" : ""}`}
+      >
+        {/* The hierarchy, drawn with REAL padding.
+            Depth used to arrive as U+00A0 characters inside the label,
+            which is why it broke whenever anyone typed a plain space -
+            and why agent names carried that invisible padding into the
+            prose warning further up this page. */}
+        {/* ALWAYS AN AVATAR.
+            This was gated on `Boolean(a.walletAddress)` — a
+            Solana-era field the NEAR adapter never populates,
+            because a virtual agent's key is a gas key ON THE VAULT
+            and it owns no wallet. The gate was therefore always
+            false and no row ever got a face, while the Overview
+            page drew one unconditionally from the same data.
+
+            The node id moves to the tooltip. It is what `vault_pay`
+            and `vault_add_role` key on, so it has to stay reachable
+            — but it is the contract's vocabulary, not the reader's,
+            and it was crowding the one column that says who a row
+            is. */}
+        <div
+          className="flex items-center gap-2.5 min-w-0"
+          style={{ paddingLeft: `${(agent.depth ?? 0) * 1.1}rem` }}
+        >
+          <div className="relative shrink-0" title={`Budget node ${nodeId}`}>
+            <AgentAvatar seed={agentSeed(agent.agentId)} hue={agentHue(agent.agentId)} size={22} animated />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[13px] font-medium truncate text-ink">{name}</p>
+          </div>
+        </div>
+
+        <Num value={agent.policy?.dailyBudget} />
+        <Num value={agent.policy?.perTxLimit} />
+        <Num value={agent.dailySpent} />
+
+        {meter}
+
+        <div className="flex items-center justify-end gap-1.5">
+          {stateChip}
+          <button
+            onClick={onToggleFreeze}
+            title={actionTitle}
+            className="rounded-md px-1.5 py-0.5 text-[10px] font-medium text-muted transition-colors hover:bg-chip"
+          >
+            {actionWord}
+          </button>
+        </div>
+      </div>
+
+      {/* PHONE */}
+      <div className={`md:hidden px-4 py-4 border-b border-line ${isLast ? "border-b-0" : ""}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div
+            className="flex items-center gap-2.5 min-w-0"
+            // Indentation still carries the tree. One level is 1.1rem on a
+            // 1180px table and would eat 18% of a 375px card at depth 4, so
+            // it is halved here - enough to read as nesting, not enough to
+            // squeeze the name it is meant to qualify.
+            style={{ paddingLeft: `${(agent.depth ?? 0) * 0.55}rem` }}
+          >
+            <AgentAvatar seed={agentSeed(agent.agentId)} hue={agentHue(agent.agentId)} size={26} animated />
+            <div className="min-w-0">
+              <p className="text-[14px] font-medium truncate text-ink">{name}</p>
+              {/* The id, as TEXT. See the note above: on the row it is a
+                  `title`, and a phone has no hover to reveal it. */}
+              <p className="text-[11px] font-mono text-faint">node {nodeId}</p>
+            </div>
+          </div>
+          <div className="shrink-0 pt-0.5">{stateChip}</div>
+        </div>
+
+        <dl className="mt-3.5 space-y-2">
+          {[
+            ["Daily cap", agent.policy?.dailyBudget],
+            ["Per payment", agent.policy?.perTxLimit],
+            ["Spent today", agent.dailySpent],
+          ].map(([label, value]) => (
+            <div key={label as string} className="flex items-baseline justify-between gap-3">
+              <dt className="text-[12px] text-muted">{label}</dt>
+              <dd><Num value={value as string | undefined} /></dd>
+            </div>
+          ))}
+        </dl>
+
+        <div className="mt-3">
+          <p className="mb-1.5 text-[12px] text-muted">Utilisation</p>
+          {meter}
+        </div>
+
+        <button
+          onClick={onToggleFreeze}
+          // h-11 is the 44px touch floor. On the row this control is 42x19px
+          // and reads "freeze" in 10px grey - the smallest thing on the page,
+          // and the destructive one.
+          className="mt-4 flex h-11 w-full items-center justify-center rounded-lg border border-line text-[13px] font-medium text-ink transition-colors active:bg-chip"
+        >
+          {frozen ? "Unfreeze agent" : "Freeze agent"}
+        </button>
+      </div>
+    </>
   );
 }
 
