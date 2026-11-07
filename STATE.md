@@ -1,4 +1,4 @@
-<!-- STAMP commit=b649e3b date=2026-11-07 -->
+<!-- STAMP commit=b837edc date=2026-11-07 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -69,11 +69,17 @@ so drift fails two suites.
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **21 checks, 617 tests**, committed at `b649e3b`.
+- Gate: **`node scripts/verify-all.mjs`** — **21 checks, 617 tests**, committed at `b837edc`.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new
   one is picked up without editing the gate.
+  **IT DOES NOT RUN `create-float`.** The gate covers dashboard, adapter and mcp only, so that
+  package's 242 tests — including `rotate-key`, which guards a real key-privilege property, and
+  `float-exit`, which guards the refund path — can regress without the gate noticing. Run them
+  with `npm test -w @floatonnear/create-float`. Not added to the gate yet because the suite is
+  **240/242 red** on the stale wasm (item 6), so wiring it in now would block every other check
+  on an unrelated failure. Rebuild the wasm first, then add it.
 - Rust: `cargo test` (192 tests). **Build only with `cargo near build`, never plain `cargo build`.**
 - Local: `.claude/launch.json` → `create-page` (`node web/serve.mjs`, :8788) and `dashboard` (:3000).
 - Fixture: `node scripts/seed-fixture.mjs` (needs `OWNER`, `FACTORY`, `TOKEN`; refuses mainnet).
