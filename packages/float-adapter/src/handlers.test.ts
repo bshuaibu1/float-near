@@ -299,14 +299,30 @@ describe("getVaultInfo", () => {
   // no "closed" state to report. Replaced by the assertion that we no longer
   // ASK — a stale call would be a wasted RPC round-trip on every dashboard
   // load, and silently swallowed by the old `.catch(() => null)`.
-  it("does not call the removed get_base_config", async () => {
+  it("does not call the removed get_base_config, and asks for nothing unexpected", async () => {
     const asked: string[] = [];
     const v: ViewFn = async <T>(m: string) => {
       asked.push(m);
       return cfgView as T;
     };
     await getVaultInfo(v, cfg(), async () => "0");
-    expect(asked).toEqual(["get_config"]);
+
+    // THE NAMED INTENT, stated separately from the list below. The exact-set
+    // assertion encodes this today, but it breaks on every legitimate
+    // addition — and the fix for a broken list is to edit the list, which
+    // would quietly take this with it.
+    expect(asked, "get_base_config is gone from the contract").not.toContain("get_base_config");
+
+    /**
+     * AND THE EXACT SET, because this runs on every dashboard load and an
+     * accidental extra view is a wasted round-trip nobody would notice.
+     *
+     * `current_day` is here deliberately: a `purge_settled` cutoff must come
+     * from the contract's own counter. The vault carries a `clock_mode`, so
+     * deriving the day from the browser would be a guess, and a cutoff one
+     * day out either deletes live records or silently deletes nothing.
+     */
+    expect(asked).toEqual(["get_config", "current_day"]);
   });
 });
 

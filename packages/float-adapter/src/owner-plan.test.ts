@@ -152,4 +152,63 @@ describe("planOwnerAction", () => {
     expect(thrown).not.toBeInstanceOf(UnknownActionError);
     expect(String((thrown as Error).message)).toMatch(/cooldown/i);
   });
+
+  /**
+   * THE TWO TEARDOWN STEPS A BROWSER CAN ACTUALLY SIGN.
+   *
+   * Closing a vault is six steps and four need the VAULT as signer — the
+   * gas-key withdrawal, `storage_unregister`, the 33-byte stub deploy and
+   * `DeleteAccount`. A wallet refuses `DeployContract` from a dApp, which is
+   * why creation goes through a factory in the first place. So the dashboard
+   * gets these two, and must not pretend to the rest.
+   */
+  describe("teardown steps", () => {
+    it("plans a withdrawal in base units, defaulting the token to the vault's", () => {
+      const p = planOwnerAction(
+        { action: "withdraw", amountBase: "12500000", receiverId: "alice.testnet" },
+        ENV,
+      );
+      expect(p.methodName).toBe("withdraw");
+      expect(p.args).toMatchObject({ amount: "12500000", receiver_id: "alice.testnet" });
+    });
+
+    /**
+     * NO DEFAULT AMOUNT, deliberately. `?? "0"` would be refused by the
+     * contract; any other fallback would move a quantity nobody asked for.
+     * Both are worse than refusing here, where the message can still reach a
+     * human.
+     */
+    it("refuses a withdrawal with no amount rather than inventing one", () => {
+      let thrown: unknown;
+      try {
+        planOwnerAction({ action: "withdraw", receiverId: "alice.testnet" }, ENV);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown).not.toBeInstanceOf(UnknownActionError);
+      expect(String((thrown as Error).message)).toMatch(/amountBase/);
+    });
+
+    it("refuses a withdrawal with no receiver", () => {
+      expect(() =>
+        planOwnerAction({ action: "withdraw", amountBase: "1" }, ENV),
+      ).toThrow(/receiverId/);
+    });
+
+    it("plans a purge for the day it is given", () => {
+      const p = planOwnerAction({ action: "purge", beforeDay: 20_400, limit: 100 }, ENV);
+      expect(p.methodName).toBe("purge_settled");
+      expect(p.args).toMatchObject({ before_day: 20_400, limit: 100 });
+    });
+
+    /**
+     * `before_day` comes from the contract's own `current_day`, read by the
+     * caller and passed as current_day + 1. Defaulting it here would invent a
+     * cutoff, and this one deletes payment history.
+     */
+    it("refuses a purge with no cutoff rather than inventing one", () => {
+      expect(() => planOwnerAction({ action: "purge" }, ENV)).toThrow(/beforeDay/);
+    });
+  });
 });

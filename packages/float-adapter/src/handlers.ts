@@ -195,6 +195,11 @@ export interface VaultInfo {
    * never arrived. Null when the token contract cannot be read.
    */
   vaultTokenBalance: string | null;
+  /**
+   * The contract's own UTC day counter, for building a `purge_settled`
+   * cutoff. Null when it could not be read — never 0, which is a real day.
+   */
+  currentDay: number | null;
 }
 
 /**
@@ -240,6 +245,21 @@ export async function getVaultInfo(
     account_id: c.vault_id,
   }).catch(() => null);
 
+  /**
+   * THE CONTRACT'S OWN DAY, not a computed one.
+   *
+   * `purge_settled(before_day, …)` removes records strictly before the day
+   * it is given, so a caller needs today's number to build "everything up to
+   * now". Deriving it from the browser clock would be a guess about the
+   * contract: the vault has a `clock_mode`, and a test clock does not track
+   * UTC. A cutoff that is one day wrong either deletes records that are
+   * still live or silently deletes nothing.
+   *
+   * Null on failure rather than 0: day zero is a real value, and it would
+   * mean "purge nothing" while looking like an answer.
+   */
+  const currentDay = await view<number>("current_day", {}).catch(() => null);
+
   return {
     vaultId: c.vault_id,
     tokenId: cfg.token,
@@ -251,6 +271,7 @@ export async function getVaultInfo(
     clockMode: c.clock_mode,
     strictAllocation: c.strict_allocation,
     vaultTokenBalance,
+    currentDay,
   };
 }
 

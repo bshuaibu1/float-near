@@ -1,10 +1,12 @@
 import {
   planFreezeNode,
+  planPurgeSettled,
   planSetCooldown,
   planSetNodeCaps,
   planSetPaused,
   planSetRecipients,
   planSetStrictAllocation,
+  planWithdraw,
 } from "@floatonnear/mcp/payloads";
 
 /**
@@ -26,7 +28,27 @@ export type OwnerPlanRequest =
   | { action: "recipients"; nodeId: number; recipients?: string[] | null }
   | { action: "freeze"; nodeId: number; frozen?: boolean }
   | { action: "pause"; paused?: boolean }
-  | { action: "allocation"; strict?: boolean };
+  | { action: "allocation"; strict?: boolean }
+  /**
+   * The two teardown steps a BROWSER SIGNATURE CAN REACH.
+   *
+   * Closing a vault is six steps (see scripts/teardown-vault.mjs) and four of
+   * them need the VAULT as signer, not the owner: the gas-key withdrawal, the
+   * token's `storage_unregister`, the 33-byte stub deploy and the
+   * `DeleteAccount` itself. A wallet refuses `DeployContract` from a dApp —
+   * which is the entire reason vault CREATION goes through a factory — so a
+   * dashboard cannot finish a teardown and must not pretend to.
+   *
+   * These two it can do, and they are the two that matter most:
+   *
+   *   withdraw   deleting an account does NOT return fungible tokens, so
+   *              moving them out first is the difference between recovering
+   *              a balance and burning it
+   *   purge      the only lever that shrinks STATE, and without it the
+   *              delete is refused outright
+   */
+  | { action: "withdraw"; token?: string; amountBase?: string; receiverId?: string }
+  | { action: "purge"; beforeDay?: number; limit?: number };
 
 /**
  * The action name is not one we serve.
@@ -75,6 +97,25 @@ export function planOwnerAction(b: OwnerPlanRequest, env: OwnerPlanEnv) {
       return planSetPaused(env.vault, b.paused ?? false);
     case "allocation":
       return planSetStrictAllocation(env.vault, b.strict ?? false);
+    case "withdraw":
+      // BASE UNITS, and no default. An amount is the one argument that must
+      // never be guessed: `?? "0"` would be refused by the contract, and any
+      // other fallback would move a quantity nobody asked for.
+      if (!b.amountBase) throw new Error("withdraw needs amountBase, in base units");
+      if (!b.receiverId) throw new Error("withdraw needs receiverId");
+      return planWithdraw(
+        env.vault,
+        b.token ?? env.token,
+        b.amountBase,
+        b.receiverId,
+        env.decimals,
+      );
+    case "purge":
+      // `before_day` is read from the contract's own `current_day` by the
+      // caller and passed as current_day + 1 — records are removed strictly
+      // BEFORE it. Defaulting it here would invent a cutoff.
+      if (typeof b.beforeDay !== "number") throw new Error("purge needs beforeDay");
+      return planPurgeSettled(env.vault, b.beforeDay, b.limit ?? 100);
     default:
       throw new UnknownActionError(String((b as { action: string }).action));
   }
