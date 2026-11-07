@@ -1,4 +1,4 @@
-<!-- STAMP commit=cac1491 date=2026-11-07 -->
+<!-- STAMP commit=b649e3b date=2026-11-07 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -69,7 +69,7 @@ so drift fails two suites.
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **21 checks, 617 tests**, committed at `cac1491`.
+- Gate: **`node scripts/verify-all.mjs`** — **21 checks, 617 tests**, committed at `b649e3b`.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new
@@ -91,20 +91,38 @@ so drift fails two suites.
    (a function-call key cannot sign `DeleteAccount`). Recovery yields ~3.34 vs ~4.64 needed to
    rebuild factory+vault → **~1.3 NEAR short.**
 4. **Key files work but are not the DEFAULT.** `NEAR_VAULT_AGENT_KEY_FILE` /
-   `FLOAT_QUOTE_SIGNER_KEY_FILE` are wired into both servers (shipped in `cac1491`), but the
+   `FLOAT_QUOTE_SIGNER_KEY_FILE` are wired into both servers (shipped in `b649e3b`), but the
    provisioning path still *writes* the inline form: `create-float.mjs` (~981-1031),
    `print-mcp-command.mjs:88`, `print-agent-env.mjs:117`, `agent-key.ts:143-152`. A new user
    therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
    realised, not theoretical — reading a config to answer "which vault is this pointed at"
    prints a live private key into scrollback and into the driving agent's transcript.
-5. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
-6. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
+5. **`float-exit` is PUBLISHED AND BROKEN — it IS the refund path users are told to run.** Ships
+   as a bin in `@floatonnear/create-float@0.4.0`. Verified by running it against the live
+   fixture 2026-11-07. It (a) demands `~/.near-credentials/<net>/<vault>.json`, which a factory
+   vault never has, so it **refuses to start**; (b) then states the stake is *"unrecoverable —
+   there is no seed phrase and no recovery flow"*, which is **FALSE** — the owner's key IS the
+   vault's only FullAccess key (`3BMgTnLPdX…` on both, checked on chain), which is exactly how
+   `teardown-vault.mjs` signs; (c) deletes agent **sub-accounts**, a model removed from the
+   contract; (d) has no `purge_settled` and no stub deploy, so `deleteAccount` is **refused at
+   300 KB**; (e) ignores NEP-611 gas keys, whose balance the delete then destroys (`DeleteKey`
+   burns it — 0.08322 measured, tx reported success). `scripts/teardown-vault.mjs` does all six
+   steps correctly and is proven 3× (**99.96% returns**) but lives in the repo, so **no user can
+   reach it**. Fix = port its six steps into `float-exit`. **Status: open, NOT deferred** — it
+   was raised against README/pitch for the final week and the owner has not chosen yet.
+6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
+7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
-7. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
-8. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
-9. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
+8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
+9. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
+10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
 
 ## Next 3 steps
+
+**Unresolved ordering question, raised 2026-11-07 and NOT yet answered:** fixing `float-exit`
+(item 5) is a correctness bug in a *published* package that tells users their money is
+unrecoverable when it is not — roughly an hour's work. It was argued as outranking step 1. The
+owner has not chosen, so the list below is unchanged rather than silently reordered.
 
 1. **Write the README + pitch + demo script.** Nothing exists. The demo path is already one
    command (`seed-fixture.mjs` → adapter → dashboard → signing page :8788), and the strongest
