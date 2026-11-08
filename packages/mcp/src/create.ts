@@ -25,13 +25,18 @@
  * caught the drift the moment the contract shrank, which is the entire
  * reason it exists.
  *
+ * 298,819 -> 298,920 on 2026-11-08, when `new` began giving a creation-time
+ * agent its OWN child node instead of binding it to root. +101 bytes, about
+ * 0.00101 NEAR more per vault. The pin caught this one too, on the first gate
+ * run after the rebuild.
+ *
  * Mirrors `packages/create-float/res/vault.wasm`, and `create.pins.test.ts`
  * reads that file and fails if the two disagree — so a contract rebuild cannot
  * silently leave this quoting a deposit that is too small. Too small is not a
  * clean failure: CreateAccount succeeds and the vault sits below its own
  * storage requirement, bricking on the first write.
  */
-export const CONTRACT_BYTES = 298819;
+export const CONTRACT_BYTES = 298920;
 
 /** NEAR charges 1e19 yoctoNEAR per byte of storage. */
 export const STORAGE_COST_PER_BYTE = 10n ** 19n;

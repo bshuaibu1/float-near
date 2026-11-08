@@ -23,10 +23,22 @@ import { KeyPair } from "near-api-js";
 /**
  * The node a creation-time agent is bound to.
  *
- * ROOT_NODE in the vault. The factory binds at the root because it is the only
- * node that exists at `new` — children are added later by the owner.
+ * ONE, NOT ZERO, SINCE 2026-11-08. `new` used to bind at ROOT_NODE because it
+ * was the only node that existed — which left the FIRST agent holding the
+ * whole vault budget while every agent added later through `add_role` got a
+ * child of its own. The hierarchy only began constraining from agent #2.
+ *
+ * `new` now creates the agent its own child of root, carrying the same limits,
+ * exactly as `add_role` does. Root is 0 and that child is the first node
+ * inserted after it, so the agent is 1.
+ *
+ * PREDICTED, NOT READ, and that is unavoidable: the credential is generated
+ * before the vault exists, so there is nothing to ask. It is pinned by
+ * `binding_at_init_matches_binding_afterwards` in the contract, which asserts
+ * the node is 1 and not 0 — if `new` ever inserts another node first, that
+ * test fails rather than this constant drifting in silence.
  */
-export const AGENT_NODE_ID = 0;
+export const AGENT_NODE_ID = 1;
 
 export interface GeneratedAgentKey {
   publicKey: string;

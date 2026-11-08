@@ -81,6 +81,7 @@ so drift fails two suites.
 | RPC | `https://test.rpc.fastnear.com` |
 | adapter | port 8787, quote-signer key present (Intents rail open) |
 | adapter config | `scripts/restart-adapter.ps1` **hardcodes** the env. `.float/adapter.env` is NOT read by the local stack and still names the dead mainnet `float.test015.near` — edit the script, not the env file |
+| fixture tree | `root(0) -> agent(1), marketing(2)` — an agent gets its OWN node since 2026-11-08 |
 | fixture history | 3 settled + 1 refusal (`seed-fleet-blocked`, `PER_TX_LIMIT`). Refusal scan covers 276664820–276666019 (1,200 blocks) with **1** unread block (276665614), so the banner reads "incomplete" — correctly, since a refusal there would be invisible |
 | stranded on testnet | `work12-testnet.fac.floatv4.testnet` holds **3.370330** with **zero access keys** — unrecoverable, the testnet twin of `r1.float.test015.near`. Predates the factory line that installs the owner's key. `float-exit` refuses it correctly rather than shrinking it |
 | **mainnet** | **gone / bricked.** No mainnet factory (`FACTORY_BY_NETWORK.mainnet = undefined`, deliberate) |
@@ -106,9 +107,9 @@ so drift fails two suites.
 1. **No README, no pitch, no demo script, no submission doc.** When written it MUST say two
    things that are true and non-obvious, or a user finds them out the hard way: **(a)** an
    implicit account (64 hex chars) cannot have a vault under any factory, use a named one; and
-   **(b)** your FIRST agent holds the root budget, so give later agents their own nodes — the
-   one-signature create binds to root, `add_role` binds to a child, and that is agreed to change
-   after the deadline (see `DECISIONS.md` 2026-11-08).
+   **(b)** an agent gets its own node with the same caps as root, so your SECOND agent means
+   lowering a number rather than restructuring (fixed 2026-11-08; both onboarding paths now
+   agree).
    Grepped every file for `hackathon|submission|devpost|2026-11-14`: **zero matches** — the
    submission requirements are recorded nowhere in this repo. ← biggest gap, 6 days left.
 2. **Sandbox/integration tier has never run on this machine** (needs Linux `neard`). Consequence:

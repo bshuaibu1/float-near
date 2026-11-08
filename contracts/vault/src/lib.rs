@@ -316,6 +316,10 @@ impl Vault {
 
         let child_cap_sum: Vec<(AccountId, U128)> =
             root_limits.iter().map(|l| (l.token.clone(), U128(0))).collect();
+        // Cloned before the move, because an agent gets a child carrying the
+        // SAME limits. See the block below for why they are identical rather
+        // than smaller.
+        let agent_limits = root_limits.clone();
         v.nodes.insert(
             ROOT_NODE,
             Node {
@@ -335,23 +339,47 @@ impl Vault {
         v.node_order.push(ROOT_NODE);
         v.next_node_id = ROOT_NODE + 1;
 
-        // Bind the agent to the root node, with the root's own limits.
+        // ---- AN AGENT GETS ITS OWN NODE, NOT THE ROOT.
         //
-        // No duplicate check, unlike `bind_virtual_agent`: `pubkey_to_node`
-        // was constructed three statements ago and is provably empty, so
-        // there is nothing to collide with.
+        // It used to bind to ROOT_NODE, which left the FIRST agent holding the
+        // whole vault budget while every agent added later through `add_role`
+        // got a child. So the hierarchy only began constraining from agent #2,
+        // and the one-signature door was the loose one. Measured on the demo
+        // fixture: an agent on root could spend 100/day where a child was
+        // held to 25.
+        //
+        // Root was never broken by this — a payment charges every ancestor, so
+        // a child can never outspend root (`PARENT_DAILY_BUDGET`, proven on
+        // testnet and mainnet). The defect was that the agent had no limit of
+        // its OWN.
+        //
+        // THE CHILD'S LIMITS EQUAL THE ROOT'S, DELIBERATELY. The obvious
+        // implementation gives it something smaller, and that is wrong: the
+        // caller asked for ONE number at create time, and silently halving it
+        // would be a worse surprise than the behaviour being fixed. Equal caps
+        // mean day-one behaviour is unchanged — root still binds, because it
+        // is charged too — while the SHAPE is right for the second agent,
+        // which then becomes lowering a number rather than restructuring a
+        // vault.
+        //
+        // `recipients: None` so the child INHERITS root's list. A child list
+        // replaces rather than unions, so copying it would freeze today's
+        // recipients into a second place the owner must remember to update.
+        //
+        // `cooldown_sec: 0` for the same reason cooldown is hierarchical: the
+        // ancestor's cooldown already applies.
         //
         // `pubkey_to_nonce` is deliberately NOT written, matching
         // `bind_virtual_agent`. A fresh key has no entry, reads as 0, and its
         // first usable nonce is 1. Seeding it here would make a vault created
-        // this way disagree with one bound the ordinary way — and the whole
-        // requirement is that the two paths produce the same vault.
+        // this way disagree with one bound the ordinary way.
         if let Some(pk) = agent_pk {
-            v.pubkey_to_node.insert(pk, ROOT_NODE);
+            let node = v.insert_node(Some(ROOT_NODE), "agent".to_string(), agent_limits, 0, None);
+            v.pubkey_to_node.insert(pk, node);
             // Same event the owner-driven path emits, so an indexer cannot
             // tell the two apart and does not need to.
             env::log_str(&format!(
-                r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{ROOT_NODE}}}]}}"#
+                r#"EVENT_JSON:{{"standard":"vault","version":"1.0.0","event":"virtual_agent_bound","data":[{{"node_id":{node}}}]}}"#
             ));
         }
         v
