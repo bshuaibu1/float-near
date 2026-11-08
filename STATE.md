@@ -1,4 +1,4 @@
-<!-- STAMP commit=022faca date=2026-11-09 -->
+<!-- STAMP commit=47d9d0b date=2026-11-09 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -104,6 +104,7 @@ so drift fails two suites.
 | fixture tree | `root(0) -> agent(1), marketing(2)` — an agent gets its OWN node since 2026-11-08 |
 | fixture history | 3 settled + 1 refusal (`seed-fleet-blocked`, `PER_TX_LIMIT`). Refusal scan covers 276664820–276666019 (1,200 blocks) with **1** unread block (276665614), so the banner reads "incomplete" — correctly, since a refusal there would be invisible |
 | stranded on testnet | `work12-testnet.fac.floatv4.testnet` holds **3.370330** with **zero access keys** — unrecoverable, the testnet twin of `r1.float.test015.near`. Predates the factory line that installs the owner's key. `float-exit` refuses it correctly rather than shrinking it |
+| **demo blocker** | **connecting as `work12.testnet` shows an EMPTY vault.** Derivation is unlabelled, so it resolves to the stranded `work12-testnet.fac…` (0.00 USDC, 0 keys, 1 node) — not the `-fleet` fixture (**42.25 USDC, 2 keys, 3 nodes**). Measured 2026-11-09. Fix before pointing anyone at it: reseed the fixture **unlabelled under a fresh owner**, since work12's unlabelled slot is permanently occupied |
 | hosting | **not deployed yet.** `scripts/deploy-skill-host.sh` is written and waits only on an IP: `DOMAIN=usefloat.xyz ./scripts/deploy-skill-host.sh`. Only `web/serve.mjs` goes public (signing page + `/skill.md`); the adapter and dashboard stay on loopback and the script FAILS if anything answers on 8787 or 3000 |
 | DNS caution | `usefloat.xyz`, `www` and `app` already resolve to **209.209.10.210**, the box serving `pythscan.com` and the discord avatar app — with **no vhost answering**, so repointing breaks nothing. Do NOT deploy Float there |
 | **mainnet** | **gone / bricked.** No mainnet factory (`FACTORY_BY_NETWORK.mainnet = undefined`, deliberate) |
@@ -152,15 +153,15 @@ so drift fails two suites.
    therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
    realised, not theoretical — reading a config to answer "which vault is this pointed at"
    prints a live private key into scrollback and into the driving agent's transcript.
-5. **The dashboard is SINGLE-TENANT.** The adapter serves the one vault named by
-   `NEAR_VAULT_CONTRACT` and ignores the `?owner=` the page sends, so it cannot show a
-   visitor *their* vault. Since 2026-11-08 it at least REFUSES to imply otherwise:
-   `lib/ownership.ts` compares the vault's own `get_config.owner` against the connected
-   wallet and replaces the page on a mismatch. Nothing leaks either way — a vault's
-   balance, tree and history are public on chain to anyone with no key — the damage was
-   someone ACTING on figures that were not theirs. Real multi-tenancy needs the adapter to
-   derive a vault per request, which turns it from a local tool into a hosted service, and
-   `/v1/pay` can never be multi-tenant because it holds exactly one agent key.
+5. **READS are multi-tenant; `/v1/pay` can never be.** Fixed 2026-11-09: the adapter accepts
+   `?vault=` / `?owner=` per request and answers `/v1/resolve`, and the dashboard's proxy
+   rewrites every GET to the connected wallet's own vault. **The pages never changed** — all
+   seven have always sent `?owner=`; the adapter just ignored it, which is the whole reason a
+   visitor saw the operator's vault. Having no vault answers 404 `NO_VAULT` and renders a
+   create-one empty state, rather than falling through to the configured vault. **`/v1/pay`
+   stays pinned** to the vault whose agent key the process holds, so mutating methods are never
+   rewritten; the public box will run with **no agent key at all**. Caveat: derivation finds the
+   **unlabelled** vault only — a labelled one needs an explicit `?vault=` (see Live state).
 6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
 7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
