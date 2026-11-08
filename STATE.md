@@ -104,6 +104,8 @@ so drift fails two suites.
 | fixture tree | `root(0) -> agent(1), marketing(2)` — an agent gets its OWN node since 2026-11-08 |
 | fixture history | 3 settled + 1 refusal (`seed-fleet-blocked`, `PER_TX_LIMIT`). Refusal scan covers 276664820–276666019 (1,200 blocks) with **1** unread block (276665614), so the banner reads "incomplete" — correctly, since a refusal there would be invisible |
 | stranded on testnet | `work12-testnet.fac.floatv4.testnet` holds **3.370330** with **zero access keys** — unrecoverable, the testnet twin of `r1.float.test015.near`. Predates the factory line that installs the owner's key. `float-exit` refuses it correctly rather than shrinking it |
+| hosting | **not deployed yet.** `scripts/deploy-skill-host.sh` is written and waits only on an IP: `DOMAIN=usefloat.xyz ./scripts/deploy-skill-host.sh`. Only `web/serve.mjs` goes public (signing page + `/skill.md`); the adapter and dashboard stay on loopback and the script FAILS if anything answers on 8787 or 3000 |
+| DNS caution | `usefloat.xyz`, `www` and `app` already resolve to **209.209.10.210**, the box serving `pythscan.com` and the discord avatar app — with **no vhost answering**, so repointing breaks nothing. Do NOT deploy Float there |
 | **mainnet** | **gone / bricked.** No mainnet factory (`FACTORY_BY_NETWORK.mainnet = undefined`, deliberate) |
 
 ## Commands
