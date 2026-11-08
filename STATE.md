@@ -34,6 +34,12 @@ on-chain" or "we tested concurrency" as differentiators. Only these two survive:
 2. **Cross-chain.** Ours: `Route::Intents` (`lib.rs:1638`). Theirs: `enum Route { NearDirect }`,
    still the only variant.
 
+**Who cannot use it:** a vault id is `<owner-with-dots-as-hyphens>[-label].<factory>` and must
+fit NEAR's 64 characters. Under `fac.floatv4.testnet` (19 ch) that caps an unlabelled owner at
+**44** characters, measured against the live factory. **An implicit account (64 hex chars)
+therefore cannot have a vault at all**, under any factory. Both front doors now refuse before
+a signature; the browser page did not until 2026-11-08.
+
 Constraints: `MAX_DEPTH = 4`, `MAX_NODES = 64`, `MAX_CHILDREN = 16` (`types.rs:11-18`),
 mirrored in `shared/contract-constants.json` and asserted by both the Rust and the MCP suites,
 so drift fails two suites.
@@ -74,7 +80,7 @@ so drift fails two suites.
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **21 checks, 617 tests**, committed at `b837edc`.
+- Gate: **`node scripts/verify-all.mjs`** — **22 checks, 617 tests**.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new

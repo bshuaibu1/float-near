@@ -854,6 +854,63 @@
       /** The factory's own derivation, mirrored. Must agree byte for byte. */
       const derivePrefix = (owner) => owner.replaceAll(".", "-");
 
+      /**
+       * Would the factory refuse this owner's derived vault id?
+       *
+       * THE PAGE USED TO LET THIS THROUGH. It builds the vault id client-side
+       * and never checked its length, so an owner whose derived id exceeds
+       * NEAR's 64-character cap was shown a plan containing an illegal address
+       * and allowed to sign a ~3.47 NEAR transaction that could only fail. The
+       * deposit does come back — `begin()` panics BAD_VAULT_ID and NEAR reverts
+       * the whole transaction — but the gas is burnt and the error is a raw
+       * contract panic with no hint of the cause.
+       *
+       * THE CASE THAT ACTUALLY BITES IS IMPLICIT ACCOUNTS. A NEAR implicit
+       * account is a 64-character hex id, so its prefix alone already fills the
+       * entire budget and no factory name can fit after it. Such a user cannot
+       * have a vault at all, and deserves to be told so rather than left
+       * guessing. Confirmed against the live factory: `vault_id_for` returns
+       * null for a 64-character owner.
+       *
+       * Measured boundary on `fac.floatv4.testnet` (19 chars), unlabelled: a
+       * 44-character owner lands on exactly 64 and is accepted; 45 is refused.
+       * A label costs its own length plus the separator.
+       *
+       * The MCP already refused this up front (`create.ts`, via the factory's
+       * own `vault_id_for` view). The browser path — the one DECISIONS.md calls
+       * "onboarding strangers" — was the unguarded one, which is backwards.
+       *
+       * Returns null when fine, or a human sentence naming the cause. Pure and
+       * dependency-free so `scripts/check-vault-id-guard.mjs` can extract it
+       * from this file and test the SHIPPED text rather than a copy that drifts.
+       */
+      function vaultIdProblem(owner, label, factory) {
+        if (!owner || !factory) return null;
+        const prefix = derivePrefix(owner);
+        const id = `${prefix}${label ? `-${label}` : ""}.${factory}`;
+        if (id.length <= 64) return null;
+        // An implicit account is 64 hex characters with no dots, so the prefix
+        // is the account id unchanged. Named separately because no shorter
+        // factory and no dropped label can rescue it — "use a named account"
+        // is the only advice that helps.
+        if (/^[0-9a-f]{64}$/.test(owner)) {
+          return (
+            `${owner.slice(0, 12)}… is an implicit account (a 64-character hex id), ` +
+            `and it cannot have a vault under any factory. The derived prefix is ` +
+            `already 64 characters, so there is no room for ".${factory}" after it. ` +
+            `Use a named account instead: one ending .near or .testnet.`
+          );
+        }
+        const over = id.length - 64;
+        return (
+          `${owner} is too long for a vault under ${factory}. The address would be ` +
+          `${id.length} characters and NEAR's limit is 64, so it is over by ${over}.` +
+          (label
+            ? ` Dropping the label "${label}" would save ${label.length + 1}.`
+            : ` An owner name of ${64 - factory.length - 1} characters or fewer fits.`)
+        );
+      }
+
       let connector, wasm;
 
       /**
@@ -1226,6 +1283,34 @@
         const vault = FACTORY
           ? `${derivePrefix(who)}${suffix}.${FACTORY}`
           : `${PREFIX}${suffix}.${who}`;
+
+        /**
+         * REFUSE BEFORE THE WALLET, not after the chain.
+         *
+         * Placed here because `vault` has just been built and nothing has been
+         * signed yet. The contract's own refusal arrives only once the user has
+         * paid for the transaction — the same reasoning the BAD_LABEL guard
+         * above gives for catching labels here rather than letting the factory
+         * do it.
+         *
+         * Only for the FACTORY path. Without a factory the id is
+         * `<prefix>.<owner>`, a sub-account of the owner, and the owner's own
+         * name is the budget — a different rule that this page cannot reach
+         * anyway, since creating that way needs a DeployContract a wallet will
+         * refuse.
+         */
+        if (FACTORY) {
+          const idProblem = vaultIdProblem(who, LABEL, FACTORY);
+          if (idProblem) {
+            $("err-text").textContent =
+              `${idProblem}\n\n` +
+              `Nothing has been signed and no deposit has left your wallet. The ` +
+              `factory would refuse this with BAD_VAULT_ID, but only after you had ` +
+              `paid for the transaction.`;
+            show("error");
+            return;
+          }
+        }
 
         // The deposit, matching the factory's own floor: the contract's storage
         // stake plus headroom for the root node's state. Derived from the real
