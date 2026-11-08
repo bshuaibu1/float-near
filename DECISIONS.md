@@ -68,6 +68,7 @@ This is the index so it fits in context.
 | 2026-11-07 | **No decision recorded on when to fix `float-exit`** — it is logged as an open finding in `STATE.md` item 5 instead | Writing a row that says the fix was "deferred in favour of README/pitch" | The owner was asked which to do first and **has not answered**. Recording a deferral nobody chose would make an invented decision look settled — the same failure as the "354-block hole" row below, which claimed a scan gap was left on purpose when it was an artifact read mid-run. A decisions file earns its authority by containing only decisions that were actually made. |
 | 2026-11-07 | A digest mismatch with every CONTENT check passing is **not** called stale; it refuses with an explicit `BUNDLE_WASM_RERECORD=1` remedy | Falling back to the mtime check when the digest mismatches | The guard had a state **no rebuild could clear**. Provenance is trusted while `artifactSha256` matches, which reads as "this record describes how this artifact was built" — but `cargo near build` is content-addressed, so two source trees can produce identical bytes. Change a comment: digest mismatches, artifact hash still matches, stale digest stays trusted, and "rebuild" yields the same bytes. Measured — `res/vault.wasm` and a fresh build were both `003568bcea22be80…`, while the record said `b044ad32d3fe…` and the sources `8c1970e25f3f…`; `prepack` refused and blocked the `float-exit` release. **The mtime fallback was rejected because a fresh clone equalises every mtime**, so it would wave a genuinely stale artifact through — exactly what the digest exists to catch, and `freshness.test.mjs` pins it. The hatch is narrow by CONSTRUCTION, not by condition: content checks push to `fails` before it is evaluated, so it cannot reach them (established by mutation, not assumed). This is the guard's **second** no-remedy state; the first was mtime getting stuck, which is why the digest exists. Same lesson twice: *a check that cries wolf is one people learn to override.* |
 | 2026-11-07 | `BUNDLE_WASM_PROVENANCE` exists purely as a **test seam** | Having the test corrupt `res/vault.sources.json` in place and restore it in a `finally` | That version looked safe and was not: `node:test` runs test FILES in parallel, so `freshness.test.mjs` read the corrupted record mid-flight and its reachability test went red — an intermittent cross-file failure that would surface in CI as flake. **A test that can only be written by mutating shared state is telling you the module needs a seam, not that the test needs a lock.** Mirrors the existing `BUNDLE_WASM_SRC` override, which exists for the same reason. |
+| 2026-11-08 | The mainnet factory is **`usefloat.near`** | `fac.floatv4.near`; `float.near`; a sub-account such as `fac.test015.near` | The name is embedded in every user's address **permanently**, because a vault is a sub-account of the factory. `float.near` is **TAKEN** (0.266 NEAR, 5,119 B, 12 full-access keys, checked 2026-11-08). `fac.floatv4.near` reads as a dev artifact and is 3 characters longer, which matters because the factory name eats the 64-character account-id budget. A personal sub-account would tie the product's namespace to one human's account forever. **`usefloat.near` is 13 chars, leaving 50 for `<prefix>[-label]`** — measured with the shipped `vaultIdProblem` guard: a 50-char owner fits unlabelled, 45 with `-demo`, 33 with a maximum 16-char label. Exhausting it needs a 45-character handle, so length is no longer the binding constraint. **What IS binding, and no name fixes: an implicit account (64 hex chars) fills the budget alone and can never have a vault.** Free at time of decision; first-come, so registering is what makes it ours. |
 
 ## Open — one-way doors, NOT yet decided
 
@@ -75,46 +76,8 @@ Not deferred and not abandoned: these get decided the moment someone acts, wheth
 they meant to. Recorded here so the decision is **made** rather than **inherited**. Move a row
 into a table above, with its Rejected column filled in, the moment it is settled.
 
-### The mainnet factory's NAME — decide before deploying one
-
-`FACTORY_BY_NETWORK.mainnet` is `undefined` (`packages/mcp/src/create.ts:121`), deliberately,
-so no mainnet factory exists yet. **Whatever it is called is embedded in every user's vault
-address permanently**, because a vault is a sub-account of it:
-
-| factory | a user's vault |
-| --- | --- |
-| `fac.floatv4.near` | `alice-near-demo.fac.floatv4.near` |
-| `usefloat.near` | `alice-near-demo.usefloat.near` |
-
-**`float.near` IS ALREADY TAKEN** — checked on mainnet 2026-11-08: 0.266 NEAR, 5,119 B, 12
-full-access keys. So is `vault.near` and `fl.near`. Free as of that check: `usefloat.near`,
-`getfloat.near`, `floatfi.near`, `floatvault.near`, `float1.near`. **Re-check before
-registering** — this is a first-come namespace and nothing here is reserved.
-
-It cannot be changed later. A new factory does not rename existing vaults — it creates a second
-namespace, and the old addresses keep working and keep reading as dev artifacts. The address is
-what users paste, screenshot and put in docs.
-
-**This is also functional, not only cosmetic.** A vault id must fit NEAR's 64-character cap or
-`vault_id()` returns `None` and the create is refused with `BAD_VAULT_ID`. The factory name eats
-that budget directly:
-
-- `fac.floatv4.near` (16 ch) leaves **47** for `<prefix>-<label>`
-- `usefloat.near` (13 ch) leaves **50**
-
-Since a prefix is the owner's own account id with dots as hyphens, a long owner plus a label can
-cross the line — a 45-character owner with a 5-character label needs 67 under the longer name and
-is refused, but fits under the shorter one. A shorter factory name literally widens who can use
-labels at all.
-
-Cost to stand one up, measured 2026-11-08 from the live testnet factory (163,525 B of code):
-**~1.64 NEAR** of stake, plus a vault's **3.468** to prove it = **~5.11**. `test015.near` holds
-**3.425**, so the gap is **~1.68 NEAR** — not the ~1.3 quoted before, because the factory's code
-grew. The other 0.547 on mainnet is in `r1.float.test015.near` and is **unreachable forever**
-(zero full-access keys).
-
-Tied to `STATE.md` next-step 2, "Decide mainnet explicitly". Deciding to ship testnet-only is a
-legitimate answer — but then say so in the pitch, rather than leaving a judge to discover it.
+*(None open. The mainnet factory name was settled 2026-11-08 and moved to
+"Onboarding, deployment, economics" above — which is what settling one looks like.)*
 
 ## Deferred / abandoned — not bugs, choices
 
