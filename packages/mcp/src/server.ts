@@ -221,7 +221,58 @@ const limitShape = z
 // startup: a wrong relative path would break the server outright instead of
 // merely reporting a stale version. server.smoke.test.ts asserts the two agree,
 // so a bump cannot land with only one of them moved.
-const server = new McpServer({ name: "float", version: "0.5.0" });
+/**
+ * WHAT THE AGENT READS BEFORE IT TOUCHES A TOOL.
+ *
+ * 23 tool descriptions tell a model what each CALL does and nothing about what
+ * the product IS, when to reach for it, or which of the three trust lanes a
+ * given task belongs in. The MCP `instructions` field is the one place that
+ * can say so, and it is injected into the client's system prompt — which is
+ * why servers that set it feel like the agent "already understands the
+ * project", and why ours did not.
+ *
+ * Kept to what a model cannot infer from a tool list: the workflow order, the
+ * fact that this server never signs policy, and the three refusals that are
+ * answers rather than errors. Everything that IS inferable from a schema is
+ * left to the schema.
+ */
+const INSTRUCTIONS = `Float gives an AI agent a spending budget that a smart contract enforces, on NEAR.
+The agent's key can call exactly one method on exactly one contract: it cannot move tokens
+directly, cannot raise its own limit, and cannot reach owner functions. Those are protocol-level
+key restrictions, not policy checks.
+
+Reach for these tools when the user wants to pay for something from an agent budget, set up or
+change spending limits, see what an agent has spent, or wind a vault down.
+
+THREE LANES, and the difference is the whole design:
+  READ    vault_tree, vault_budget, vault_config, vault_roles, vault_request. No key, no risk.
+  PAY     vault_pay. The ONLY tool that signs, and only with a restricted agent key.
+  PLAN    vault_plan_*. These RETURN AN UNSIGNED PAYLOAD. This server never signs a policy
+          change; the human approves it in their own wallet. Do not describe a plan as done.
+
+WORKFLOW
+  1. No vault yet? vault_create. It needs no key and no existing vault, and returns a URL the
+     user approves in their own wallet. Never ask anyone for a private key or seed phrase.
+  2. Look before acting: vault_tree shows the budget shape, vault_budget what is left today.
+  3. Pay with vault_pay. Check the result: a refusal is a recorded outcome, not an exception.
+  4. Change policy with a vault_plan_* tool, then hand the payload to the user to sign.
+  5. Winding down is a CLI job, not a tool: npx @floatonnear/float-exit. It returns the tokens,
+     the gas-key balances and the storage deposit. vault_teardown_report says what is recoverable.
+
+REFUSALS ARE ANSWERS. Report the reason code, do not retry blindly:
+  DAILY_BUDGET         this agent's own cap is spent.
+  PARENT_DAILY_BUDGET  a SIBLING drained the shared pool; this agent's own cap may look free.
+  PER_TX_LIMIT         one payment was too large; splitting it may still be refused by the cap.
+  NO_RECIPIENTS_SET    the node pays nobody yet; that is an owner decision, via vault_plan_set_recipients.
+
+WORTH KNOWING
+  Budgets are hierarchical: a payment charges every ancestor, so a vault-wide ceiling holds even
+  when a child's cap looks free.
+  An implicit account (a 64-character hex id) cannot own a vault at all. Tell the user to use a
+  named account rather than retrying.
+  Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
+
+const server = new McpServer({ name: "float", version: "0.5.0" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
