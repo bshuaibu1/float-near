@@ -32,6 +32,10 @@ const PORT = Number(process.env.PORT ?? 8080);
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
+  // Served as PLAIN TEXT, not text/markdown. The skill is fetched by an agent
+  // and read as prose; text/markdown makes some browsers download it instead
+  // of showing it, and a human checking the URL is a normal thing to do.
+  ".md": "text/plain; charset=utf-8",
   ".wasm": "application/wasm",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -60,6 +64,7 @@ const TYPES = {
 // ships it, so the page cannot serve a stale artifact while create-float
 // ships a different one. One source of bytes.
 const WASM = join(ROOT, "packages", "create-float", "res", "vault.wasm");
+const SKILL = join(ROOT, "SKILL.md");
 if (!existsSync(WASM)) {
   console.error(`FATAL: ${WASM} not found.`);
   process.exit(1);
@@ -69,10 +74,25 @@ createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let file;
   if (url.pathname === "/vault.wasm") file = WASM;
+  /**
+   * `/skill.md` — the whole install story, at a URL.
+   *
+   * The pattern worth copying from agentcash: you do not give someone a CLI
+   * incantation to paste, you give them a sentence — "set up <this url>" —
+   * and the agent fetches the document and wires ITSELF up. It works in any
+   * agent that can read a URL, not just the one client whose command you
+   * happened to document.
+   *
+   * Mapped explicitly because SKILL.md lives at the REPO ROOT, outside the
+   * directory this server otherwise serves from. It is the same exemption
+   * vault.wasm needs, and for the same reason: one file, named, rather than
+   * widening the root and hoping the traversal guard holds.
+   */
+  else if (url.pathname === "/skill.md" || url.pathname === "/SKILL.md") file = SKILL;
   else if (url.pathname === "/" || url.pathname === "/index.html") file = join(HERE, "index.html");
   else file = join(HERE, url.pathname.replace(/^\//, ""));
 
-  if (!file.startsWith(HERE) && file !== WASM) {
+  if (!file.startsWith(HERE) && file !== WASM && file !== SKILL) {
     res.writeHead(403).end("no");
     return;
   }

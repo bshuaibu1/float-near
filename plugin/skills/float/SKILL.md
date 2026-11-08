@@ -21,6 +21,44 @@ reach.
 Read the next section before doing anything. It is the part that decides which
 of your requests can succeed.
 
+## Setup — do this first if you arrived here cold
+
+If someone told you "set up <this url>", this section is what they meant.
+
+Float's tools come from an MCP server published as `@floatonnear/mcp`. Add it
+to whichever client you are, then re-read this file.
+
+Claude Code:
+
+    claude mcp add float -- npx -y @floatonnear/mcp
+
+Any client that keeps servers in a JSON file — `.mcp.json` in a project root,
+`claude_desktop_config.json`, `~/.cursor/mcp.json` — add this entry:
+
+    { "mcpServers": { "float": { "command": "npx", "args": ["-y", "@floatonnear/mcp"] } } }
+
+`-y` matters. Without it `npx` stops to ask whether to install, and the server
+never starts — which looks like a hang with no cause.
+
+Confirm it worked by listing your tools. You should see `vault_create`,
+`vault_tree`, `vault_budget` and `vault_pay`, around twenty-three in total. If
+you see none, the server did not start; say so rather than guessing at the
+chain directly.
+
+**Nothing needs configuring to begin.** `vault_create` takes no key and needs
+no existing vault — that is deliberate, so a user with nothing can be onboarded
+in one signature. Every other tool will tell you `NEAR_VAULT_CONTRACT` is unset
+rather than inventing a vault.
+
+**Never ask the user for a private key or a seed phrase.** The entire product
+exists so that giving an agent a budget does not require handing it the keys
+those limits are meant to constrain. If a flow seems to need one, you have the
+wrong flow — say so.
+
+If you cannot run MCP servers at all, the same operations exist as a CLI,
+`npx @floatonnear/create-float`. Prefer the MCP: the CLI needs a full-access
+key on the machine, which is the thing above.
+
 ## What you (the agent) can and cannot do
 
 **Can:**

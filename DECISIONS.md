@@ -71,6 +71,7 @@ This is the index so it fits in context.
 | 2026-11-08 | The mainnet factory is **`usefloat.near`** | `fac.floatv4.near`; `float.near`; a sub-account such as `fac.test015.near` | The name is embedded in every user's address **permanently**, because a vault is a sub-account of the factory. `float.near` is **TAKEN** (0.266 NEAR, 5,119 B, 12 full-access keys, checked 2026-11-08). `fac.floatv4.near` reads as a dev artifact and is 3 characters longer, which matters because the factory name eats the 64-character account-id budget. A personal sub-account would tie the product's namespace to one human's account forever. **`usefloat.near` is 13 chars, leaving 50 for `<prefix>[-label]`** — measured with the shipped `vaultIdProblem` guard: a 50-char owner fits unlabelled, 45 with `-demo`, 33 with a maximum 16-char label. Exhausting it needs a 45-character handle, so length is no longer the binding constraint. **What IS binding, and no name fixes: an implicit account (64 hex chars) fills the budget alone and can never have a vault.** Free at time of decision; first-come, so registering is what makes it ours. |
 | 2026-11-08 | A vault's address is **DERIVED** from the owner's, and ownership is **verified by reading `get_config`** before any tool calls a vault yours | An `owner -> vault` registry in factory state | NEAR has **no RPC to enumerate sub-accounts**, so the only alternative to derivation is a registry — there is no third option. Derivation is what buys a dashboard with **no login and no database** (already settled above) and lets anyone compute a vault address offline with no lookup; a registry costs ~192 B of factory storage per vault and gives that up. **Accepted costs, all three documented in the contract itself:** (1) `derive_prefix` replaces dots with hyphens and is **NOT injective** — `a.b.near` and `a-b.near` both derive `a-b-near`, pinned by the test `derive_prefix_collides_between_a_dot_and_a_hyphen`; unfixable while ids stay readable, since NEAR forbids consecutive separators and the only injective alternative is a hash prefix. (2) Implicit accounts (64 hex chars) fill the budget alone and can never have a vault. (3) The factory name is permanent in every address. **The non-injectivity is why `vault_create` now READS the existing vault's owner** instead of inferring it: the old message told the loser of a collision to point their agent at the winner's vault. Ownership is now one of three outcomes — yours, someone else's (named), or unknown — never assumed. |
 | 2026-11-08 | `create_vault(agent_pk)` gives the agent its **OWN CHILD NODE** of root, with caps EQUAL to root's (**DONE**, was briefly deferred) | Leaving the agent on ROOT; binding it to a child with smaller INVENTED caps; and DEFERRING the change past the deadline, which was chosen for about an hour and then overturned | **The product is not broken and this is not a bug.** A payment charges every ancestor, so a child can never outspend root (`PARENT_DAILY_BUDGET`, proven on testnet where `s5` was refused while its own cap showed 250 free). `add_role` — the documented way to add an agent — already creates a child. The inconsistency is only that the ONE-SIGNATURE create shortcut puts the FIRST agent on root, so it has no cap of its own: in the fixture that is 100/day versus 25 on a child. The hierarchy therefore only begins constraining from agent #2, which is backwards. **Shipped after all, because it was verifiable:** closing the fixture with the published `float-exit` returned 3.466334, which funded creating a vault with the new wasm. On chain the tree reads `root(0) -> agent(1), marketing(2)`, the agent binds to node 1, and payments attribute to `agent` while root also shows 4.25 spent — ancestor charging, visible. **It is a CONTRACT change** — `new()` hardcodes `pubkey_to_node.insert(pk, ROOT_NODE)` — needing a wasm rebuild and a `create-float` republish, six days before the deadline, on the one path a judge will actually run. The testnet factory needs no redeploy (`create_vault_with_code` takes the code from the browser). **Invented smaller caps were rejected outright:** the user asked for one number at create time, and silently halving it is worse than the current behaviour. **When done: child caps EQUAL root's**, so behaviour is identical on day one (root still binds) while the shape is right for agent #2 — lowering a number rather than restructuring a vault. |
+| 2026-11-08 | Onboarding is **a sentence pointing at a hosted `skill.md`** — "set up <url>" — with the MCP command and the plugin kept as alternates | MCP-command-only; plugin-only | A command only works in the client whose syntax you documented, and the user has to paste it correctly; `claude mcp add float -- npx -y @floatonnear/mcp` is 49 characters of exact punctuation, and dropping `-y` makes npx stop to ask so the server never starts, which presents as a hang with no cause. A plugin is better but Claude-Code-shaped. A URL works in **any** agent that can read one, which is why agentcash ships it that way. The cost is that the document must now teach SETUP as well as use: ours documented the tools, the refusals and the trust model and never said how to install the server, so an agent sent to it cold had nothing to act on. All three paths are kept — the command for people who prefer it, the plugin for Claude Code, the URL for everyone else. |
 
 ## Open — one-way doors, NOT yet decided
 
@@ -78,8 +79,26 @@ Not deferred and not abandoned: these get decided the moment someone acts, wheth
 they meant to. Recorded here so the decision is **made** rather than **inherited**. Move a row
 into a table above, with its Rejected column filled in, the moment it is settled.
 
-*(None open. The mainnet factory name was settled 2026-11-08 and moved to
-"Onboarding, deployment, economics" above — which is what settling one looks like.)*
+### Where `skill.md` is hosted — decide before publishing the install line
+
+"Set up <url>" is only as good as the URL, and it goes in a README, a pitch and
+anywhere else people copy from, so moving it later orphans every copy.
+
+The repo is **PRIVATE**, so `raw.githubusercontent` 404s today — verified
+2026-11-08. Three candidates:
+
+- **Make the repo public.** A working URL immediately, zero infra, and a
+  hackathon judge needs to read the code anyway. Ugly URL.
+- **The VPS.** `NEAR_VAULT_APP_URL` already defaults to `https://app.usefloat.xyz`,
+  which would make it `https://app.usefloat.xyz/skill.md`. `web/serve.mjs` now
+  serves the route, so this is a deploy rather than new code — but
+  `deploy-vps.sh` has **never run on a host** (no systemd unit, no `pm2 startup`,
+  no log rotation), so it is a first deploy, not adding a file to a running
+  service. The signing page has to be public anyway for a user to approve vault
+  creation, so it is one deploy and not two.
+- **Both**, with the VPS as the published URL and the raw link as a fallback.
+
+Not blocking: the mechanism is built and checked either way.
 
 ## Deferred / abandoned — not bugs, choices
 
