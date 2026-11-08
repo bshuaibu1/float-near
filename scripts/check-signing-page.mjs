@@ -125,6 +125,41 @@ try {
       const got = (r.headers.get("content-type") || "").split(";")[0];
       if (want && got !== want) problems.push(`${asset} served as "${got}", browser needs "${want}"`);
     }
+
+    /**
+     * `/skill.md` — the install story, at a URL.
+     *
+     * The point is that onboarding is a SENTENCE, "set up <this url>", rather
+     * than a CLI incantation a user has to paste correctly into the one client
+     * whose command we documented. An agent fetches the document and wires
+     * itself up.
+     *
+     * Checked here because it is a ROUTE, not a file: SKILL.md lives at the
+     * repo root, outside the directory this server otherwise serves from, and
+     * it reaches the URL through an explicit mapping that a refactor of the
+     * routing could drop without touching the file. Then the file still exists,
+     * the repo still looks right, and the URL 404s for everyone.
+     */
+    for (const path of ["/skill.md", "/SKILL.md"]) {
+      const r = await fetch(`http://127.0.0.1:${port}${path}`);
+      if (!r.ok) {
+        problems.push(`${path} -> HTTP ${r.status}; "set up <url>" onboarding is dead`);
+        continue;
+      }
+      const body = await r.text();
+      // Must be the real skill, not an empty file or an error page dressed as
+      // 200. The frontmatter is what makes it loadable as a skill at all.
+      if (!body.startsWith("---") || !body.includes("name: float")) {
+        problems.push(`${path} served ${body.length} B that does not start with the skill frontmatter`);
+      }
+      // And it must tell a cold agent how to install the server, or the whole
+      // "set up <url>" flow ends with a document it cannot act on.
+      if (!/claude mcp add|mcpServers/.test(body)) {
+        problems.push(`${path} has no setup instructions, so an agent reading it cold cannot wire itself up`);
+      }
+      const got = (r.headers.get("content-type") || "").split(";")[0];
+      if (got !== "text/plain") problems.push(`${path} served as "${got}", expected text/plain`);
+    }
   }
 } finally {
   child.kill();
