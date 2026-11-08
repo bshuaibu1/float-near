@@ -101,7 +101,7 @@ so drift fails two suites.
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **24 checks, 620 tests**.
+- Gate: **`node scripts/verify-all.mjs`** — **24 checks, 621 tests**.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new
