@@ -61,6 +61,11 @@ $env:NEAR_VAULT_CONTRACT       = 'work12-testnet-fleet.fac.floatv4.testnet'
 $env:NEAR_VAULT_RPC_URL        = 'https://test.rpc.fastnear.com'
 $env:NEAR_VAULT_TOKEN          = 'usdc.fakes.testnet'
 $env:NEAR_VAULT_TOKEN_DECIMALS = '6'
+# Needed only by /v1/resolve, which answers "which vault is MINE?" for a
+# visitor by asking the factory's own `vault_id_for`. Without it that route
+# reports itself unconfigured rather than guessing a factory, because a guess
+# would hand someone an address that is not theirs.
+$env:NEAR_VAULT_FACTORY        = 'fac.floatv4.testnet'
 $env:NEAR_VAULT_AGENT_KEYS     = '.float/agent-keys.json'
 $env:FLOAT_API_TOKEN           = 'local-dev-token'
 $env:BLOCKED_FOLLOW            = '0'
