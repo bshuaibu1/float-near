@@ -62,6 +62,11 @@ so drift fails two suites.
   `@floatonnear/float-adapter` 0.2.1. The two were published 53s apart deliberately: the wasm
   and `AGENT_NODE_ID` must agree, or an agent's credential names a node it is not on and the
   failure lands at PAYMENT time. Verified as a pair after install — node 1, wasm `c1a9ce7d…`.
+- **The MCP tells an agent what Float IS, not just what each call does.** `instructions` on the
+  handshake (2,342 chars) is injected into the client system prompt: the three trust lanes, the
+  workflow, and that `vault_plan_*` returns an UNSIGNED payload so planning is not doing. It had
+  none until 2026-11-08 — the gap between this and servers that feel like they already
+  understand the project.
 - **Onboarding is one plugin install.** `plugin/` declares the MCP server in its manifest, so
   installing it starts the server — nothing to paste. It also ships `SKILL.md` at a path Claude
   Code actually reads: the root copy has valid frontmatter and ships inside the create-float
@@ -96,7 +101,7 @@ so drift fails two suites.
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **24 checks, 620 tests**.
+- Gate: **`node scripts/verify-all.mjs`** — **24 checks, 621 tests**.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new

@@ -29,6 +29,7 @@ interface Tool {
 
 let tools: Tool[] = [];
 let serverInfo: { name?: string; version?: string } = {};
+let instructions = "";
 
 async function listTools(): Promise<Tool[]> {
   const child = spawn(process.execPath, [SERVER], {
@@ -82,6 +83,11 @@ async function listTools(): Promise<Tool[]> {
           // It is the only place the server's advertised identity appears, and
           // it is what a user sees in their client's server list.
           serverInfo = msg.result?.serverInfo ?? {};
+          // The instructions block, which this harness also used to discard.
+          // It is injected into the client's system prompt and is the only
+          // place the server explains what the product IS, as opposed to what
+          // each call does.
+          instructions = msg.result?.instructions ?? "";
           send({ jsonrpc: "2.0", method: "notifications/initialized" });
           send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
         }
@@ -227,6 +233,44 @@ describe("the MCP server starts and registers its tools", () => {
     // first time package.json is bumped and a client then reports the wrong
     // version forever. Pinned here so the bump has to move both.
     expect(serverInfo.version).toBe(pkg.version);
+  });
+
+  /**
+   * THE INSTRUCTIONS BLOCK IS WHY AN AGENT UNDERSTANDS THE PRODUCT.
+   *
+   * It had none until 2026-11-08. A client got 23 tool descriptions, which say
+   * what each CALL does and nothing about what Float IS, when to reach for it,
+   * or which trust lane a task belongs in. The field is injected into the
+   * client's system prompt, so servers that set it feel like the agent already
+   * knows the project — the difference the owner noticed between this and
+   * agentcash, which ships a workflow there.
+   *
+   * Asserted on CONTENT, not just presence. An empty string, or a line of
+   * boilerplate, would satisfy "is it set" while telling a model nothing.
+   * Each clause below is something a tool schema cannot express.
+   */
+  it("ships instructions that say what a tool list cannot", () => {
+    const text = instructions;
+
+    expect(text.length, "no instructions; the client sees only tool schemas").toBeGreaterThan(500);
+
+    // The trust model. A plan tool RETURNS A PAYLOAD; calling one is not doing
+    // the thing, and an agent reporting "done" after planning is the failure
+    // this sentence exists to prevent.
+    expect(text).toMatch(/never signs/i);
+    expect(text).toMatch(/UNSIGNED PAYLOAD/i);
+
+    // The distinction the whole hierarchy exists for. A model that cannot tell
+    // these apart will retry a payment that a sibling made impossible.
+    expect(text).toMatch(/PARENT_DAILY_BUDGET/);
+    expect(text).toMatch(/DAILY_BUDGET/);
+
+    // The two things users discover painfully otherwise.
+    expect(text).toMatch(/implicit account/i);
+    expect(text).toMatch(/float-exit/);
+
+    // Never ask for a key: the product exists so nobody has to hand one over.
+    expect(text).toMatch(/private key or seed phrase/i);
   });
 
   it("offers no path to the test clock", () => {
