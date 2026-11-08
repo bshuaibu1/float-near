@@ -3833,6 +3833,19 @@ fn without_agent_pk_nothing_is_bound() {
 /// one-signature path must not produce a subtly different vault from the
 /// owner-driven path. Two vaults, same key, bound two different ways, must
 /// agree on which node the agent belongs to.
+///
+/// THE COUNTERPART CHANGED, AND THAT IS THE POINT OF THIS EDIT. It used to
+/// compare against `bind_virtual_agent(0, pk)`, which is the low-level "bind
+/// this key to THIS node" primitive — so the assertion really said "init
+/// binds to root". That is exactly the behaviour being fixed: the first agent
+/// held the whole vault budget while every agent added later through
+/// `add_role` got a child, so the hierarchy only began constraining from
+/// agent #2.
+///
+/// The owner-driven way to ADD AN AGENT is `add_role`, which does
+/// `insert_node(Some(ROOT_NODE), ...)` and binds there. Comparing against
+/// that keeps the original invariant — the two paths must produce the same
+/// vault — against the path it was always meant to mean.
 #[test]
 fn binding_at_init_matches_binding_afterwards() {
     let sk = va_signing_key();
@@ -3840,15 +3853,24 @@ fn binding_at_init_matches_binding_afterwards() {
     let at_init = vault_from_factory(Some(va_pubkey(&sk)));
 
     let mut afterwards = vault_from_factory(None);
-    testing_env!(ctx(owner(), YOCTO, 0).build());
-    afterwards.bind_virtual_agent(0, va_pubkey(&sk));
+    // Same limits and recipients `vault_from_factory` gives root, so the only
+    // thing being compared is WHERE the agent lands.
+    testing_env!(ctx(owner(), NearToken::from_near(1), 0).build());
+    afterwards.add_role("agent".into(), limit(1000, 500), 0, None, va_pubkey(&sk));
 
     assert_eq!(
         at_init.get_virtual_agent_node(va_pubkey(&sk)),
         afterwards.get_virtual_agent_node(va_pubkey(&sk)),
         "the two binding paths disagree about the agent's node",
     );
-    assert_eq!(at_init.get_virtual_agent_node(va_pubkey(&sk)), Some(0));
+    // NOT root. An agent gets a node of its own, so root stays the vault-wide
+    // ceiling rather than one agent's allowance.
+    assert_ne!(
+        at_init.get_virtual_agent_node(va_pubkey(&sk)),
+        Some(0),
+        "the agent is on ROOT, so it holds the entire vault budget",
+    );
+    assert_eq!(at_init.get_virtual_agent_node(va_pubkey(&sk)), Some(1));
 }
 
 /// THE REPLAY GUARD MUST BE LIVE ON AN INIT-BOUND AGENT.
