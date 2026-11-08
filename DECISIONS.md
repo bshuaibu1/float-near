@@ -84,7 +84,12 @@ address permanently**, because a vault is a sub-account of it:
 | factory | a user's vault |
 | --- | --- |
 | `fac.floatv4.near` | `alice-near-demo.fac.floatv4.near` |
-| `float.near` | `alice-near-demo.float.near` |
+| `usefloat.near` | `alice-near-demo.usefloat.near` |
+
+**`float.near` IS ALREADY TAKEN** — checked on mainnet 2026-11-08: 0.266 NEAR, 5,119 B, 12
+full-access keys. So is `vault.near` and `fl.near`. Free as of that check: `usefloat.near`,
+`getfloat.near`, `floatfi.near`, `floatvault.near`, `float1.near`. **Re-check before
+registering** — this is a first-come namespace and nothing here is reserved.
 
 It cannot be changed later. A new factory does not rename existing vaults — it creates a second
 namespace, and the old addresses keep working and keep reading as dev artifacts. The address is
@@ -95,16 +100,18 @@ what users paste, screenshot and put in docs.
 that budget directly:
 
 - `fac.floatv4.near` (16 ch) leaves **47** for `<prefix>-<label>`
-- `float.near` (10 ch) leaves **53**
+- `usefloat.near` (13 ch) leaves **50**
 
 Since a prefix is the owner's own account id with dots as hyphens, a long owner plus a label can
 cross the line — a 45-character owner with a 5-character label needs 67 under the longer name and
 is refused, but fits under the shorter one. A shorter factory name literally widens who can use
 labels at all.
 
-Cost to stand one up, measured on the live testnet factory (163,831 B): **~1.64 NEAR** of storage
-stake, plus a vault's ~3.47 to prove it. Mainnet currently holds ~3.34 recoverable, so this is
-gated on funding (`STATE.md` "Mainnet is a bricked husk").
+Cost to stand one up, measured 2026-11-08 from the live testnet factory (163,525 B of code):
+**~1.64 NEAR** of stake, plus a vault's **3.468** to prove it = **~5.11**. `test015.near` holds
+**3.425**, so the gap is **~1.68 NEAR** — not the ~1.3 quoted before, because the factory's code
+grew. The other 0.547 on mainnet is in `r1.float.test015.near` and is **unreachable forever**
+(zero full-access keys).
 
 Tied to `STATE.md` next-step 2, "Decide mainnet explicitly". Deciding to ship testnet-only is a
 legitimate answer — but then say so in the pitch, rather than leaving a judge to discover it.

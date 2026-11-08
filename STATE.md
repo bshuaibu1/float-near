@@ -1,4 +1,4 @@
-<!-- STAMP commit=c84dd7d date=2026-11-07 -->
+<!-- STAMP commit=11a791d date=2026-11-07 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -97,9 +97,13 @@ so drift fails two suites.
    `contracts/integration-tests/tests/keys.rs:66` still calls `create_agent_account`, which was
    **removed from the contract** — that test cannot pass, and nobody sees it. 9 mutations
    (M9/M10/M17/M18/M22) blocked on this tier; M29's re-run rests on one manual testnet run.
-3. **Mainnet is a bricked husk.** `r1.float.test015.near`'s 0.54434 NEAR is stranded forever
-   (a function-call key cannot sign `DeleteAccount`). Recovery yields ~3.34 vs ~4.64 needed to
-   rebuild factory+vault → **~1.3 NEAR short.**
+3. **Mainnet is empty, and one account on it can never be closed.** Re-measured 2026-11-08:
+   `float.test015.near` is **gone** (we closed it — that teardown is the proof the sequence
+   works on mainnet). `test015.near` holds **3.425**. `r1.float.test015.near` holds **0.546779**
+   with **zero full-access keys**, so it is unreachable forever — a function-call key cannot
+   sign `DeleteAccount`, and a parent cannot delete a sub-account. Standing mainnet up again
+   needs ~1.64 (factory, 163,525 B of code) + 3.468 (a vault with an agent) = **~5.11, so the
+   gap is ~1.68** — not the ~1.3 recorded before, which went stale when the factory's code grew.
 4. **Key files work but are not the DEFAULT.** `NEAR_VAULT_AGENT_KEY_FILE` /
    `FLOAT_QUOTE_SIGNER_KEY_FILE` are wired into both servers (shipped in `b649e3b`), but the
    provisioning path still *writes* the inline form: `create-float.mjs` (~981-1031),
