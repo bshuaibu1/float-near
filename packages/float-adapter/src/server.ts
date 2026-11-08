@@ -31,7 +31,7 @@ import { resolveHost, corsHeaders, authorize, classifyError, fromCaller } from "
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { toBaseUnits, fromBaseUnits } from "@floatonnear/mcp/amounts";
-import { newRequestId, viewAccessKeys, viewFunction } from "@floatonnear/mcp";
+import { accountExists, newRequestId, viewAccessKeys, viewFunction } from "@floatonnear/mcp";
 import { buildRoute, sendRequestPayment, type RouteArg } from "@floatonnear/mcp/sign";
 import { getQuote, signBinding, toBase64 } from "@floatonnear/mcp/quote";
 import { toCliCommand } from "@floatonnear/mcp/payloads";
@@ -130,6 +130,15 @@ for (const err of [agentKeySource.error, quoteSignerSource.error]) {
 
 const env = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
+  /**
+   * The factory, needed only to answer "which vault is MINE?" for a visitor.
+   *
+   * Optional: a local single-vault setup never asks, and the resolve route
+   * reports it is unconfigured rather than guessing a factory — guessing one
+   * would hand a visitor an address that is not theirs, under a factory
+   * nobody chose.
+   */
+  factory: process.env.NEAR_VAULT_FACTORY ?? "",
   // See DEFAULT_RPC_URL in @floatonnear/mcp: the old public testnet endpoint
   // is deprecated and now returns -429 for every call.
   rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com",
@@ -248,6 +257,61 @@ const cfg: AdapterConfig = {
 const view = <T,>(method: string, args: unknown = {}) =>
   viewFunction<T>(env.rpcUrl, env.vault, method, args);
 
+/**
+ * A NEAR account id, loosely — enough to keep junk out of an RPC call.
+ *
+ * Not a full grammar check: the chain is the authority and answers an unknown
+ * account with an error we surface anyway. This exists so a query string
+ * cannot push arbitrary text into a view call, and so the 64-character cap is
+ * refused here rather than producing a confusing RPC failure.
+ */
+const LOOKS_LIKE_ACCOUNT = /^[a-z0-9._-]{2,64}$/;
+
+/**
+ * WHICH VAULT THIS REQUEST IS ABOUT.
+ *
+ * The adapter used to serve exactly one vault — `NEAR_VAULT_CONTRACT` — and
+ * ignore the `?owner=` the dashboard had been sending all along. Hosted, that
+ * means every visitor sees the operator's vault, and the figures look like
+ * theirs. Nothing leaks (a vault's state is public on chain) but a person acts
+ * on numbers that are not theirs, which is worse than being told nothing.
+ *
+ * So reads honour `?vault=`. The configured vault remains the default, which
+ * keeps every local setup working unchanged.
+ *
+ * `/v1/pay` MUST NOT honour it, and does not: that path uses `env.vault`
+ * directly, because the agent key it signs with is bound to one vault and
+ * pointing it elsewhere is meaningless at best.
+ */
+function vaultFor(url: URL): { vault: string; isDefault: boolean; error?: string } {
+  const asked = url.searchParams.get("vault")?.trim();
+  if (!asked) return { vault: env.vault, isDefault: true };
+  if (!LOOKS_LIKE_ACCOUNT.test(asked)) {
+    return { vault: env.vault, isDefault: true, error: `"${asked}" is not a NEAR account id` };
+  }
+  return { vault: asked, isDefault: asked === env.vault };
+}
+
+/**
+ * The per-request config and view function.
+ *
+ * `blockedRing` and `chainBlocked` are EMPTIED for any vault that is not the
+ * configured one, and that is the subtle part. Both are populated by watching
+ * `env.vault` — the follower and the scan store. Sharing them would attribute
+ * the operator's refusals to a visitor's vault: a payment they never made,
+ * refused for a reason that was never about them. Empty is correct, and the
+ * coverage banner already says "outside the scanned range they are UNKNOWN,
+ * not absent", which is exactly the truth for a vault nobody has scanned.
+ */
+function perRequest(vault: string, isDefault: boolean) {
+  const reqCfg: AdapterConfig = isDefault
+    ? cfg
+    : { ...cfg, vault, blockedRing: [], chainBlocked: {} };
+  const reqView = <T,>(method: string, args: unknown = {}) =>
+    viewFunction<T>(env.rpcUrl, vault, method, args);
+  return { reqCfg, reqView };
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${env.port}`);
 
@@ -324,21 +388,91 @@ const server = createServer(async (req, res) => {
 
   try {
     if (url.pathname === "/v1/dashboard") {
-      return send(200, await getDashboard(view, cfg));
+      {
+        const { vault, isDefault, error } = vaultFor(url);
+        if (error) return send(400, { error });
+        const { reqCfg, reqView } = perRequest(vault, isDefault);
+        return send(200, await getDashboard(reqView, reqCfg));
+      }
     }
 
     if (url.pathname === "/v1/spend-history") {
       const limit = Math.min(Number(url.searchParams.get("limit") ?? "25"), 50);
       const offset = Number(url.searchParams.get("offset") ?? "0");
-      return send(200, await getSpendHistory(view, cfg, limit, offset));
+      {
+        const { vault, isDefault, error } = vaultFor(url);
+        if (error) return send(400, { error });
+        const { reqCfg, reqView } = perRequest(vault, isDefault);
+        return send(200, await getSpendHistory(reqView, reqCfg, limit, offset));
+      }
     }
 
     // Where this vault lives. The UI reads the chain from here rather than
     // hardcoding it, so it cannot link a testnet vault to a mainnet explorer.
+    /**
+     * WHICH VAULT BELONGS TO THIS OWNER?
+     *
+     * A hosted dashboard has to answer this before it can read anything: the
+     * visitor connects a wallet and the page needs an address to ask about.
+     *
+     * ASKED OF THE FACTORY, never derived here. The factory exposes
+     * `vault_id_for` precisely so the derivation has ONE implementation —
+     * `create.ts` says so in capitals — and a copy in this file would be a
+     * second place for it to drift. The derivation is also not injective
+     * (`a.b.near` and `a-b.near` collide), so a local guess could name a
+     * vault owned by somebody else.
+     *
+     * `vault: null` is a real answer, not an error: it means this owner has
+     * no legal vault id, which is the case for an implicit account. The page
+     * should offer to create one rather than showing a failure.
+     */
+    if (url.pathname === "/v1/resolve") {
+      const owner = url.searchParams.get("owner")?.trim();
+      if (!owner) return send(400, { error: "owner is required" });
+      if (!LOOKS_LIKE_ACCOUNT.test(owner)) {
+        return send(400, { error: `"${owner}" is not a NEAR account id` });
+      }
+      if (!env.factory) {
+        return send(200, {
+          owner,
+          vault: null,
+          exists: false,
+          reason: "NEAR_VAULT_FACTORY is not set on this adapter, so it cannot derive a vault id.",
+        });
+      }
+      const derived = await viewFunction<string | null>(
+        env.rpcUrl,
+        env.factory,
+        "vault_id_for",
+        { owner },
+      ).catch(() => null);
+      if (!derived) {
+        return send(200, {
+          owner,
+          vault: null,
+          exists: false,
+          reason:
+            "No legal vault id for that account under this factory. An implicit " +
+            "account (64 hex characters) cannot have one; use a named account.",
+        });
+      }
+      // Whether it has been CREATED is a separate question from whether it
+      // could exist, and the page needs both: one says "here is your vault",
+      // the other says "you do not have one yet".
+      //
+      // A view call that throws is the account not existing; it is not an
+      // adapter failure, so it must not surface as one.
+      const exists = await accountExists(env.rpcUrl, derived).catch(() => false);
+      return send(200, { owner, vault: derived, exists, factory: env.factory });
+    }
+
     if (url.pathname === "/v1/vault-info") {
+      const { vault, isDefault, error } = vaultFor(url);
+      if (error) return send(400, { error });
+      const { reqCfg, reqView } = perRequest(vault, isDefault);
       return send(
         200,
-        await getVaultInfo(view, cfg, (contractId, method, args) =>
+        await getVaultInfo(reqView, reqCfg, (contractId, method, args) =>
           viewFunction<string | null>(env.rpcUrl, contractId, method, args ?? {}),
         ),
       );
@@ -348,7 +482,12 @@ const server = createServer(async (req, res) => {
     // restriction is the product's central claim, so the page that states it
     // reads the real permission instead of a constant.
     if (url.pathname === "/v1/agent-keys") {
-      return send(200, await getAgentKeys(view, (id) => viewAccessKeys(env.rpcUrl, id), cfg));
+      {
+        const { vault, isDefault, error } = vaultFor(url);
+        if (error) return send(400, { error });
+        const { reqCfg, reqView } = perRequest(vault, isDefault);
+        return send(200, await getAgentKeys(reqView, (id) => viewAccessKeys(env.rpcUrl, id), reqCfg));
+      }
     }
 
     /**
