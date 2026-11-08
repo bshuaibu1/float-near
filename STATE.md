@@ -55,11 +55,19 @@ so drift fails two suites.
 - **Intents cross-chain round trip** end to end with live 1Click pricing; the vault registers
   the solver's deposit address itself.
 - **Factory 12/12 on testnet** — `CreateAccount + Transfer + UseGlobalContract + new()` in one batch.
-- **Shipped to npm:** `@floatonnear/create-float` **0.5.0** (2026-11-07T21:53:37Z, shasum
-  `e829de97…` matching the pre-publish secret audit), **`@floatonnear/mcp` 0.4.0**
-  (2026-11-08T07:12:38Z, shasum `924c0f20…`) and `@floatonnear/float-adapter` 0.2.1 — each
-  verified by installing from the registry and driving it, not by reading the publish output.
-- **Onboarding needs no CLI and no key.** `claude mcp add float-near -- npx -y @floatonnear/mcp`,
+- **Shipped to npm**, each verified by installing from the registry and DRIVING it, never by
+  reading the publish output — which disagreed with the registry twice on 2026-11-08:
+  **`@floatonnear/create-float` 0.6.0** (15:27Z, `059ca56f…`, carrying the `c1a9ce7d…` contract
+  verified on chain), **`@floatonnear/mcp` 0.5.0** (15:26Z, `1debe52b…`), and
+  `@floatonnear/float-adapter` 0.2.1. The two were published 53s apart deliberately: the wasm
+  and `AGENT_NODE_ID` must agree, or an agent's credential names a node it is not on and the
+  failure lands at PAYMENT time. Verified as a pair after install — node 1, wasm `c1a9ce7d…`.
+- **Onboarding is one plugin install.** `plugin/` declares the MCP server in its manifest, so
+  installing it starts the server — nothing to paste. It also ships `SKILL.md` at a path Claude
+  Code actually reads: the root copy has valid frontmatter and ships inside the create-float
+  tarball, but skills load from `.claude/skills/` or a plugin, never an npm package root, so it
+  was shipped to every user and loadable by nobody. The manual route still works:
+  `claude mcp add float-near -- npx -y @floatonnear/mcp`,
   then ask the agent for a vault: it calls `vault_create`, returns a link, and the user signs in
   their own wallet. Verified from npm with zero config — 23 tools, `vault_create` among them.
   0.3.0 shipped 17 and could not create a vault at all, so this was true only in this repo
@@ -88,7 +96,7 @@ so drift fails two suites.
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **23 checks, 617 tests**.
+- Gate: **`node scripts/verify-all.mjs`** — **24 checks, 620 tests**.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new
