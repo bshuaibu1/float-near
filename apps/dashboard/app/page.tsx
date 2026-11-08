@@ -79,6 +79,13 @@ type ActivityItem = {
   amount: string;
   rail: string;
   time: string;
+  /**
+   * WHY a payment was refused, straight from the contract's
+   * `request_blocked` event. Null on a successful payment, and null on a
+   * refusal whose block was never scanned.
+   */
+  blockReason?: string | null;
+  blockMessage?: string | null;
   status: string;
 };
 type TransactionStats = { total: number; approved: number; blocked: number; failed: number; other: number; };
@@ -285,9 +292,55 @@ function ActivityRow({ item, isLast, delayMs, mounted }: {
 }) {
   // Computed once. Both layouts below read these and never recompute.
   const approved = APPROVED.includes(item.status?.toLowerCase());
-  const who = item.recipient ?? resolveVenue(item.venue, item.modelName);
+  /**
+   * `||`, NOT `??`. A blocked row carries `recipient: ""` — the adapter has no
+   * recipient to report, because the contract's `request_blocked` event does
+   * not carry one. `??` only falls through on null, so the empty string won
+   * and the row rendered a dangling separator: "· Over this agent's own
+   * per-payment cap." with nothing before the dot.
+   */
+  const who = item.recipient || resolveVenue(item.venue, item.modelName);
   const note = item.memo ? resolveVenue(item.memo, item.modelName) : null;
   const rail = resolveRail(item.rail);
+  const isBlocked = (item.status ?? "").toLowerCase() === "blocked";
+  /**
+   * A REFUSED PAYMENT HAS NO AMOUNT, and "0 USDC" is not how you say that.
+   *
+   * The contract records a refusal as an event carrying only the request id,
+   * the node and the reason code — storing more would be the storage-griefing
+   * vector the design deliberately avoids. So the adapter sets `amount: "0"`
+   * with a comment saying a plausible figure "would read as fact".
+   *
+   * It then rendered "0 USDC", which IS a figure and reads as "a zero-value
+   * payment was refused". The one in the fixture was for 5. The Activity page
+   * already shows a dash here; this row did not, and showing a number we do
+   * not have is worse on the page people land on first.
+   */
+  const amountCell = isBlocked ? (
+    <span className="text-muted" title="The chain does not record the amount of a refused payment">
+      —
+    </span>
+  ) : (
+    <>
+      {item.amount} <span className="text-muted">USDC</span>
+    </>
+  );
+  /**
+   * The reason code, shown as the human sentence where the adapter has one.
+   * `PARENT_DAILY_BUDGET` and `DAILY_BUDGET` have to read differently here:
+   * one means a sibling spent your pool, the other means you did.
+   */
+  const whyBlocked = isBlocked ? (item.blockMessage ?? item.blockReason ?? null) : null;
+  /**
+   * A SEPARATOR NEEDS SOMETHING ON BOTH SIDES.
+   *
+   * A blocked row has no recipient and no memo — the contract's event carries
+   * neither — so `who` and `note` are both empty and a hard-coded " · "
+   * before the reason rendered as a dangling dot:
+   *     · Over this agent's own per-payment cap.
+   * Only separate when there is actually something to separate from.
+   */
+  const reasonNeedsSeparator = Boolean(who || note);
   const when = formatTime(item.time);
   const reveal = {
     opacity: mounted ? 1 : 0,
@@ -344,12 +397,18 @@ function ActivityRow({ item, isLast, delayMs, mounted }: {
             present to trigger it. The phone card below wraps the note in
             full instead, which is the better answer where hover does not
             exist at all. */}
-        <div className="text-[13px] truncate min-w-0" title={item.memo ?? undefined}>
+        <div className="text-[13px] truncate min-w-0" title={whyBlocked ?? item.memo ?? undefined}>
           <span className="font-medium text-ink">{who}</span>
           {note ? <span className="text-muted">{" · "}{note}</span> : null}
+          {whyBlocked ? (
+            <span style={{ color: DANGER }}>
+              {reasonNeedsSeparator ? " · " : ""}
+              {whyBlocked}
+            </span>
+          ) : null}
         </div>
         <span className="text-[12px] font-mono text-right tabular-nums text-ink">
-          {item.amount} <span className="text-muted">USDC</span>
+          {amountCell}
         </span>
         <span className="text-[11px] uppercase tracking-wider text-center font-medium text-muted">{rail}</span>
         <div className="flex justify-end">{badge}</div>
@@ -381,10 +440,16 @@ function ActivityRow({ item, isLast, delayMs, mounted }: {
         <p className="mt-2 text-[13px] leading-5">
           <span className="font-medium text-ink">{who}</span>
           {note ? <span className="text-muted">{" · "}{note}</span> : null}
+          {whyBlocked ? (
+            <span style={{ color: DANGER }}>
+              {reasonNeedsSeparator ? " · " : ""}
+              {whyBlocked}
+            </span>
+          ) : null}
         </p>
         <div className="mt-2.5 flex items-center justify-between gap-3">
           <span className="text-[13px] font-mono tabular-nums text-ink">
-            {item.amount} <span className="text-muted">USDC</span>
+            {amountCell}
           </span>
           <div className="flex items-center gap-2">
             <span className="text-[11px] uppercase tracking-wider font-medium text-muted">{rail}</span>
@@ -436,8 +501,19 @@ export default function Overview() {
   const totalSpent     = agents.reduce((s, a) => s + parseFloat(a.lifetimeSpent || "0"), 0);
   const txStats        = data?.transactionStats;
   const txCount        = txStats?.total ?? agents.reduce((s, a) => s + (a.lifetimePayments ?? 0), 0);
-  const avgTx          = txCount > 0 ? totalSpent / txCount : 0;
   const txApproved     = txStats?.approved ?? activity.filter(r => APPROVED.includes(r.status?.toLowerCase())).length;
+  /**
+   * DIVIDED BY PAYMENTS THAT HAPPENED, not by attempts.
+   *
+   * This used `txCount`, which includes refusals. A refused payment moved no
+   * money and has no size, so counting it drags the mean toward zero — and
+   * the label underneath says "per payment", which a refusal is not.
+   *
+   * Observed the moment the fixture's one refusal was scanned into view:
+   * $1.42 became $1.06 with no money having moved. The number got worse
+   * because the page learned something.
+   */
+  const avgTx          = txApproved > 0 ? totalSpent / txApproved : 0;
   const txBlocked      = txStats?.blocked ?? activity.filter(r => r.status?.toLowerCase() === "blocked").length;
   const txFailed       = txStats?.failed ?? activity.filter(r => r.status?.toLowerCase() === "failed").length;
 

@@ -708,6 +708,22 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
       rail: p.rail,
       time: p.createdAt,
       status: p.status,
+      /**
+       * THE REASON A PAYMENT WAS REFUSED, which this mapping used to drop.
+       *
+       * The blocked-row builder above already computes both of these from the
+       * contract's `request_blocked` event, and the Activity page renders
+       * them — but `recentActivity` listed eleven fields and neither was
+       * among them. So the Overview showed "BLOCKED" twice and said nothing
+       * about WHY, while the answer sat one object away.
+       *
+       * That is not cosmetic. The sharpest thing this product does is tell a
+       * sibling apart from its parent: `PARENT_DAILY_BUDGET` means someone
+       * else spent your pool, `DAILY_BUDGET` means you did. Dropping the code
+       * makes those two identical on the page a user actually lands on.
+       */
+      blockReason: p.blockReason ?? null,
+      blockMessage: p.blockMessage ?? null,
     })),
     paused: cfgView.paused,
   };
