@@ -103,9 +103,14 @@ so drift fails two suites.
 
 ## Broken / incomplete — the real list
 
-1. **No README, no pitch, no demo script, no submission doc.** Grepped every file for
-   `hackathon|submission|devpost|2026-11-14`: **zero matches.** The submission requirements are
-   recorded nowhere in this repo. ← biggest gap with 7 days left.
+1. **No README, no pitch, no demo script, no submission doc.** When written it MUST say two
+   things that are true and non-obvious, or a user finds them out the hard way: **(a)** an
+   implicit account (64 hex chars) cannot have a vault under any factory, use a named one; and
+   **(b)** your FIRST agent holds the root budget, so give later agents their own nodes — the
+   one-signature create binds to root, `add_role` binds to a child, and that is agreed to change
+   after the deadline (see `DECISIONS.md` 2026-11-08).
+   Grepped every file for `hackathon|submission|devpost|2026-11-14`: **zero matches** — the
+   submission requirements are recorded nowhere in this repo. ← biggest gap, 6 days left.
 2. **Sandbox/integration tier has never run on this machine** (needs Linux `neard`). Consequence:
    `contracts/integration-tests/tests/keys.rs:66` still calls `create_agent_account`, which was
    **removed from the contract** — that test cannot pass, and nobody sees it. 9 mutations
