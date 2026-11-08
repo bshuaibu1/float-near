@@ -58,7 +58,7 @@ so drift fails two suites.
 - **Shipped to npm:** `@floatonnear/create-float` **0.5.0** (2026-11-07T21:53:37Z, shasum
   `e829de97…` matching the pre-publish secret audit), `@floatonnear/mcp` 0.3.0 and
   `@floatonnear/float-adapter` 0.2.1 — verified by installing from the registry and driving them.
-  **The MCP's published build is a generation behind the source: 17 tools, not 24 (item 2).**
+  **The MCP's published build is a generation behind the source: 17 tools, not 23 (item 2).**
 - **A user can recover everything with one command.** `npx @floatonnear/float-exit` installed
   FROM npm, run against the live fixture, resolves the owner's key, finds the token from
   `get_tree`, finds the gas key and quotes **3.465732 back = 3.348190 account + 0.117542 gas
@@ -101,8 +101,8 @@ so drift fails two suites.
    `hackathon|submission|devpost|2026-11-14`: **zero matches.** The submission requirements are
    recorded nowhere in this repo. ← biggest gap with 7 days left.
 2. **The PUBLISHED MCP cannot create a vault.** Measured 2026-11-08 by running
-   `npx -y @floatonnear/mcp` with zero config, exactly as a new user gets it: **17 tools, and
-   `vault_create` is not one of them.** Also absent: `vault_add_role`, `vault_plan_bind_agent`,
+   `npx -y @floatonnear/mcp` with zero config, exactly as a new user gets it: **17 tools against
+   the source's 23, and `vault_create` is not one of them.** Also absent: `vault_add_role`, `vault_plan_bind_agent`,
    `vault_plan_withdraw`, `vault_roles`, `vault_teardown_report` — so no agent binding and no
    refund planning either. It still exposes **`vault_plan_create_agent`**, the retired
    sub-account model whose contract method was removed and which stranded 10.77 NEAR across 18
