@@ -127,6 +127,56 @@ describe("buildCreatePlan", () => {
     expect(() => buildCreatePlan({ ...base, exists: true })).toThrow(/already exists/i);
   });
 
+  /**
+   * EXISTS HAS THREE OUTCOMES, NOT TWO, and the old message asserted the first
+   * for all of them: "that is this owner's vault".
+   *
+   * Ownership cannot be inferred from the derivation, because `derive_prefix`
+   * replaces dots with hyphens and is NOT injective. The factory says so in
+   * capitals and ships `derive_prefix_collides_between_a_dot_and_a_hyphen`
+   * asserting that `a.b.testnet` and `a-b.testnet` both land on
+   * `a-b-testnet`. Whoever creates first takes the id, and the old text would
+   * have told the loser of that collision to point their agent at the
+   * winner's vault.
+   */
+  it("confirms ownership when the vault really is the caller's", () => {
+    expect(() => buildCreatePlan({ ...base, exists: true, existingOwner: base.owner })).toThrow(
+      /owns it/i,
+    );
+  });
+
+  it("REFUSES to call someone else's vault yours, and names who holds it", () => {
+    let msg = "";
+    try {
+      buildCreatePlan({ ...base, exists: true, existingOwner: "someone-else.testnet" });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toMatch(/someone-else\.testnet/);
+    expect(msg, "must warn against wiring an agent to it").toMatch(/do NOT point an agent/i);
+    // The remedy has to be one that works. A label puts the vault at a
+    // different address; "try again" would loop forever.
+    expect(msg).toMatch(/label/i);
+    expect(msg, "must not still claim it belongs to the caller").not.toMatch(
+      /that is this owner's vault/i,
+    );
+  });
+
+  it("says ownership is UNKNOWN when it could not be read, rather than assuming", () => {
+    // The third outcome. An unreadable vault is neither yours nor someone
+    // else's, and flattening it into either is the mistake this change exists
+    // to stop.
+    let msg = "";
+    try {
+      buildCreatePlan({ ...base, exists: true, existingOwner: null });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toMatch(/unknown|could NOT be read/i);
+    expect(msg, "should hand over a command to check with").toMatch(/get_config/);
+    expect(msg).not.toMatch(/owns it/i);
+  });
+
   /** The server never signs this. Say so, in the payload. */
   it("states that nothing here holds a key", () => {
     const p = buildCreatePlan(base);

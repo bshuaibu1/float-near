@@ -143,6 +143,26 @@ export interface CreatePlanInput {
   /** Whether the derived account is already on chain. */
   exists?: boolean;
   /**
+   * The EXISTING account's own `get_config.owner`, when it could be read.
+   *
+   * WHY THIS IS NOT OPTIONAL REASONING. "The account at your derived id exists,
+   * therefore it is yours" is an inference from the derivation, not a fact
+   * about the account — and `derive_prefix` IS NOT INJECTIVE. The factory says
+   * so in capitals, and `derive_prefix_collides_between_a_dot_and_a_hyphen`
+   * asserts it: `a.b.testnet` and `a-b.testnet` both land on `a-b-testnet`,
+   * because replacing the dot merges it into an alphabet that already contains
+   * the hyphen. Whoever creates first takes the id.
+   *
+   * Without reading the vault back, this tool would tell the LOSER of that
+   * collision to point their agent at the WINNER's vault. Narrow, but the
+   * failure is "you are now configured against someone else's money".
+   *
+   * `null` means the read failed, or the account is not a Float vault at all.
+   * That is a THIRD outcome and must not be flattened into either of the
+   * others — "I could not check" is not "it is yours".
+   */
+  existingOwner?: string | null;
+  /**
    * The agent public key to bind at creation, if any.
    *
    * Only affects the QUOTE here — the server neither generates nor holds the
@@ -201,9 +221,30 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
     );
   }
   if (known && i.exists) {
+    // Three outcomes, deliberately not two. The old message asserted the
+    // first one for all three.
+    if (i.existingOwner && i.existingOwner === i.owner) {
+      throw new Error(
+        `${i.vaultId} already exists and ${i.owner} owns it — confirmed by reading ` +
+          `its get_config. Connect to it with NEAR_VAULT_CONTRACT=${i.vaultId} ` +
+          `rather than creating another.`,
+      );
+    }
+    if (i.existingOwner) {
+      throw new Error(
+        `${i.vaultId} already exists and is owned by ${i.existingOwner}, NOT by ` +
+          `${i.owner}. Do NOT point an agent at it.\n\n` +
+          `The factory derives a vault id by replacing dots with hyphens, and that ` +
+          `is not injective: "a.b.near" and "a-b.near" both derive "a-b-near", and ` +
+          `whoever created first holds the id. Create yours under a label instead, ` +
+          `which puts it at a different address.`,
+      );
+    }
     throw new Error(
-      `${i.vaultId} already exists. That is this owner's vault — connect to it ` +
-        `with NEAR_VAULT_CONTRACT=${i.vaultId} rather than creating another.`,
+      `${i.vaultId} already exists, but its owner could NOT be read, so whether it ` +
+        `is yours is unknown — not assumed. It may not be a Float vault at all. ` +
+        `Check it before pointing anything at it:\n` +
+        `  near view ${i.vaultId} get_config`,
     );
   }
 
