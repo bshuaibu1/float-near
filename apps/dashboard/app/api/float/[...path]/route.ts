@@ -42,6 +42,45 @@ const TOKEN = process.env.FLOAT_API_TOKEN;
  */
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
+/**
+ * Which vault an owner's reads should go to, resolved ONCE per owner.
+ *
+ * THE PAGES HAVE ALWAYS SENT `?owner=<wallet>` AND THE ADAPTER IGNORED IT.
+ * That is why a visitor saw whatever vault the adapter was configured with:
+ * the question was being asked and never answered. Answering it here means no
+ * page has to change — all seven already send the owner through
+ * `getOwnerQuery`.
+ *
+ * Resolved SERVER-SIDE and cached, because it costs a round trip to the
+ * factory and the answer does not change: a vault id is derived from the
+ * owner's account, so it is stable for as long as the account is.
+ *
+ * `null` is cached too, and deliberately. An owner with no legal vault id —
+ * an implicit account — would otherwise re-ask the factory on every request
+ * for an answer that cannot change.
+ */
+const vaultCache = new Map<string, { vault: string | null; exists: boolean }>();
+
+async function resolveVaultFor(owner: string) {
+  const hit = vaultCache.get(owner);
+  if (hit) return hit;
+  try {
+    const r = await fetch(new URL(`/v1/resolve?owner=${encodeURIComponent(owner)}`, ADAPTER), {
+      cache: "no-store",
+    });
+    if (!r.ok) return { vault: null, exists: false };
+    const j = (await r.json()) as { vault?: string | null; exists?: boolean };
+    const out = { vault: j.vault ?? null, exists: Boolean(j.exists) };
+    vaultCache.set(owner, out);
+    return out;
+  } catch {
+    // A resolve failure must NOT be cached: the adapter being briefly down is
+    // not a fact about the owner, and caching it would pin them to the wrong
+    // vault until this process restarts.
+    return { vault: null, exists: false };
+  }
+}
+
 async function forward(req: NextRequest, path: string[]) {
   // PATH-TRANSPARENT. The pages already call `${API_BASE_URL}/v1/...`, so the
   // segments arriving here are `["v1", "dashboard"]` and the `/v1` must NOT be
@@ -51,6 +90,45 @@ async function forward(req: NextRequest, path: string[]) {
   // Query strings carry `owner`, `day`, pagination — losing them turns a
   // scoped read into a different read that still returns 200.
   target.search = req.nextUrl.search;
+
+  /**
+   * TURN THE `owner` THE PAGE SENT INTO THE `vault` THE ADAPTER READS.
+   *
+   * Only for GETs: a mutating route is either `/v1/pay`, which is pinned to
+   * the adapter's own vault and must never be redirected, or an owner-plan,
+   * whose payload already names what it acts on.
+   *
+   * An explicit `?vault=` wins — that is how someone reaches a LABELLED vault,
+   * which derivation alone cannot find.
+   */
+  if (!MUTATING.has(req.method) && !target.searchParams.get("vault")) {
+    const owner = target.searchParams.get("owner")?.trim();
+    if (owner) {
+      const resolved = await resolveVaultFor(owner);
+      if (resolved.vault && resolved.exists) {
+        target.searchParams.set("vault", resolved.vault);
+      } else if (resolved.vault) {
+        // Derivable but not created. Saying so is the whole point of the
+        // empty state — falling through would read the adapter's OWN vault
+        // and show this visitor somebody else's money, which is the bug.
+        return Response.json(
+          { error: "NO_VAULT", owner, vault: resolved.vault, exists: false },
+          { status: 404 },
+        );
+      } else {
+        return Response.json(
+          {
+            error: "NO_VAULT_ID",
+            owner,
+            detail:
+              "No legal vault id for that account. An implicit account (64 hex " +
+              "characters) cannot have one; use a named account.",
+          },
+          { status: 404 },
+        );
+      }
+    }
+  }
 
   const headers = new Headers();
   const contentType = req.headers.get("content-type");

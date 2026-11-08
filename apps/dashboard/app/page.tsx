@@ -469,6 +469,16 @@ function ActivityRow({ item, isLast, delayMs, mounted }: {
   );
 }
 
+/**
+ * Where a visitor goes to create a vault.
+ *
+ * NOT hardcoded to localhost: once this dashboard is hosted the signing page
+ * is hosted beside it, and a link to 127.0.0.1 would be dead for everyone but
+ * the operator. Defaults to the local one so nothing changes on a laptop.
+ */
+const SIGNING_PAGE_URL =
+  process.env.NEXT_PUBLIC_SIGNING_PAGE_URL ?? "http://127.0.0.1:8080/";
+
 export default function Overview() {
   const { walletAddress } = useWallet();
   const ownerSessionAvailable = useOwnerSessionAvailable();
@@ -477,6 +487,11 @@ export default function Overview() {
   const [data, setData]         = useState<DashboardData | null>(null);
   const [loading, setLoading]   = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** Set when the connected wallet simply has no vault yet — a normal state,
+   *  not a failure, and the one a first-time visitor arrives in. */
+  const [noVault, setNoVault] = useState<
+    { reason: string; vault: string | null; detail: string | null } | null
+  >(null);
 
   useEffect(() => { setTimeout(() => setMounted(true), 50); }, []);
 
@@ -492,10 +507,25 @@ export default function Overview() {
     })
       .then(async r => {
         const p = await r.json();
+        /**
+         * "YOU HAVE NO VAULT" IS NOT AN ERROR, it is the normal state of
+         * someone who has just arrived. Treating it as a failure shows a
+         * stranger a red box on their first visit, when what they need is
+         * the next step.
+         *
+         * The proxy answers 404 with this shape rather than falling through
+         * to the adapter's own vault — falling through is what showed a
+         * visitor somebody else's money.
+         */
+        if (r.status === 404 && (p?.error === "NO_VAULT" || p?.error === "NO_VAULT_ID")) {
+          setNoVault({ reason: p.error, vault: p.vault ?? null, detail: p.detail ?? null });
+          return null;
+        }
         if (!r.ok) throw new Error(p?.error ?? "Unable to load dashboard.");
+        setNoVault(null);
         return p as DashboardData;
       })
-      .then((p: DashboardData) => { if (!cancelled) { setData(p); setLoading(false); } })
+      .then((p: DashboardData | null) => { if (!cancelled) { setData(p); setLoading(false); } })
       .catch((err) => { if (!cancelled) { setData(null); setLoadError(err instanceof Error ? err.message : "Unable to load dashboard."); setLoading(false); } });
     return () => { cancelled = true; };
   }, [ownerSessionAvailable, walletAddress]);
@@ -585,6 +615,72 @@ export default function Overview() {
     connected: walletAddress,
     vaultOwner: data?.owner?.walletAddress,
   });
+
+  /**
+   * NO VAULT YET — the state a stranger arrives in, and the one this page
+   * never had. It previously fell through to the adapter's configured vault,
+   * which is how a visitor was shown somebody else's money.
+   *
+   * Written as a next step rather than a failure: a red box on a first visit
+   * reads as "this is broken", when the truth is "you have not made one yet".
+   * The signing page is the only thing that can create it, because a wallet
+   * refuses DeployContract from a web page and the factory exists for that.
+   */
+  if (noVault) {
+    const implicit = noVault.reason === "NO_VAULT_ID";
+    return (
+      <div className="px-8 py-8 max-w-6xl mx-auto">
+        <div className="rounded-xl border border-line bg-card p-6">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
+            Agent Console
+          </p>
+          <p className="mt-2 text-[18px] font-semibold tracking-tight text-ink">
+            {implicit ? "This account cannot have a vault" : "You do not have a vault yet"}
+          </p>
+
+          {implicit ? (
+            <p className="mt-3 text-[13px] leading-6 text-muted">
+              {noVault.detail ??
+                "An implicit account cannot have a vault under any factory."}{" "}
+              Connect a named account instead, one ending <code className="font-mono">.near</code>{" "}
+              or <code className="font-mono">.testnet</code>.
+            </p>
+          ) : (
+            <>
+              <p className="mt-3 text-[13px] leading-6 text-muted">
+                Connected as{" "}
+                <span className="font-mono text-ink">{walletAddress}</span>. Nothing has been
+                created for this account. A vault is a contract that holds your USDC and
+                enforces what an agent may spend from it — the limits live on chain, where the
+                agent&apos;s key cannot reach them.
+              </p>
+              {noVault.vault ? (
+                <p className="mt-3 text-[13px] leading-6 text-muted">
+                  Yours would be{" "}
+                  <span className="font-mono text-ink [overflow-wrap:anywhere]">
+                    {noVault.vault}
+                  </span>
+                  . The deposit that creates it is storage stake, not a fee, and it comes back
+                  when you close it.
+                </p>
+              ) : null}
+              <a
+                href={SIGNING_PAGE_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-5 inline-flex min-h-11 items-center rounded-lg bg-ink px-4 text-[13px] font-medium text-white"
+              >
+                Create a vault
+              </a>
+              <p className="mt-3 text-[12px] leading-5 text-faint">
+                You approve it in your own wallet. Nothing here asks for a private key.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (!verdict.show) {
     return (
