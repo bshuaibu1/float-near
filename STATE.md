@@ -67,7 +67,14 @@ so drift fails two suites.
   workflow, and that `vault_plan_*` returns an UNSIGNED payload so planning is not doing. It had
   none until 2026-11-08 — the gap between this and servers that feel like they already
   understand the project.
-- **Onboarding is one plugin install.** `plugin/` declares the MCP server in its manifest, so
+- **Onboarding is meant to be a SENTENCE**, copying agentcash: paste
+  `Set up <url>/skill.md` into any agent and it installs itself. `SKILL.md` now opens with a
+  Setup section (both install forms, why `-y` matters, never ask for a private key) and
+  `web/serve.mjs` serves it at `/skill.md` as text/plain. **NOT PUBLIC YET** — the repo is
+  private so `raw.githubusercontent` 404s, and that server is local. Hosting it is the one
+  remaining step; the install line must stay UNPINNED (`npx -y @floatonnear/mcp`) so the server
+  always matches the contract create-float ships.
+- **Onboarding is also one plugin install.** `plugin/` declares the MCP server in its manifest, so
   installing it starts the server — nothing to paste. It also ships `SKILL.md` at a path Claude
   Code actually reads: the root copy has valid frontmatter and ships inside the create-float
   tarball, but skills load from `.claude/skills/` or a plugin, never an npm package root, so it
