@@ -429,6 +429,27 @@ server.tool(
 
     const exists = owner && vaultId ? await accountExists(rpc, vaultId) : false;
 
+    /**
+     * ASK THE EXISTING VAULT WHO OWNS IT, rather than inferring it from the
+     * derivation that produced the id.
+     *
+     * `derive_prefix` replaces dots with hyphens and is NOT injective:
+     * `a.b.near` and `a-b.near` both derive `a-b-near`, and the factory ships
+     * a test asserting exactly that. So "an account exists at your derived id"
+     * does not mean "it is yours" — and the message here used to say it did,
+     * which would point the loser of a collision at the winner's vault.
+     *
+     * `null` on any failure, which the planner treats as a THIRD outcome.
+     * Collapsing the error into "not yours" would be as wrong as collapsing it
+     * into "yours": a vault that is merely unreadable right now is neither.
+     */
+    const existingOwner =
+      exists && vaultId
+        ? await viewFunction<{ owner?: string }>(rpc, vaultId, "get_config", {})
+            .then((c) => c?.owner ?? null)
+            .catch(() => null)
+        : null;
+
     // AN AGENT NEEDS A VAULT ID, and not for the transaction — the page
     // derives that from the connected wallet. It is needed for the CREDENTIAL,
     // which the adapter files under the account the key signs as. A virtual
@@ -461,6 +482,7 @@ server.tool(
         paused: config.paused,
         appUrl: cfg.appUrl,
         exists,
+        existingOwner,
         agentPk: generated?.publicKey ?? null,
       });
       return json({
