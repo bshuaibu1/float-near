@@ -131,6 +131,30 @@ const steps = [
     mustMatch: /signing page serves, \d+ asset\(s\) resolve/,
     mustNotMatch: /BROKEN/,
   },
+  {
+    /**
+     * The page built the vault id client-side and never checked its length,
+     * so an owner whose derived id exceeds NEAR's 64-character cap was shown
+     * an illegal address and allowed to sign a ~3.47 NEAR transaction that
+     * could only fail. The deposit returns; the gas does not, and the error
+     * arrives as a raw contract panic.
+     *
+     * The MCP refused this all along via the factory's own `vault_id_for`.
+     * The BROWSER path was the unguarded one — the path DECISIONS.md calls
+     * "onboarding strangers", so the one a stranger actually meets.
+     *
+     * The check EXTRACTS the function from web/index.html and runs it rather
+     * than testing a copy: the page is standalone HTML with nothing to
+     * import, and a reimplementation here could pass while the shipped page
+     * stayed broken. It also asserts render() CALLS it, because a pure
+     * function nobody invokes is the same as no guard at all.
+     */
+    name: "vault id guard",
+    cmd: "node scripts/check-vault-id-guard.mjs",
+    cwd: ".",
+    mustMatch: /vault id guard: \d+ case\(s\) pass, and the page calls it/,
+    mustNotMatch: /BROKEN/,
+  },
 ];
 
 // Mutation suites are discovered, not listed, so a deleted one cannot linger
