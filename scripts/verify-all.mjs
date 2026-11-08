@@ -149,6 +149,31 @@ const steps = [
      * stayed broken. It also asserts render() CALLS it, because a pure
      * function nobody invokes is the same as no guard at all.
      */
+    /**
+     * STATE.md's stamp is maintained by hand and drifts silently. Measured
+     * across this repo's own history: the stamp was stale at 11a791d, at
+     * fec22f4, and again from fd8ff23 through 2abe8ce - three separate
+     * occasions where content was edited and the stamp left alone. Each was
+     * noticed only when a stop-hook complained, and the SessionStart drift
+     * check had been reporting against the wrong baseline in between.
+     *
+     * The rule is NOT "changed together in one commit" - this repo
+     * squash-merges, so a stamp written on a branch names a sha that is
+     * destroyed on merge, and the honest sequence is edit -> merge -> stamp.
+     * The invariant is that the stamped commit must not be OLDER than the
+     * last commit that changed STATE.md's content.
+     *
+     * Checked against the default branch, not HEAD: on a feature branch the
+     * content exists and its stamp cannot yet, so failing there would make
+     * the gate unpassable during normal work.
+     */
+    name: "state stamp",
+    cmd: "node scripts/check-state-stamp.mjs",
+    cwd: ".",
+    mustMatch: /state stamp: [0-9a-f]+ is not older than the last content change/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "vault id guard",
     cmd: "node scripts/check-vault-id-guard.mjs",
     cwd: ".",
