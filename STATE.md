@@ -152,12 +152,21 @@ so drift fails two suites.
    therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
    realised, not theoretical — reading a config to answer "which vault is this pointed at"
    prints a live private key into scrollback and into the driving agent's transcript.
-5. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
-6. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
+5. **The dashboard is SINGLE-TENANT.** The adapter serves the one vault named by
+   `NEAR_VAULT_CONTRACT` and ignores the `?owner=` the page sends, so it cannot show a
+   visitor *their* vault. Since 2026-11-08 it at least REFUSES to imply otherwise:
+   `lib/ownership.ts` compares the vault's own `get_config.owner` against the connected
+   wallet and replaces the page on a mismatch. Nothing leaks either way — a vault's
+   balance, tree and history are public on chain to anyone with no key — the damage was
+   someone ACTING on figures that were not theirs. Real multi-tenancy needs the adapter to
+   derive a vault per request, which turns it from a local tool into a hosted service, and
+   `/v1/pay` can never be multi-tenant because it holds exactly one agent key.
+6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
+7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
-7. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
-8. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
-9. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
+8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
+9. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
+10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
 
 ## Next 3 steps
 

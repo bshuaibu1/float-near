@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { ownershipVerdict } from "@/lib/ownership";
 import { CANVAS, CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
@@ -127,7 +128,14 @@ function resolveRail(rail: string): string {
   return normalized === "policy" ? "blocked" : normalized;
 }
 type Treasury = { walletAddress: string; amount: string; currency: string; decimals: number; };
-type DashboardData = { treasury: Treasury | null; agents: ApiAgent[]; transactionStats?: TransactionStats; recentActivity: ActivityItem[]; };
+type DashboardData = {
+  /**
+   * The vault's OWN owner, from its `get_config` — not the connected wallet.
+   * The two being different is the case the mismatch guard exists for, and
+   * the type has to carry it or the comparison cannot be written.
+   */
+  owner?: { walletAddress?: string | null } | null;
+  treasury: Treasury | null; agents: ApiAgent[]; transactionStats?: TransactionStats; recentActivity: ActivityItem[]; };
 
 const card   = "bg-white rounded-lg p-6" as const;
 /**
@@ -546,6 +554,70 @@ export default function Overview() {
   const dailyPct       = totalBudget > 0 ? Math.min((totalSpent / totalBudget) * 100, 100) : 0;
 
   const dash = (v: string | number) => loading ? "—" : v;
+
+  /**
+   * IS THIS VAULT EVEN YOURS?
+   *
+   * The adapter serves ONE vault, named by NEAR_VAULT_CONTRACT, and ignores
+   * the `?owner=` the page sends. So connecting any wallet rendered whatever
+   * vault the adapter happened to be pointed at, with nothing saying it
+   * belonged to someone else. The numbers looked like yours.
+   *
+   * Nothing leaks — a vault's balance, tree and history are public on chain
+   * and readable by anyone without a key. The damage is that a person acts on
+   * figures that are not theirs: topping up a balance they do not own, or
+   * concluding their agent overspent when it was somebody else's.
+   *
+   * So this compares the vault's OWN `get_config.owner`, which the adapter
+   * already sends, against the connected wallet. Mismatch replaces the page
+   * rather than annotating it: a banner above a screenful of convincing
+   * numbers is read after the numbers, not before.
+   *
+   * Not a substitute for serving the right vault per wallet. That needs the
+   * adapter to derive one per request, which turns it from a local tool into
+   * a hosted service — a product decision, not a bug fix. This is the honest
+   * interim: refuse to imply ownership that was never checked.
+   */
+  // The condition lives in lib/ownership.ts and is tested there. Inlining it
+  // here would leave the tests covering a copy — which is the exact shape of
+  // every published-vs-source gap this project has hit.
+  const verdict = ownershipVerdict({
+    connected: walletAddress,
+    vaultOwner: data?.owner?.walletAddress,
+  });
+
+  if (!verdict.show) {
+    return (
+      <div className="px-8 py-8 max-w-6xl mx-auto">
+        <div className="rounded-xl border bg-card p-6" style={{ borderColor: "#F0D2D2" }}>
+          <p
+            className="text-[11px] font-semibold uppercase tracking-widest"
+            style={{ color: DANGER }}
+          >
+            Not your vault
+          </p>
+          <p className="mt-2 text-[14px] font-semibold text-ink">
+            This dashboard is showing a vault owned by someone else.
+          </p>
+          <p className="mt-3 text-[13px] leading-6 text-muted">
+            You are connected as{" "}
+            <span className="font-mono text-ink">{verdict.connected}</span>, but the vault it is
+            configured against is owned by{" "}
+            <span className="font-mono text-ink">{verdict.vaultOwner}</span>. Every figure here would
+            be theirs, not yours.
+          </p>
+          <p className="mt-3 text-[13px] leading-6 text-muted">
+            Nothing is exposed by this — a vault&apos;s balance and history are public on
+            chain either way, and nobody can spend from it without its agent key. The
+            adapter serves one vault at a time, so point it at yours and restart it:
+          </p>
+          <code className="mt-3 block rounded-lg border border-line bg-chip px-3 py-2 font-mono text-[11.5px] leading-5 text-ink [overflow-wrap:anywhere]">
+            NEAR_VAULT_CONTRACT=&lt;your-vault&gt; in scripts/restart-adapter.ps1
+          </code>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="px-8 py-8 max-w-6xl mx-auto">
