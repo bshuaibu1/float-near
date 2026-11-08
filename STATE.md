@@ -62,7 +62,12 @@ so drift fails two suites.
   `@floatonnear/float-adapter` 0.2.1. The two were published 53s apart deliberately: the wasm
   and `AGENT_NODE_ID` must agree, or an agent's credential names a node it is not on and the
   failure lands at PAYMENT time. Verified as a pair after install — node 1, wasm `c1a9ce7d…`.
-- **Onboarding needs no CLI and no key.** `claude mcp add float-near -- npx -y @floatonnear/mcp`,
+- **Onboarding is one plugin install.** `plugin/` declares the MCP server in its manifest, so
+  installing it starts the server — nothing to paste. It also ships `SKILL.md` at a path Claude
+  Code actually reads: the root copy has valid frontmatter and ships inside the create-float
+  tarball, but skills load from `.claude/skills/` or a plugin, never an npm package root, so it
+  was shipped to every user and loadable by nobody. The manual route still works:
+  `claude mcp add float-near -- npx -y @floatonnear/mcp`,
   then ask the agent for a vault: it calls `vault_create`, returns a link, and the user signs in
   their own wallet. Verified from npm with zero config — 23 tools, `vault_create` among them.
   0.3.0 shipped 17 and could not create a vault at all, so this was true only in this repo
@@ -91,7 +96,7 @@ so drift fails two suites.
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **23 checks, 617 tests**.
+- Gate: **`node scripts/verify-all.mjs`** — **24 checks, 620 tests**.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new

@@ -149,6 +149,13 @@ const steps = [
      * stayed broken. It also asserts render() CALLS it, because a pure
      * function nobody invokes is the same as no guard at all.
      */
+    name: "vault id guard",
+    cmd: "node scripts/check-vault-id-guard.mjs",
+    cwd: ".",
+    mustMatch: /vault id guard: \d+ case\(s\) pass, and the page calls it/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     /**
      * STATE.md's stamp is maintained by hand and drifts silently. Measured
      * across this repo's own history: the stamp was stale at 11a791d, at
@@ -174,10 +181,26 @@ const steps = [
     mustNotMatch: /BROKEN/,
   },
   {
-    name: "vault id guard",
-    cmd: "node scripts/check-vault-id-guard.mjs",
+    /**
+     * The plugin is how a user installs this without copying
+     * `claude mcp add float-near -- npx -y @floatonnear/mcp` correctly: its
+     * manifest declares the server, so installing the plugin starts it.
+     *
+     * It also fixed something that had never worked. `SKILL.md` sat at the
+     * repo root with valid frontmatter and shipped inside the create-float
+     * tarball, but Claude Code reads skills from `.claude/skills/` or from
+     * inside a plugin, never from an npm package root — so a 16.5 KB skill
+     * was shipped to every user and loadable by nobody.
+     *
+     * The check that earns its keep is the third one: it reads the tool names
+     * out of the BUILT server and fails if the skill promises one that is not
+     * there. The published MCP did exactly that today, advertising
+     * `vault_plan_create_agent` for a contract method that had been removed.
+     */
+    name: "plugin",
+    cmd: "node scripts/check-plugin.mjs",
     cwd: ".",
-    mustMatch: /vault id guard: \d+ case\(s\) pass, and the page calls it/,
+    mustMatch: /plugin: manifest declares .+ via npx, skill matches the root/,
     mustNotMatch: /BROKEN/,
   },
 ];
