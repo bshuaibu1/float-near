@@ -5,6 +5,11 @@
 every session. If you are about to suggest something in a Rejected cell, read the Why first
 and bring new evidence or drop it.
 
+One section is the exception and says so: **"Open — one-way doors, NOT yet decided."** Those are
+not settled, and nothing there may be cited as though it were. They live here anyway because
+they get decided the moment someone acts — the risk is not re-litigation but a default chosen by
+accident. Settling one means moving it into a table above with its Rejected column filled in.
+
 Long-form reasoning stays in `docs/` (`KNOWN-TRADEOFFS.md`, `DECISION-*.md`, `SPIKE-*.md`).
 This is the index so it fits in context.
 
@@ -63,6 +68,46 @@ This is the index so it fits in context.
 | 2026-11-07 | **No decision recorded on when to fix `float-exit`** — it is logged as an open finding in `STATE.md` item 5 instead | Writing a row that says the fix was "deferred in favour of README/pitch" | The owner was asked which to do first and **has not answered**. Recording a deferral nobody chose would make an invented decision look settled — the same failure as the "354-block hole" row below, which claimed a scan gap was left on purpose when it was an artifact read mid-run. A decisions file earns its authority by containing only decisions that were actually made. |
 | 2026-11-07 | A digest mismatch with every CONTENT check passing is **not** called stale; it refuses with an explicit `BUNDLE_WASM_RERECORD=1` remedy | Falling back to the mtime check when the digest mismatches | The guard had a state **no rebuild could clear**. Provenance is trusted while `artifactSha256` matches, which reads as "this record describes how this artifact was built" — but `cargo near build` is content-addressed, so two source trees can produce identical bytes. Change a comment: digest mismatches, artifact hash still matches, stale digest stays trusted, and "rebuild" yields the same bytes. Measured — `res/vault.wasm` and a fresh build were both `003568bcea22be80…`, while the record said `b044ad32d3fe…` and the sources `8c1970e25f3f…`; `prepack` refused and blocked the `float-exit` release. **The mtime fallback was rejected because a fresh clone equalises every mtime**, so it would wave a genuinely stale artifact through — exactly what the digest exists to catch, and `freshness.test.mjs` pins it. The hatch is narrow by CONSTRUCTION, not by condition: content checks push to `fails` before it is evaluated, so it cannot reach them (established by mutation, not assumed). This is the guard's **second** no-remedy state; the first was mtime getting stuck, which is why the digest exists. Same lesson twice: *a check that cries wolf is one people learn to override.* |
 | 2026-11-07 | `BUNDLE_WASM_PROVENANCE` exists purely as a **test seam** | Having the test corrupt `res/vault.sources.json` in place and restore it in a `finally` | That version looked safe and was not: `node:test` runs test FILES in parallel, so `freshness.test.mjs` read the corrupted record mid-flight and its reachability test went red — an intermittent cross-file failure that would surface in CI as flake. **A test that can only be written by mutating shared state is telling you the module needs a seam, not that the test needs a lock.** Mirrors the existing `BUNDLE_WASM_SRC` override, which exists for the same reason. |
+
+## Open — one-way doors, NOT yet decided
+
+Not deferred and not abandoned: these get decided the moment someone acts, whether or not
+they meant to. Recorded here so the decision is **made** rather than **inherited**. Move a row
+into a table above, with its Rejected column filled in, the moment it is settled.
+
+### The mainnet factory's NAME — decide before deploying one
+
+`FACTORY_BY_NETWORK.mainnet` is `undefined` (`packages/mcp/src/create.ts:121`), deliberately,
+so no mainnet factory exists yet. **Whatever it is called is embedded in every user's vault
+address permanently**, because a vault is a sub-account of it:
+
+| factory | a user's vault |
+| --- | --- |
+| `fac.floatv4.near` | `alice-near-demo.fac.floatv4.near` |
+| `float.near` | `alice-near-demo.float.near` |
+
+It cannot be changed later. A new factory does not rename existing vaults — it creates a second
+namespace, and the old addresses keep working and keep reading as dev artifacts. The address is
+what users paste, screenshot and put in docs.
+
+**This is also functional, not only cosmetic.** A vault id must fit NEAR's 64-character cap or
+`vault_id()` returns `None` and the create is refused with `BAD_VAULT_ID`. The factory name eats
+that budget directly:
+
+- `fac.floatv4.near` (16 ch) leaves **47** for `<prefix>-<label>`
+- `float.near` (10 ch) leaves **53**
+
+Since a prefix is the owner's own account id with dots as hyphens, a long owner plus a label can
+cross the line — a 45-character owner with a 5-character label needs 67 under the longer name and
+is refused, but fits under the shorter one. A shorter factory name literally widens who can use
+labels at all.
+
+Cost to stand one up, measured on the live testnet factory (163,831 B): **~1.64 NEAR** of storage
+stake, plus a vault's ~3.47 to prove it. Mainnet currently holds ~3.34 recoverable, so this is
+gated on funding (`STATE.md` "Mainnet is a bricked husk").
+
+Tied to `STATE.md` next-step 2, "Decide mainnet explicitly". Deciding to ship testnet-only is a
+legitimate answer — but then say so in the pitch, rather than leaving a judge to discover it.
 
 ## Deferred / abandoned — not bugs, choices
 
