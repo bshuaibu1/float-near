@@ -56,9 +56,14 @@ so drift fails two suites.
   the solver's deposit address itself.
 - **Factory 12/12 on testnet** — `CreateAccount + Transfer + UseGlobalContract + new()` in one batch.
 - **Shipped to npm:** `@floatonnear/create-float` **0.5.0** (2026-11-07T21:53:37Z, shasum
-  `e829de97…` matching the pre-publish secret audit), `@floatonnear/mcp` 0.3.0 and
-  `@floatonnear/float-adapter` 0.2.1 — verified by installing from the registry and driving them.
-  **The MCP's published build is a generation behind the source: 17 tools, not 23 (item 2).**
+  `e829de97…` matching the pre-publish secret audit), **`@floatonnear/mcp` 0.4.0**
+  (2026-11-08T07:12:38Z, shasum `924c0f20…`) and `@floatonnear/float-adapter` 0.2.1 — each
+  verified by installing from the registry and driving it, not by reading the publish output.
+- **Onboarding needs no CLI and no key.** `claude mcp add float-near -- npx -y @floatonnear/mcp`,
+  then ask the agent for a vault: it calls `vault_create`, returns a link, and the user signs in
+  their own wallet. Verified from npm with zero config — 23 tools, `vault_create` among them.
+  0.3.0 shipped 17 and could not create a vault at all, so this was true only in this repo
+  until 2026-11-08.
 - **A user can recover everything with one command.** `npx @floatonnear/float-exit` installed
   FROM npm, run against the live fixture, resolves the owner's key, finds the token from
   `get_tree`, finds the gas key and quotes **3.465732 back = 3.348190 account + 0.117542 gas
@@ -100,40 +105,30 @@ so drift fails two suites.
 1. **No README, no pitch, no demo script, no submission doc.** Grepped every file for
    `hackathon|submission|devpost|2026-11-14`: **zero matches.** The submission requirements are
    recorded nowhere in this repo. ← biggest gap with 7 days left.
-2. **The PUBLISHED MCP cannot create a vault.** Measured 2026-11-08 by running
-   `npx -y @floatonnear/mcp` with zero config, exactly as a new user gets it: **17 tools against
-   the source's 23, and `vault_create` is not one of them.** Also absent: `vault_add_role`, `vault_plan_bind_agent`,
-   `vault_plan_withdraw`, `vault_roles`, `vault_teardown_report` — so no agent binding and no
-   refund planning either. It still exposes **`vault_plan_create_agent`**, the retired
-   sub-account model whose contract method was removed and which stranded 10.77 NEAR across 18
-   testnet agents plus 0.544 on mainnet. So the seamless onboarding (agent returns a link, user
-   signs in their own wallet, no key ever shared) **exists only in this repo**. Same shape as
-   `float-exit` 0.4.0: source correct, published artifact a generation behind, users get the
-   broken one. Fix is a bump and a publish; source is green at 219 tests.
-3. **Sandbox/integration tier has never run on this machine** (needs Linux `neard`). Consequence:
+2. **Sandbox/integration tier has never run on this machine** (needs Linux `neard`). Consequence:
    `contracts/integration-tests/tests/keys.rs:66` still calls `create_agent_account`, which was
    **removed from the contract** — that test cannot pass, and nobody sees it. 9 mutations
    (M9/M10/M17/M18/M22) blocked on this tier; M29's re-run rests on one manual testnet run.
-4. **Mainnet is empty, and one account on it can never be closed.** Re-measured 2026-11-08:
+3. **Mainnet is empty, and one account on it can never be closed.** Re-measured 2026-11-08:
    `float.test015.near` is **gone** (we closed it — that teardown is the proof the sequence
    works on mainnet). `test015.near` holds **3.425**. `r1.float.test015.near` holds **0.546779**
    with **zero full-access keys**, so it is unreachable forever — a function-call key cannot
    sign `DeleteAccount`, and a parent cannot delete a sub-account. Standing mainnet up again
    needs ~1.64 (factory, 163,525 B of code) + 3.468 (a vault with an agent) = **~5.11, so the
    gap is ~1.68** — not the ~1.3 recorded before, which went stale when the factory's code grew.
-5. **Key files work but are not the DEFAULT.** `NEAR_VAULT_AGENT_KEY_FILE` /
+4. **Key files work but are not the DEFAULT.** `NEAR_VAULT_AGENT_KEY_FILE` /
    `FLOAT_QUOTE_SIGNER_KEY_FILE` are wired into both servers (shipped in `b649e3b`), but the
    provisioning path still *writes* the inline form: `create-float.mjs` (~981-1031),
    `print-mcp-command.mjs:88`, `print-agent-env.mjs:117`, `agent-key.ts:143-152`. A new user
    therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
    realised, not theoretical — reading a config to answer "which vault is this pointed at"
    prints a live private key into scrollback and into the driving agent's transcript.
-6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
-7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
+5. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
+6. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
-8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
-9. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
-10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
+7. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
+8. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
+9. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
 
 ## Next 3 steps
 
@@ -150,7 +145,7 @@ user and their deposit, so **step 1 below is the whole remaining job.**
    different sentences.
 2. **Decide mainnet explicitly** — fund the ~1.3 NEAR gap and deploy a mainnet factory, or ship
    testnet-only and say so in the pitch. Do not leave this implicit.
-3. **Make key FILES the default** (item 5 above): have `create-float` write the secret to a file
+3. **Make key FILES the default** (item 4 above): have `create-float` write the secret to a file
    and reference it by path, instead of inlining it into `.mcp.json` / `.float/adapter.env`.
    `.float/agent-keys.json` already holds the secrets, so check whether a new file is needed at
    all before adding one.
