@@ -90,7 +90,12 @@ spend.
 | `vault_budget` | today's cap / executed / pending / available for one node |
 | `vault_request` | look up one past payment by id |
 | `vault_pay` | **spend** |
-| `vault_plan_*` | unsigned owner actions: add node, set caps, freeze, set recipients, set cooldown, pause, purge, create agent |
+| `vault_roles` | which agents exist, which node each spends from |
+| `vault_gas` | how much gas each agent has left, and what a top-up costs or buys |
+| `vault_pending_approval` | payments waiting on a human, when a threshold is set |
+| `vault_teardown_report` | what closing this vault would return, and what it would strand |
+| `vault_plan_*` | unsigned owner actions: add node, set caps, freeze, set recipients, set cooldown, pause, purge, withdraw, bind/unbind an agent, approve/reject a payment, set the approval threshold |
+| `vault_add_role` | add an agent with its own node and funded gas key |
 
 ### Check before you pay
 
@@ -130,6 +135,54 @@ receives `amount`, and the vault is charged more — measured 1.5% at 0.50 USDC,
 3.5% at 0.10, because the fixed part of a solver's cost dominates at small
 sizes. The budget is charged the larger figure, so a 0.51 cap cannot deliver a
 round 0.50 unless the cap was sized for it.
+
+## Getting the money back out
+
+**The deposit is stake, not a fee.** A vault holds ~3.35 NEAR to pay for its own
+storage, and that returns in full when the vault is closed. Gas that an agent
+actually spends is spent — like any transaction — at roughly 0.0007 NEAR per
+payment. So the honest summary is: *your deposit comes back, your gas is spent.*
+
+Say so when a user asks "what does this cost?", because the answer most people
+expect — a fee — is wrong.
+
+```
+vault_teardown_report
+```
+
+Read-only. It reports what closing the vault would return, what it would
+strand, and the exact command. It needs no key and signs nothing.
+
+**Closing is a CLI job, not a tool, and that is deliberate.** The six steps
+include actions only the VAULT can sign, and a browser wallet cannot sign as
+the vault — wallets silently sign as the connected account instead and report
+success. So:
+
+```
+npx @floatonnear/float-exit --vault <vault> --owner <you> --dry-run
+```
+
+`--dry-run` quotes the refund and writes nothing. Drop it to execute.
+
+It returns the tokens first (a deleted account does **not** return fungible
+tokens), then each gas-key balance, then the storage deposit. Order matters:
+`DeleteKey` on a funded gas key **destroys** the balance and reports success,
+so the gas keys are emptied before anything is removed.
+
+### When an agent runs out of gas
+
+An agent's key pays its own gas and stops when empty. That is a feature — it
+is the per-agent spending bound, enforced by the protocol rather than by
+policy — but it means an agent can go quiet for a boring reason.
+
+```
+vault_gas                                  -> every agent, payments left
+vault_gas { "agent": "marketing", "payments": 100 }   -> what 100 more costs
+vault_gas { "agent": "marketing", "amountNear": "0.05" }  -> what 0.05 buys
+```
+
+It returns the exact `npx @floatonnear/float-topup` command. Topping up is
+signed by the vault, so like closing, it is a CLI job.
 
 ## When a payment is refused
 
