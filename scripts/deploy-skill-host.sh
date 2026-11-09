@@ -426,32 +426,32 @@ fi
 command -v nginx >/dev/null || die "nginx is not installed. sudo apt install -y nginx"
 
 say "writing nginx vhost for $DOMAIN"
+#
+# HTTP ONLY, AND CERTBOT ADDS THE TLS. Writing `listen 443 ssl` here cannot
+# work on a FIRST deploy: no certificate exists yet, so `nginx -t` fails with
+#
+#   no "ssl_certificate" is defined for the "listen ... ssl" directive
+#
+# and the script dies before certbot ever runs. It would only have passed on a
+# box that already had certs — i.e. never on the first run, which is the only
+# run that matters. Measured on wattson 2026-11-09.
+#
+# `certbot --nginx` reads these server blocks, adds `listen 443 ssl` with the
+# right `ssl_certificate` paths, and (with --redirect) turns port 80 into a
+# redirect. Letting it do that is the supported path and keeps the cert paths
+# in one place rather than hardcoded here.
+#
+# EVERY port-80 block serves the ACME challenge, including the ones that only
+# redirect. A `return 301` without that location would bounce certbot's own
+# HTTP-01 challenge to https — which has no certificate yet — and issuance
+# fails for exactly the names that are only redirects.
 sudo tee "/etc/nginx/sites-available/$SERVICE" >/dev/null <<NGINX
 server {
     listen 80;
     listen [::]:80;
-    server_name $DOMAIN $ALT_NAMES $DASH_NAME;
-    location /.well-known/acme-challenge/ { root /var/www/html; }
-    # \$host, NOT \$DOMAIN: dash.\$DOMAIN must redirect to ITSELF over TLS, not
-    # to the apex. Sending it to the apex would make the dashboard unreachable
-    # on plain HTTP in a way that looks like a certificate problem.
-    location / { return 301 https://\$host\$request_uri; }
-}
-
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name $ALT_NAMES;
-    # \$request_uri, NOT \$uri: the MCP builds signing links with a query
-    # string (?factory=...&label=...) and the published 0.5.0 still defaults to
-    # app.$DOMAIN. Dropping the query would send a user to a blank page.
-    return 301 https://$DOMAIN\$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
     server_name $DOMAIN;
+
+    location /.well-known/acme-challenge/ { root /var/www/html; }
 
     location / {
         proxy_pass http://127.0.0.1:$PORT;
@@ -460,18 +460,30 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $ALT_NAMES;
+
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+
+    # \$request_uri, NOT \$uri: the MCP builds signing links with a query
+    # string (?factory=...&label=...) and the published 0.5.0 still defaults to
+    # app.$DOMAIN. Dropping the query would send a user to a blank page.
+    location / { return 301 https://$DOMAIN\$request_uri; }
+}
 NGINX
 
-# The dashboard, on its OWN name. A separate file appended rather than woven
-# into the block above, so SKIP_DASHBOARD leaves no dangling proxy_pass to a
-# port with nothing behind it — which nginx accepts and then 502s.
 if [ -z "$SKIP_DASHBOARD" ]; then
 sudo tee -a "/etc/nginx/sites-available/$SERVICE" >/dev/null <<NGINX
 
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
+    listen 80;
+    listen [::]:80;
     server_name $DASH_NAME;
+
+    location /.well-known/acme-challenge/ { root /var/www/html; }
 
     location / {
         proxy_pass http://127.0.0.1:$DASH_PORT;
