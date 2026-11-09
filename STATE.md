@@ -116,9 +116,9 @@ so drift fails two suites.
 | **Float VPS** | **`154.12.117.17`** (`wattson`, Ubuntu 24.04.5, 2 cores / 1.9Gi / 58G). **PREPPED 2026-11-09**: Node **22.23.4** via NodeSource (NOT apt's EOL 18.19), nginx 1.24.0, certbot 2.9.0, git; **4G swap** added + fstab entry, because `next build` on 1.9Gi with no swap was an unmeasured OOM risk; ports 443/8080/8787/3000 free. Non-root **`float`** user with passwordless sudo and the deploy key — the script REFUSES to run as root, and only root existed |
 | VPS read reliability | **40/40 (100%)** measured ON that host. Settles it: fastnear free tier is adequate, no subscription. (Dev machine was 26% — per-IP throttle, not a product defect) |
 | DNS | **nothing resolves yet.** `usefloat.xyz`, `www`, `app`, `dash` all need A records -> **154.12.117.17**. The old `209.209.10.210` note was STALE — those records are gone, so there is no repointing risk and nothing to break on the pythscan box. `dash` is required or certbot's HTTP-01 fails for the dashboard vhost |
-| **mainnet** | **empty, but the tooling is ready and the name is decided.** Factory will be **`usefloat.near`** — verified **still unregistered 2026-11-09** (`float.near` is taken: 45 keys, 12 full-access). It is TOP-LEVEL, so `deploy-factory-mainnet.mjs` CANNOT create it — a `CreateAccount` action only makes direct sub-accounts. Register via the registrar first, then the script finds it and deploys in |
-| mainnet: staged | `near account create-account fund-myself usefloat.near '1.8 NEAR' autogenerate-new-keypair **save-to-legacy-keychain** sign-as test015.near network-config mainnet sign-with-keychain send` — then `FACTORY=usefloat.near CONFIRM_MAINNET=1 node scripts/deploy-factory-mainnet.mjs`. **legacy** keychain writes `~/.near-credentials/mainnet/<id>.json`, which is where every repo script looks; `save-to-keychain` hides it in the OS keychain and the deploy refuses |
-| mainnet: money | factory stake **1.635250** (163,525 B x 1e19) + ~0.12 headroom = **1.75525**. `test015.near` holds **3.425073**, so the factory is affordable TODAY. A demo vault is a further **3.4692**, which is NOT — short ~1.78. Figures derived from the artifacts, never remembered |
+| **mainnet** | **`usefloat.near` is REGISTERED** (2026-11-09, tx `2Gfh9H5T1VhEZ465NJ15CnuxFZpyMgsjchY66Lgsvntm`): 1.800000 NEAR, 182 B, **no code yet**, exactly 1 **FullAccess** key. Verified by deriving the pubkey FROM THE SECRET and matching it on chain — not by trusting the file's own `public_key` field, which is how `r1.float.test015.near` got stranded. Created via the `near` registrar because it is TOP-LEVEL; `deploy-factory-mainnet.mjs` cannot create it |
+| mainnet: next step | **deploy the factory code**: `$env:FACTORY="usefloat.near"; $env:CONFIRM_MAINNET="1"; node scripts/deploy-factory-mainnet.mjs`. Dry run is green — factory holds 1.79818, code stake 1.63525, 0.163 spare. Deploys `ee925937c7b9…` (163,525 B) and initialises |
+| mainnet: money | `usefloat.near` **1.800000**, `test015.near` **1.617630** (after funding it). Factory code stake **1.635250** is covered by the factory's own balance — nothing more moves from the parent. A mainnet DEMO VAULT is a further **3.4692** and is **NOT affordable**: mainnet will be "the factory is live, anyone can create a vault" rather than a populated demo, unless funded |
 | factory artifact | `target/near/factory/factory.wasm`, **163,525 B, sha256 `ee925937c7b9…`** — rebuilt 2026-11-09 via `scripts/build-factory.sh` from a clean tree at HEAD (both artifacts deleted first, 14s of real work, existence asserted). **It was never stale**; an earlier claim that it was came from reading MTIME, which this repo already knows lies |
 
 ## Commands
@@ -187,7 +187,11 @@ so drift fails two suites.
 7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
 8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
-9. `test015.near`'s seed phrase is the single key protecting it, in `~/.near-credentials`.
+9. **Two mainnet seed phrases are unbacked-up.** `test015.near`'s, and now `usefloat.near`'s —
+   written by the CLI as `master_seed_phrase` inside
+   `~/.near-credentials/mainnet/usefloat.near.json`. That account will own Float's entire
+   mainnet namespace (every vault is its sub-account), and it has exactly ONE full-access
+   key. Losing that file loses the namespace permanently.
 10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
 
 ## Next 3 steps
