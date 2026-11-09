@@ -106,13 +106,14 @@ so drift fails two suites.
 | stranded on testnet | `work12-testnet.fac.floatv4.testnet` holds **3.370330** with **zero access keys** — unrecoverable, the testnet twin of `r1.float.test015.near`. Predates the factory line that installs the owner's key. `float-exit` refuses it correctly rather than shrinking it |
 | **demo blocker** | **connecting as `work12.testnet` shows an EMPTY vault**, and the cause was structural: `seed-fixture.mjs` could only ever build `<owner>-fleet.<factory>` while the dashboard only ever derives `<owner>.<factory>`. `LABEL=` now builds unlabelled (2026-11-09), so the code can do it. **Still needs doing**: deposit is **3.4692** derived from the 298,920 B artifact, testnet holds **2.33** in total, and work12's unlabelled slot is permanently occupied by a keyless vault — so it needs a faucet top-up AND a fresh owner |
 | RPC | **`rpc.testnet.near.org` is DEPRECATED** — answers `-429 "STOP USING IT NOW"`. Use `test.rpc.fastnear.com`. The adapter's var is `NEAR_VAULT_RPC_URL`, **not** `NEAR_RPC_URL`; the wrong name silently keeps the default |
-| hosting | **not deployed yet.** `scripts/deploy-skill-host.sh` is written and waits only on an IP: `DOMAIN=usefloat.xyz ./scripts/deploy-skill-host.sh`. Only `web/serve.mjs` goes public (signing page + `/skill.md`); the adapter and dashboard stay on loopback and the script FAILS if anything answers on 8787 or 3000 |
-| DNS caution | `usefloat.xyz`, `www` and `app` already resolve to **209.209.10.210**, the box serving `pythscan.com` and the discord avatar app — with **no vhost answering**, so repointing breaks nothing. Do NOT deploy Float there |
+| hosting | **not deployed yet**, waits only on an IP. Now deploys the **dashboard too**: `DOMAIN=usefloat.xyz VAULT=<demo> TOKEN=usdc.fakes.testnet ./scripts/deploy-skill-host.sh` (`SKIP_DASHBOARD=1` for page-only). Three services: `web/serve.mjs` public on the apex, adapter + dashboard on **loopback with NO credentials**. Dashboard is served at **`dash.$DOMAIN`** — **not `app.`**, which the published MCP 0.5.0 uses for signing links and must stay a redirect. Needs a **`dash` A record** or certbot's HTTP-01 fails |
+| hosting guards | the script REFUSES to run if `FLOAT_API_TOKEN` / `NEAR_VAULT_AGENT_KEY` / the quote-signer vars are so much as PRESENT in its shell (`${X+set}`, so an EMPTY value is refused too). Final assertions are **positive-controlled**: a read must return 200 through the public hostname BEFORE the 503s are believed, because "gate shut" and "nothing listening" are the same output. It also fires the repo's own published `local-dev-token` at the box, and requires `/v1/owner-plan` to answer **400 not 503** so a regression to method-gating fails the deploy |
+| DNS caution | `usefloat.xyz`, `www` and `app` already resolve to **209.209.10.210**, the box serving `pythscan.com` and the discord avatar app — with **no vhost answering**, so repointing breaks nothing. Do NOT deploy Float there. **Also add a `dash` A record** — the dashboard's own name |
 | **mainnet** | **gone / bricked.** No mainnet factory (`FACTORY_BY_NETWORK.mainnet = undefined`, deliberate) |
 
 ## Commands
 
-- Gate: **`node scripts/verify-all.mjs`** — **24 checks, 621 tests**.
+- Gate: **`node scripts/verify-all.mjs`** — **25 checks**.
   Asserts exit code **and** a
   must-appear pattern **and** a must-not-appear pattern, because a check that cannot run prints
   nothing and exits 0. Mutation suites are auto-discovered from `scripts/mutate-*.mjs`, so a new
@@ -166,7 +167,11 @@ so drift fails two suites.
    key**. **`/v1/pay` always needs it** and is never rewritten — it signs with the key the
    process holds. This matters because the dashboard proxy attaches `FLOAT_API_TOKEN` *without
    authenticating the caller*: a public dashboard **with** a token set is an open `/v1/pay`.
-   So **never set `FLOAT_API_TOKEN` on the public box.** Caveat: derivation finds the
+   So **never set `FLOAT_API_TOKEN` on the public box** — the deploy script refuses if it is set.
+   The gate is ONE tested function, `apps/dashboard/lib/proxy-gate.ts`: the proxy used to carry
+   its own method-based copy, which **silently bypassed the adapter's route gate** and 503'd
+   owner actions in production while the PR claimed they worked. Found only by curling a
+   token-less stack; now 10 tests + 7 killed mutants. Caveat: derivation finds the
    **unlabelled** vault only — a labelled one needs an explicit `?vault=` (see Live state).
 6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
 7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
