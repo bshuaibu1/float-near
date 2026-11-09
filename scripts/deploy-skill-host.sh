@@ -184,12 +184,31 @@ else
   # credential.
   case "$REPO" in
     git@*|ssh://*)
-      ssh -o StrictHostKeyChecking=no -o BatchMode=yes -T git@github.com 2>&1         | grep -q "successfully authenticated"         || die "this box cannot authenticate to GitHub, so the private repo
+      # CAPTURED, NOT PIPED, and that is the whole point of this shape.
+      #
+      # `ssh -T git@github.com` ALWAYS exits 1 — GitHub refuses the shell on
+      # purpose, even on a perfect authentication. Under `set -o pipefail` at
+      # the top of this script, that 1 propagates through the pipe no matter
+      # what grep found, so `ssh ... | grep -q ... || die` could NEVER pass.
+      # Measured on wattson: identical command, guard passes without pipefail
+      # and fails with it, while the clone it was guarding worked fine.
+      #
+      # A guard written to prevent a cryptic failure became one. `|| true`
+      # keeps the non-zero exit from killing the script under `set -e`, and the
+      # verdict comes from the TEXT, which is the thing that actually carries
+      # the answer.
+      gh_probe="$(ssh -o StrictHostKeyChecking=no -o BatchMode=yes -T git@github.com 2>&1 || true)"
+      case "$gh_probe" in
+        *"successfully authenticated"*) : ;;
+        *) die "this box cannot authenticate to GitHub, so the private repo
   cannot be cloned. Generate a key here and register it READ-ONLY:
     ssh-keygen -t ed25519 -N '' -f ~/.ssh/github_deploy
     printf 'Host github.com\n  IdentityFile ~/.ssh/github_deploy\n  IdentitiesOnly yes\n' >> ~/.ssh/config
   then add ~/.ssh/github_deploy.pub at
-    https://github.com/bshuaibu1/float-near/settings/keys  (leave write access OFF)"
+    https://github.com/bshuaibu1/float-near/settings/keys  (leave write access OFF)
+
+  ssh said: ${gh_probe:-(no output at all — is outbound :22 blocked?)}" ;;
+      esac
       ;;
   esac
   say "cloning into $ROOT"
