@@ -297,3 +297,71 @@ describe("planOwnerAction", () => {
     });
   });
 });
+
+/**
+ * A MISSING nodeId must be refused, not silently dropped.
+ *
+ * Measured live on 2026-11-09 against the running adapter:
+ * `POST /v1/owner-plan {"action":"freeze"}` returned HTTP 200 and the payload
+ *
+ *     args:    { "frozen": false }
+ *     summary: "Unfreeze node undefined"
+ *     cli:     near contract call-function as-transaction ... freeze_node
+ *              json-args '{"frozen":false}' ... send
+ *
+ * `JSON.stringify` drops an `undefined` value, so `node_id` vanished from the
+ * args entirely and the user was handed a confident, copy-pasteable command
+ * for a node that does not exist.
+ *
+ * WHY IT IS NOT WORSE, and worth stating so nobody "fixes" it by guessing:
+ * `freeze_node(&mut self, node_id: NodeId, frozen: bool)` takes `NodeId = u32`
+ * with no `#[serde(default)]`, so near-sdk fails to deserialize and the call
+ * REVERTS. It does NOT fall back to `ROOT_NODE = 0` — a silent root freeze.
+ * The cost is wasted gas and a confusing failure, not a lost vault.
+ *
+ * WHY IT MATTERS MORE NOW. `/v1/owner-plan` is reachable without a token so a
+ * hosted dashboard can offer owner actions, which makes a wrong-but-signable
+ * payload the output a stranger can request. The `withdraw` case two lines
+ * below already threw on a missing `amountBase` — the discipline existed and
+ * simply had not been applied to the node id.
+ */
+describe("owner-plan: a node-scoped action without a node", () => {
+  const ENV = { vault: "v.testnet", token: "t.testnet", decimals: 6 };
+
+  for (const action of ["caps", "cooldown", "recipients", "freeze"]) {
+    it(`refuses '${action}' with no nodeId, rather than emitting node_id: undefined`, () => {
+      let thrown: unknown;
+      try {
+        planOwnerAction({ action } as never, ENV);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown, `${action} must throw`).toBeInstanceOf(Error);
+      // Not UnknownActionError: the action IS known, the argument is missing.
+      expect(thrown).not.toBeInstanceOf(UnknownActionError);
+      expect(String((thrown as Error).message)).toMatch(/nodeId/i);
+    });
+  }
+
+  it("accepts nodeId 0 — ROOT is a real node, not a missing value", () => {
+    // The bug this guards against: `if (!b.nodeId) throw`, which rejects the
+    // root node because 0 is falsy. Root is the node most likely to be frozen.
+    const p = planOwnerAction({ action: "freeze", nodeId: 0, frozen: true } as never, ENV);
+    expect(p.args).toMatchObject({ node_id: 0, frozen: true });
+    expect(p.summary).toMatch(/node 0/);
+  });
+
+  it("never emits an args object containing an undefined value", () => {
+    // The general property. Any such key disappears from the CLI string, so
+    // the summary and the command can disagree about what is being called.
+    const p = planOwnerAction({ action: "freeze", nodeId: 2, frozen: true } as never, ENV);
+    for (const [k, v] of Object.entries(p.args as Record<string, unknown>)) {
+      expect(v, `args.${k} is undefined`).not.toBeUndefined();
+    }
+  });
+
+  it("actions that take NO node are unaffected", () => {
+    expect(() => planOwnerAction({ action: "pause", paused: true } as never, ENV)).not.toThrow();
+    expect(() => planOwnerAction({ action: "allocation", strict: true } as never, ENV)).not.toThrow();
+  });
+});

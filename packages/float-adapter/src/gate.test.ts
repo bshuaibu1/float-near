@@ -105,6 +105,84 @@ describe("authorize", () => {
   });
 });
 
+// ---- gating by ROUTE, so a hosted dashboard can offer owner actions
+//
+// Gating by METHOD made every non-GET need the token, and the token cannot
+// exist on a public box: `apps/dashboard/app/api/float/[...path]/route.ts`
+// attaches it to any mutating request WITHOUT authenticating the caller, so a
+// hosted dashboard with a token set is an open `/v1/pay` for the internet,
+// bounded only by the vault's caps. Measured 2026-11-09: correct token -> 400
+// (reached validation), wrong token -> 401, no token configured -> 503.
+//
+// So the token stays absent in public, and the question becomes which routes
+// can work without it. `/v1/owner-plan` can: it RETURNS AN UNSIGNED PAYLOAD
+// and holds no key — the owner approves it in their own wallet, which is the
+// authority. `/v1/pay` cannot, ever: it signs with the agent key.
+//
+// ALLOWLIST, NOT DENYLIST, and this is the whole safety argument. A route is
+// gated unless it is named here as signing nothing. Denylisting `/v1/pay`
+// would mean the NEXT money-moving route is born public and nobody notices
+// until it is exploited; fail-closed means it is born shut and someone has to
+// argue it open in a diff a reviewer can see.
+describe("authorize — by route, fail-closed", () => {
+  const TOKEN = "s3cret-token-value";
+
+  it("/v1/pay ALWAYS needs the token — it signs with the agent key", () => {
+    const v = authorize({ method: "POST", path: "/v1/pay", authHeader: undefined, token: undefined });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.status).toBe(503);
+
+    const w = authorize({ method: "POST", path: "/v1/pay", authHeader: undefined, token: TOKEN });
+    expect(w.ok).toBe(false);
+    if (!w.ok) expect(w.status).toBe(401);
+  });
+
+  it("/v1/owner-plan is open — it builds a payload the OWNER signs, and holds no key", () => {
+    expect(
+      authorize({ method: "POST", path: "/v1/owner-plan", authHeader: undefined, token: undefined }).ok,
+    ).toBe(true);
+  });
+
+  it("/v1/owner-plan does not START needing a token just because one exists", () => {
+    // Otherwise the hosted box and a local box disagree about what works, and
+    // the local one is the configuration nobody tests against.
+    expect(
+      authorize({ method: "POST", path: "/v1/owner-plan", authHeader: undefined, token: TOKEN }).ok,
+    ).toBe(true);
+  });
+
+  it("AN UNKNOWN POST ROUTE IS SHUT, not open — the fail-closed property", () => {
+    // The point of the allowlist. A route added next week is gated until
+    // someone deliberately names it, so being born public is impossible.
+    for (const p of ["/v1/withdraw", "/v1/pay-batch", "/v1/owner-plan/extra", "/v1/", "/"]) {
+      const v = authorize({ method: "POST", path: p, authHeader: undefined, token: undefined });
+      expect(v.ok, `${p} must be gated`).toBe(false);
+    }
+  });
+
+  it("an ABSENT path is treated as gated, so the default is never exposure", () => {
+    const v = authorize({ method: "POST", authHeader: undefined, token: undefined });
+    expect(v.ok).toBe(false);
+  });
+
+  it("reads and preflight are unaffected on every route", () => {
+    for (const m of ["GET", "OPTIONS", "HEAD"]) {
+      for (const p of ["/v1/pay", "/v1/owner-plan", "/v1/dashboard", undefined]) {
+        expect(authorize({ method: m, path: p, authHeader: undefined, token: undefined }).ok).toBe(true);
+      }
+    }
+  });
+
+  it("the open route is still matched EXACTLY — no prefix or case escape", () => {
+    // `/v1/paysomething` must not inherit `/v1/pay`'s rules in either
+    // direction, and a case variant must not slip past the allowlist.
+    for (const p of ["/v1/OWNER-PLAN", "/v1/owner-plan/", "/v1/owner-planx", "//v1/owner-plan"]) {
+      const v = authorize({ method: "POST", path: p, authHeader: undefined, token: undefined });
+      expect(v.ok, `${p} must not be treated as the open route`).toBe(false);
+    }
+  });
+});
+
 // ---- client errors vs server errors
 //
 // The catch-all returned 500 for EVERYTHING, including input validation:

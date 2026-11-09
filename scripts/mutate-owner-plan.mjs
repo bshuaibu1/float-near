@@ -25,8 +25,8 @@ const orig = readFileSync(p, "utf8");
 const MUTANTS = [
   {
     name: "M1 recipients default [] instead of null (contract panics after signing)",
-    from: "planSetRecipients(env.vault, b.nodeId, b.recipients ?? null)",
-    to: "planSetRecipients(env.vault, b.nodeId, b.recipients ?? [])",
+    from: "planSetRecipients(env.vault, requireNode(b), b.recipients ?? null)",
+    to: "planSetRecipients(env.vault, requireNode(b), b.recipients ?? [])",
   },
   {
     name: "M2 caps pre-scaled here, so planSetNodeCaps scales them twice",
@@ -35,8 +35,8 @@ const MUTANTS = [
   },
   {
     name: "M3 freeze defaults to true, so a bare call FREEZES an agent",
-    from: "planFreezeNode(env.vault, b.nodeId, b.frozen ?? false)",
-    to: "planFreezeNode(env.vault, b.nodeId, b.frozen ?? true)",
+    from: "planFreezeNode(env.vault, requireNode(b), b.frozen ?? false)",
+    to: "planFreezeNode(env.vault, requireNode(b), b.frozen ?? true)",
   },
   {
     name: "M4 pause defaults to true, so a bare call STOPS the vault",
@@ -50,8 +50,18 @@ const MUTANTS = [
   },
   {
     name: "M6 caps addressed to something other than the vault",
-    from: "return planSetNodeCaps(env.vault, b.nodeId, [",
-    to: 'return planSetNodeCaps("someone.else", b.nodeId, [',
+    from: "return planSetNodeCaps(env.vault, requireNode(b), [",
+    to: 'return planSetNodeCaps("someone.else", requireNode(b), [',
+  },
+  {
+    name: "M7 a missing nodeId falls back to ROOT, so a bare freeze hits the whole vault",
+    from: "if (typeof b.nodeId !== \"number\" || !Number.isInteger(b.nodeId) || b.nodeId < 0) {",
+    to: "if (false) {",
+  },
+  {
+    name: "M8 the nodeId guard uses falsiness, so node 0 (ROOT) is refused",
+    from: "if (typeof b.nodeId !== \"number\" || !Number.isInteger(b.nodeId) || b.nodeId < 0) {",
+    to: "if (!b.nodeId) {",
   },
 ];
 

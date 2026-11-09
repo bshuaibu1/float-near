@@ -324,10 +324,18 @@ const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") return res.writeHead(204).end();
 
   // AUTH BEFORE ANY HANDLER. Previously a POST reached body validation and
-  // answered 400 — there was nothing to fail at. Mutating routes now require a
+  // answered 400 — there was nothing to fail at. Mutating routes require a
   // bearer token; GETs stay open behind a loopback bind.
+  //
+  // THE ROUTE DECIDES, NOT THE METHOD. Gating every non-GET meant a hosted
+  // dashboard could offer no owner actions at all, because the token cannot
+  // exist in public: the dashboard proxy attaches it without authenticating
+  // the caller. `/v1/owner-plan` returns an UNSIGNED payload the owner
+  // approves in their own wallet, so it needs no token; `/v1/pay` signs with
+  // the agent key and always does. Unknown routes stay shut — see gate.ts.
   const verdict = authorize({
     method: req.method ?? "GET",
+    path: url.pathname,
     authHeader: req.headers.authorization,
     token: env.apiToken,
   });
@@ -508,10 +516,28 @@ const server = createServer(async (req, res) => {
       });
       const b = JSON.parse(body || "{}") as OwnerPlanRequest;
 
+      /**
+       * WHICH VAULT THIS PLAN IS FOR. This route built against `env.vault`
+       * unconditionally, so on a hosted box every visitor asking to freeze
+       * their own node received a command naming the OPERATOR's vault. It
+       * reverts — `assert_owner` sees the wrong signer — but the dashboard
+       * would have shown them a confident command for somebody else's vault,
+       * which is the same defect the read path had and the reason `?owner=`
+       * was being ignored.
+       *
+       * The plan is still only a DESCRIPTION: no key is used here and the
+       * owner signs it in their own wallet, so naming a vault you do not own
+       * buys nothing the contract will honour.
+       */
+      const { vault: planVault, error: planVaultError } = vaultFor(url);
+      if (planVaultError) return send(400, { error: planVaultError });
+
+      // The NETWORK, not the vault — it is a property of the chain, so the
+      // configured vault answers for it even when the plan targets another.
       const net = await view<{ network: string }>("get_config", {});
       let payload;
       try {
-        payload = planOwnerAction(b, env);
+        payload = planOwnerAction(b, { ...env, vault: planVault });
       } catch (e) {
         // REPORT WHAT ACTUALLY WENT WRONG.
         //
