@@ -69,7 +69,20 @@ DASH_NAME="${DASH_NAME:-dash.$DOMAIN}"
 ROOT="${ROOT:-/srv/float-near-web}"
 SERVICE="${SERVICE:-float-near-web}"
 PORT="${PORT:-8080}"
-REPO="${REPO:-https://github.com/bshuaibu1/float-near.git}"
+# SSH, NOT HTTPS, because this repository is PRIVATE. The https form cannot
+# clone it on a headless box: git has no credential helper and no tty, so it
+# dies with `could not read Username for 'https://github.com': No such device
+# or address` — an error about a missing TTY that says nothing about the real
+# cause, which is that the box has no GitHub credential at all.
+#
+# The box authenticates with a READ-ONLY deploy key (generated ON the host, so
+# the private half never travels) registered at
+# repos/bshuaibu1/float-near/keys with read_only=true. Read-only matters: a
+# deploy key with write access turns a compromised web box into repository
+# write access.
+#
+# Verified from wattson 2026-11-09: https failed, ssh cloned.
+REPO="${REPO:-git@github.com:bshuaibu1/float-near.git}"
 BRANCH="${BRANCH:-main}"
 SERVICE_USER="${SERVICE_USER:-$(id -un)}"
 EMAIL="${EMAIL:-}"
@@ -165,6 +178,20 @@ if [ -d "$ROOT/.git" ]; then
   git -C "$ROOT" fetch --quiet origin "$BRANCH"
   git -C "$ROOT" reset --hard --quiet "origin/$BRANCH"
 else
+  # CHECK ACCESS BEFORE CREATING ANYTHING. A failed clone after mkdir leaves an
+  # empty $ROOT that the next run treats as "not a git checkout" and retries
+  # into, and the git error itself names a missing TTY rather than a missing
+  # credential.
+  case "$REPO" in
+    git@*|ssh://*)
+      ssh -o StrictHostKeyChecking=no -o BatchMode=yes -T git@github.com 2>&1         | grep -q "successfully authenticated"         || die "this box cannot authenticate to GitHub, so the private repo
+  cannot be cloned. Generate a key here and register it READ-ONLY:
+    ssh-keygen -t ed25519 -N '' -f ~/.ssh/github_deploy
+    printf 'Host github.com\n  IdentityFile ~/.ssh/github_deploy\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+  then add ~/.ssh/github_deploy.pub at
+    https://github.com/bshuaibu1/float-near/settings/keys  (leave write access OFF)"
+      ;;
+  esac
   say "cloning into $ROOT"
   sudo mkdir -p "$ROOT"
   sudo chown "$SERVICE_USER:$SERVICE_USER" "$ROOT"
