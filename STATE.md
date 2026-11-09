@@ -106,7 +106,7 @@ so drift fails two suites.
 | adapter | port 8787, quote-signer key present (Intents rail open) |
 | adapter config | `scripts/restart-adapter.ps1` **hardcodes** the env. `.float/adapter.env` is NOT read by the local stack and still names the dead mainnet `float.test015.near` — edit the script, not the env file |
 | fixture tree | `root(0) -> agent(1), marketing(2)` — an agent gets its OWN node since 2026-11-08 |
-| old fixture | `work12-testnet-fleet.fac…` is **drained** (0 USDC) — its 42.25 was migrated to the new unlabelled one. Still holds ~3.3 NEAR; tear down with `float-exit` to recover |
+| old fixture | **TORN DOWN 2026-11-09.** `work12-testnet-fleet.fac…` is GONE, verified on chain. **+3.466807 landed** on `work12.testnet` (0.615163 -> 4.081970), reconciled to **0.000946** of teardown gas against a 3.467753 prediction. Six-step sequence now proven **4x**, this time end-to-end by script with `EXPECT_TOKENS=0` guarding the delete |
 | fixture history | 3 settled + **1 refusal `PARENT_PER_TX_LIMIT`** (`seed--blocked`) — the HIERARCHY differentiator, not a plain per-tx cap. Scan coverage 276892844–276893243, 0 holes |
 | stranded on testnet | `work12-testnet.fac.floatv4.testnet` holds **3.370330** with **zero access keys** — unrecoverable, the testnet twin of `r1.float.test015.near`. Predates the factory line that installs the owner's key. `float-exit` refuses it correctly rather than shrinking it |
 | demo blocker | **RESOLVED 2026-11-09.** Was: the seeder could only build `<owner>-fleet.<factory>` while the dashboard only derives `<owner>.<factory>`. Verified end to end that `?owner=flatdata6673.testnet` returns the right vault and 42.250000, with the refusal first in the activity feed |
@@ -204,7 +204,7 @@ so drift fails two suites.
    `~/.near-credentials/mainnet/usefloat.near.json`. That account will own Float's entire
    mainnet namespace (every vault is its sub-account), and it has exactly ONE full-access
    key. Losing that file loses the namespace permanently.
-10. Inert Solana pages still in the dashboard (`app/auth/callback`, `app/link`).
+10. ~~Inert Solana pages in the dashboard.~~ **DONE** — `app/auth`, `app/link` and `app/setup` are deleted, no `@solana`/wallet-adapter package remains, and every surviving mention is a COMMENT recording what was removed. Verified 2026-11-09.
 
 ## Next 3 steps
 
