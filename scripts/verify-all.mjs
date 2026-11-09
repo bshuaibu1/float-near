@@ -182,6 +182,26 @@ const steps = [
   },
   {
     /**
+     * A workspace package must depend on its SIBLING, not on a stranger from
+     * the registry.
+     *
+     * `@floatonnear/float-adapter` asked for `"@floatonnear/mcp": "^0.3.0"`
+     * while the sibling was 0.5.0. For a 0.x version caret pins the MINOR, so
+     * 0.5.0 did not satisfy it and npm silently installed the PUBLISHED 0.3.0
+     * into a nested node_modules — a different build, missing `accountExists`,
+     * `planAddRole` and `planWithdraw`.
+     *
+     * It only fails on a CLEAN install, so every existing machine kept
+     * building and proved nothing. It surfaced on the first real VPS deploy.
+     */
+    name: "workspace deps",
+    cmd: "node scripts/check-workspace-deps.mjs",
+    cwd: ".",
+    mustMatch: /every sibling range satisfied/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
+    /**
      * The plugin is how a user installs this without copying
      * `claude mcp add float-near -- npx -y @floatonnear/mcp` correctly: its
      * manifest declares the server, so installing the plugin starts it.
