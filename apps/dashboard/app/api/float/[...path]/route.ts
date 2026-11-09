@@ -24,6 +24,7 @@
  */
 import { NextRequest } from "next/server";
 import { proxyGate } from "@/lib/proxy-gate";
+import { networkForOwner } from "@/lib/network-for-owner";
 
 /**
  * Where the adapter actually listens. NOT `NEXT_PUBLIC_` — this name is
@@ -31,6 +32,40 @@ import { proxyGate } from "@/lib/proxy-gate";
  * the browser bundle and would put the adapter's address back in the client.
  */
 const ADAPTER = process.env.FLOAT_ADAPTER_URL ?? "http://127.0.0.1:8787";
+/**
+ * The MAINNET adapter, if this deployment has one.
+ *
+ * A NEAR account id carries its network in its suffix, so the wallet a
+ * visitor connects decides which chain they are looking at — and there is no
+ * other possible answer, since a mainnet wallet has no testnet vault.
+ *
+ * ABSENT MEANS REFUSE, NOT FALL BACK. Routing a `.near` wallet to the testnet
+ * adapter would report "you have no vault" about a vault that exists on the
+ * other chain. That is exactly what MCP 0.6.0 did — it asked testnet about
+ * `usefloat.near` and told users a verified account did not exist. The same
+ * mistake one layer up is not better for being familiar.
+ */
+const ADAPTER_MAINNET = process.env.FLOAT_ADAPTER_URL_MAINNET;
+
+function adapterFor(owner: string | null): { url: string } | { error: string; detail: string } {
+  const net = networkForOwner(owner);
+  if (net === "mainnet") {
+    if (!ADAPTER_MAINNET) {
+      return {
+        error: "NO_MAINNET_ADAPTER",
+        detail:
+          "This dashboard is not configured for mainnet, so it cannot show a mainnet " +
+          "wallet's vault. It will not fall back to testnet — that would report an " +
+          "empty vault for an account whose vault is on the other chain. Set " +
+          "FLOAT_ADAPTER_URL_MAINNET on the dashboard server.",
+      };
+    }
+    return { url: ADAPTER_MAINNET };
+  }
+  // testnet, or an id we cannot place (implicit/malformed). The latter reaches
+  // the adapter and is refused there by the same vault-id rules as before.
+  return { url: ADAPTER };
+}
 const TOKEN = process.env.FLOAT_API_TOKEN;
 
 /**
@@ -68,11 +103,11 @@ type Resolved =
 
 const vaultCache = new Map<string, { vault: string | null; exists: boolean }>();
 
-async function resolveVaultFor(owner: string): Promise<Resolved> {
+async function resolveVaultFor(owner: string, adapterUrl: string): Promise<Resolved> {
   const hit = vaultCache.get(owner);
   if (hit) return { kind: "ok", ...hit };
   try {
-    const r = await fetch(new URL(`/v1/resolve?owner=${encodeURIComponent(owner)}`, ADAPTER), {
+    const r = await fetch(new URL(`/v1/resolve?owner=${encodeURIComponent(owner)}`, adapterUrl), {
       cache: "no-store",
     });
     /**
@@ -117,7 +152,14 @@ async function forward(req: NextRequest, path: string[]) {
   // segments arriving here are `["v1", "dashboard"]` and the `/v1` must NOT be
   // re-added — that produced `/v1/v1/dashboard`, which the adapter answers
   // with a 404 that looks like a missing endpoint rather than a routing bug.
-  const target = new URL(`/${path.join("/")}`, ADAPTER);
+  // WHICH ADAPTER depends on the wallet's network, decided before the URL is
+  // built so a mainnet wallet never gets pointed at a testnet endpoint.
+  const ownerParam = req.nextUrl.searchParams.get("owner");
+  const chosen = adapterFor(ownerParam);
+  if ("error" in chosen) {
+    return Response.json({ error: chosen.error, owner: ownerParam, detail: chosen.detail }, { status: 503 });
+  }
+  const target = new URL(`/${path.join("/")}`, chosen.url);
   // Query strings carry `owner`, `day`, pagination — losing them turns a
   // scoped read into a different read that still returns 200.
   target.search = req.nextUrl.search;
@@ -161,7 +203,7 @@ async function forward(req: NextRequest, path: string[]) {
   if (gate.mayResolveVault && !target.searchParams.get("vault")) {
     const owner = target.searchParams.get("owner")?.trim();
     if (owner) {
-      const resolved = await resolveVaultFor(owner);
+      const resolved = await resolveVaultFor(owner, chosen.url);
       if (resolved.kind === "unavailable") {
         // Pass the uncertainty through rather than resolving it to a fact.
         return Response.json(

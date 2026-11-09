@@ -112,6 +112,26 @@ FACTORY="${FACTORY:-fac.floatv4.testnet}"
 NETWORK="${NETWORK:-testnet}"
 VAULT_RPC_URL="${VAULT_RPC_URL:-https://test.rpc.fastnear.com}"
 
+# ---- the MAINNET adapter, optional and gated on a vault existing -----------
+#
+# The dashboard routes by the connected wallet's SUFFIX: a `.near` wallet is
+# mainnet, a `.testnet` wallet is testnet. With no mainnet adapter it answers
+# 503 NO_MAINNET_ADAPTER rather than falling back — routing a mainnet wallet to
+# a testnet endpoint would report "you have no vault" about a vault on the
+# other chain, which is exactly what MCP 0.6.0 did.
+#
+# MAINNET_VAULT IS REQUIRED TO ENABLE IT, and cannot be defaulted: the adapter
+# refuses to start without NEAR_VAULT_CONTRACT, and inventing one would point
+# the default read at an account nobody verified. So until a real mainnet vault
+# exists there is deliberately no mainnet adapter, and the dashboard says so.
+MAINNET_VAULT="${MAINNET_VAULT:-}"
+MAINNET_FACTORY="${MAINNET_FACTORY:-usefloat.near}"
+# Circle-native USDC on mainnet, 6dp. Verified via ft_metadata 2026-11-09.
+MAINNET_TOKEN="${MAINNET_TOKEN:-17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1}"
+MAINNET_RPC_URL="${MAINNET_RPC_URL:-https://free.rpc.fastnear.com}"
+MAINNET_ADAPTER_SERVICE="${MAINNET_ADAPTER_SERVICE:-float-near-adapter-mainnet}"
+MAINNET_ADAPTER_PORT="${MAINNET_ADAPTER_PORT:-8788}"
+
 die() { echo "FATAL: $*" >&2; exit 1; }
 say() { echo "==> $*"; }
 
@@ -401,6 +421,58 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT
 
+  # ---- the MAINNET adapter, only when a mainnet vault was named ------------
+  if [ -n "$MAINNET_VAULT" ]; then
+    say "writing systemd unit $MAINNET_ADAPTER_SERVICE (mainnet, read-only)"
+    sudo tee "/etc/systemd/system/$MAINNET_ADAPTER_SERVICE.service" >/dev/null <<UNIT
+[Unit]
+Description=Float adapter MAINNET (read-only: no agent key, no API token)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+WorkingDirectory=$ROOT
+Environment=HOST=127.0.0.1
+Environment=PORT=$MAINNET_ADAPTER_PORT
+Environment=NEAR_VAULT_NETWORK=mainnet
+Environment=NEAR_VAULT_RPC_URL=$MAINNET_RPC_URL
+Environment=NEAR_VAULT_CONTRACT=$MAINNET_VAULT
+Environment=NEAR_VAULT_FACTORY=$MAINNET_FACTORY
+Environment=NEAR_VAULT_TOKEN=$MAINNET_TOKEN
+Environment=NEAR_VAULT_TOKEN_DECIMALS=6
+Environment=BLOCKED_FOLLOW=0
+Environment=BLOCKED_LOG=$ROOT/.demo/blocked-log.mainnet.json
+Environment=RELAY_LEDGER=$ROOT/.demo/relay-ledger-mainnet.json
+#
+# SAME EMPTINESS AS THE TESTNET ADAPTER, and it matters more here because the
+# money is real: no FLOAT_API_TOKEN, no NEAR_VAULT_AGENT_KEY. Reads only.
+#
+ExecStart=$(command -v node) $ROOT/packages/float-adapter/dist/server.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable --quiet "$MAINNET_ADAPTER_SERVICE"
+    sudo systemctl restart "$MAINNET_ADAPTER_SERVICE"
+    for _ in $(seq 1 20); do
+      curl -sf -o /dev/null "http://127.0.0.1:$MAINNET_ADAPTER_PORT/healthz" && break
+      sleep 2
+    done
+    curl -sf -o /dev/null "http://127.0.0.1:$MAINNET_ADAPTER_PORT/healthz"       || die "$MAINNET_ADAPTER_SERVICE did not come up. sudo journalctl -u $MAINNET_ADAPTER_SERVICE -n 50 --no-pager"
+    say "$MAINNET_ADAPTER_SERVICE on 127.0.0.1:$MAINNET_ADAPTER_PORT (vault $MAINNET_VAULT)"
+  else
+    say "no MAINNET_VAULT given - mainnet adapter NOT deployed; the dashboard will answer 503 NO_MAINNET_ADAPTER for .near wallets"
+    sudo systemctl disable --quiet --now "$MAINNET_ADAPTER_SERVICE" 2>/dev/null || true
+  fi
+
+
   say "writing systemd unit $DASH_SERVICE"
   sudo tee "/etc/systemd/system/$DASH_SERVICE.service" >/dev/null <<UNIT
 [Unit]
@@ -417,6 +489,9 @@ Environment=NODE_ENV=production
 # Server-only, NOT NEXT_PUBLIC_: a NEXT_PUBLIC_ name is inlined into the
 # browser bundle and would publish the adapter's address to every visitor.
 Environment=FLOAT_ADAPTER_URL=http://127.0.0.1:$ADAPTER_PORT
+# Present only when a mainnet vault exists. Absent means the dashboard REFUSES
+# a .near wallet rather than showing it testnet data.
+${MAINNET_VAULT:+Environment=FLOAT_ADAPTER_URL_MAINNET=http://127.0.0.1:$MAINNET_ADAPTER_PORT}
 Environment=NEXT_PUBLIC_SIGNING_PAGE_URL=https://$DOMAIN/
 #
 # FLOAT_API_TOKEN IS DELIBERATELY ABSENT. The proxy attaches it to any
