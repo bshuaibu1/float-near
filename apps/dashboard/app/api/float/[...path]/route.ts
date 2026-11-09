@@ -23,6 +23,7 @@
  * the contract between dashboard and adapter to drift.
  */
 import { NextRequest } from "next/server";
+import { proxyGate } from "@/lib/proxy-gate";
 
 /**
  * Where the adapter actually listens. NOT `NEXT_PUBLIC_` — this name is
@@ -33,14 +34,15 @@ const ADAPTER = process.env.FLOAT_ADAPTER_URL ?? "http://127.0.0.1:8787";
 const TOKEN = process.env.FLOAT_API_TOKEN;
 
 /**
- * Methods that change state, and therefore need the token.
+ * WHICH ROUTES NEED THE TOKEN LIVES IN `lib/proxy-gate.ts`, not here.
  *
- * The adapter answers 503 on mutating routes when no token is configured —
- * deliberately and silently. Mirroring the distinction here means a missing
- * token produces one clear message from the layer the user can actually see,
- * rather than a 503 they have to go and interpret.
+ * It used to be a method set in this file, and that is how the adapter's
+ * per-ROUTE gate came to be bypassed: `/v1/owner-plan` signs nothing and was
+ * opened there, while this layer still refused every non-GET and never
+ * forwarded it. Two layers, one guard, one of them updated. The decision is
+ * now a single tested function both the token and the vault-resolution
+ * branches below read from.
  */
-const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 /**
  * Which vault an owner's reads should go to, resolved ONCE per owner.
@@ -111,10 +113,23 @@ async function forward(req: NextRequest, path: string[]) {
    * An explicit `?vault=` wins — that is how someone reaches a LABELLED vault,
    * which derivation alone cannot find.
    */
-  const RESOLVABLE_POST = new Set(["v1/owner-plan"]);
-  const mayResolve =
-    !MUTATING.has(req.method) || RESOLVABLE_POST.has(path.join("/"));
-  if (mayResolve && !target.searchParams.get("vault")) {
+  const gate = proxyGate({
+    method: req.method,
+    path: path.join("/"),
+    hasToken: Boolean(TOKEN),
+  });
+
+  // REFUSE BEFORE RESOLVING. Asking the factory to derive a vault for a
+  // request that is about to be rejected is a wasted round trip, and worse it
+  // would populate the cache on behalf of a caller who was never served.
+  if (gate.kind === "refuse") {
+    return Response.json(
+      { error: gate.error, detail: gate.detail },
+      { status: gate.status },
+    );
+  }
+
+  if (gate.mayResolveVault && !target.searchParams.get("vault")) {
     const owner = target.searchParams.get("owner")?.trim();
     if (owner) {
       const resolved = await resolveVaultFor(owner);
@@ -147,20 +162,9 @@ async function forward(req: NextRequest, path: string[]) {
   const contentType = req.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
 
-  if (MUTATING.has(req.method)) {
-    if (!TOKEN) {
-      return Response.json(
-        {
-          error: "FLOAT_API_TOKEN is not set on the dashboard server",
-          detail:
-            "Mutating routes are disabled until it is. Set it in the dashboard's " +
-            "environment — not NEXT_PUBLIC_, which would ship it to the browser.",
-        },
-        { status: 503 },
-      );
-    }
-    headers.set("authorization", `Bearer ${TOKEN}`);
-  }
+  // Decided above by the one guard. `TOKEN` is non-empty whenever
+  // `attachToken` is true, because that is the only branch that sets it.
+  if (gate.attachToken) headers.set("authorization", `Bearer ${TOKEN}`);
 
   let res: Response;
   try {
