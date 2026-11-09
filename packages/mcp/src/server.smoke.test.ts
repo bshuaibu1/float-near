@@ -140,6 +140,7 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_create",
         "vault_add_role",
         "vault_roles",
+        "vault_gas",
       ].sort(),
     );
   });
@@ -162,6 +163,18 @@ describe("the MCP server starts and registers its tools", () => {
     // read nor a vault_plan_* fails here until someone decides, deliberately,
     // which side of the trust boundary it belongs on.
     const READS = new Set([
+      /**
+       * Reads gas-key balances and QUOTES what a top-up would cost or buy. It
+       * signs nothing and holds no key.
+       *
+       * It cannot be a plan tool either, and that is the interesting part: a
+       * top-up is `transferToGasKey`, an action on the VAULT account, so it
+       * needs a full-access key OF the vault — and wallets ignore `signerId`,
+       * signing as the connected account while reporting success. So there is
+       * no payload a user could approve in a wallet. It hands over a CLI
+       * command instead, exactly as `vault_teardown_report` does.
+       */
+      "vault_gas",
       "vault_tree",
       "vault_budget",
       "vault_request",

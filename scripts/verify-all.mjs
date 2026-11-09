@@ -202,6 +202,26 @@ const steps = [
   },
   {
     /**
+     * The gas-key arithmetic exists TWICE, deliberately: create-float and mcp
+     * are siblings published separately, so importing across them would couple
+     * their release cycles — and a workspace range that silently resolved to a
+     * PUBLISHED sibling already cost this repo an afternoon.
+     *
+     * The cost of mirroring is drift, and drift here is not cosmetic: the MCP
+     * QUOTES a top-up and the CLI CHARGES for it, so divergence tells a user
+     * one number and bills another, with both halves looking right alone.
+     *
+     * Compared by COMPUTING with both copies, not by grepping for a literal —
+     * a regex can match a constant nothing uses.
+     */
+    name: "gas math mirror",
+    cmd: "node scripts/check-gas-math.mjs",
+    cwd: ".",
+    mustMatch: /mcp and create-float agree/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
+    /**
      * The plugin is how a user installs this without copying
      * `claude mcp add float-near -- npx -y @floatonnear/mcp` correctly: its
      * manifest declares the server, so installing the plugin starts it.

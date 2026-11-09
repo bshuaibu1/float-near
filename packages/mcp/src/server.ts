@@ -46,6 +46,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { topUpFor, paymentsAfterTopUp } from "./gas-math.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
@@ -857,6 +858,119 @@ server.tool(
     }
 
     return renderPlan(planWithdraw(vault, tok, base, receiverId, cfg.decimals));
+  },
+);
+
+/**
+ * WHY A QUOTE AND NOT A PLAN, which every other owner action here is.
+ *
+ * The rest of `vault_plan_*` returns an UNSIGNED payload the user approves in
+ * their own wallet. A top-up cannot work that way: `transferToGasKey` is an
+ * action on the VAULT account, so it needs a full-access key OF the vault —
+ * and wallets IGNORE `signerId`, silently signing as the connected account and
+ * returning SUCCESS while doing the wrong thing. Measured 2026-11-07 across
+ * Meteor, Intear and the CLI connector alike.
+ *
+ * So this takes the shape `vault_teardown_report` already uses: read the
+ * chain, do the arithmetic, hand over the exact command. The half an agent CAN
+ * serve is the part a human cannot do in their head — which agent is low, what
+ * a given amount buys, what a given payment count costs.
+ */
+server.tool(
+  "vault_gas",
+  "Read-only. How much gas each agent has left, and what topping one up would cost or buy. Needs no key and signs nothing. Use for 'is my agent about to run out?' and 'top up the marketing agent' — it returns the exact command, because a top-up must be signed BY THE VAULT and a browser wallet cannot do that.",
+  {
+    agent: z
+      .string()
+      .optional()
+      .describe("a gas key's public key, or a node label like 'marketing'. Omit to list every agent."),
+    payments: z.number().int().positive().optional().describe("quote the cost of this many MORE payments"),
+    amountNear: z.string().optional().describe("or quote how many payments this much NEAR would buy"),
+    tgas: z.number().int().optional().describe("gas per call (default 60, floor 50)"),
+  },
+  async ({ agent, payments, amountNear, tgas }) => {
+    const vault = requireVault();
+    const TG = tgas ?? 60;
+    const keyList = await viewAccessKeys(cfg.rpcUrl, vault);
+    const tree = await viewFunction<Array<{ id: number; label: string }>>(
+      cfg.rpcUrl,
+      vault,
+      "get_tree",
+      {},
+    ).catch(() => [] as Array<{ id: number; label: string }>);
+
+    // KEY -> NODE -> LABEL, so "top up marketing" can find the right key. The
+    // vault identifies an agent BY ITS PUBLIC KEY (`pubkey_to_node`), which is
+    // why each agent has its own: one shared key would be one node, and the
+    // per-agent budgets would collapse into a single shared one.
+    const rows = [];
+    for (const k of keyList) {
+      const gk = (k.access_key?.permission as { GasKeyFunctionCall?: { balance: string } })
+        ?.GasKeyFunctionCall;
+      if (!gk) continue;
+      const node = await viewFunction<number | null>(cfg.rpcUrl, vault, "get_virtual_agent_node", {
+        public_key: k.public_key,
+      }).catch(() => null);
+      rows.push({
+        publicKey: k.public_key,
+        nodeId: node,
+        label: tree.find((t) => t.id === node)?.label ?? (node === 0 ? "root" : null),
+        balanceNear: fromBaseUnits(BigInt(gk.balance), 24),
+        paymentsLeft: paymentsAfterTopUp({ balance: BigInt(gk.balance), tgas: TG, amount: 0n }),
+      });
+    }
+
+    if (rows.length === 0) {
+      return json({
+        vault,
+        agents: [],
+        note: "No gas keys on this vault, so no agent can transact. Add one with: npx @floatonnear/float-agent",
+      });
+    }
+
+    const picked = agent ? rows.find((r) => r.publicKey === agent || r.label === agent) : undefined;
+    if (agent && !picked) {
+      // NOT a silent fallback to the first agent. Quoting against the wrong
+      // key prices a top-up for an agent the user did not name.
+      return json({
+        vault,
+        error: "NO_SUCH_AGENT",
+        asked: agent,
+        agents: rows,
+        note: "No gas key matches that public key or node label.",
+      });
+    }
+    if (!picked) return json({ vault, tgas: TG, agents: rows });
+
+    const bal = BigInt(
+      (
+        keyList.find((k) => k.public_key === picked.publicKey)!.access_key
+          .permission as { GasKeyFunctionCall: { balance: string } }
+      ).GasKeyFunctionCall.balance,
+    );
+    const add = amountNear
+      ? toBaseUnits(amountNear, 24)
+      : topUpFor({ balance: bal, tgas: TG, payments: payments ?? 50 });
+    const after = paymentsAfterTopUp({ balance: bal, tgas: TG, amount: add });
+
+    return json({
+      vault,
+      agent: picked,
+      quote: {
+        addNear: fromBaseUnits(add, 24),
+        paymentsBefore: picked.paymentsLeft,
+        paymentsAfter: after,
+        gained: after - picked.paymentsLeft,
+      },
+      command:
+        `npx @floatonnear/float-topup --vault ${vault} --owner <YOUR-OWNER-ACCOUNT> ` +
+        `--agent ${picked.publicKey} ` +
+        `${amountNear ? `--amount ${amountNear}` : `--payments ${payments ?? 50}`} ` +
+        `--network ${cfg.network}`,
+      note:
+        "A top-up is signed BY THE VAULT, so a browser wallet cannot do it — wallets ignore " +
+        "signerId and sign as the connected account. Run the command with the owner's key on disk.",
+    });
   },
 );
 
