@@ -42,6 +42,30 @@ const TRANSPORT = [
   "timeout",
   "network",
   "endpoint is deprecated",
+  /**
+   * THE ONE THAT ACTUALLY BIT US, twice, and the second time in this very
+   * file. fastnear answers a throttle with HTTP **200** and a JSON error
+   * body, so `r.ok` is true and nothing downstream looks like a transport
+   * failure. `accountExists` correctly refuses to guess and throws
+   *
+   *   could not determine whether X exists: Rate limits exceeded. For higher
+   *   rate limits get a subscription at https://fastnear.com
+   *
+   * which matched NONE of the patterns above — no status code, no "fetch
+   * failed" — so it was classified as an ANSWER and became `exists: false`.
+   * The live dashboard told the owner of a vault holding 42.25 USDC that they
+   * had none, and offered to create one.
+   */
+  "rate limit",
+  "rate limits exceeded",
+  "too many requests",
+  "429",
+  /**
+   * The phrase `accountExists` uses when it cannot tell. It only throws when
+   * it genuinely does not know — a real absence returns false without
+   * throwing — so this wording is always uncertainty, never a verdict.
+   */
+  "could not determine whether",
 ];
 
 /**
