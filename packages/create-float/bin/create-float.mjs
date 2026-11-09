@@ -978,7 +978,12 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
         `# agents needs one adapter per agent, or the agents sign for`,
         `# themselves through the MCP server.`,
         first ? `NEAR_VAULT_AGENT_ID=${first.agentId}` : `# NEAR_VAULT_AGENT_ID=`,
-        first ? `NEAR_VAULT_AGENT_KEY=${first.secret}` : `# NEAR_VAULT_AGENT_KEY=`,
+        // A PATH, NOT THE SECRET. The key already lives in the keyring; naming
+        // it twice puts a live private key in a file people `cat` to answer
+        // "which vault is this pointed at", and from there into scrollback and
+        // into the transcript of whatever agent is driving. That exposure is
+        // realised, not theoretical. A path is not a secret.
+        first ? `NEAR_VAULT_AGENT_KEY_FILE=.float/agent-keys.json` : `# NEAR_VAULT_AGENT_KEY_FILE=`,
         ``,
         `# Opens the cross-chain rail. This key binds a payee to a one-time`,
         `# deposit address, so whoever holds it can redirect any Intents`,
@@ -1028,7 +1033,16 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
         NEAR_VAULT_RPC_URL: RPC,
         NEAR_VAULT_TOKEN: token,
         NEAR_VAULT_TOKEN_DECIMALS: String(decimals),
-        ...(first ? { NEAR_VAULT_AGENT_ID: first.agentId, NEAR_VAULT_AGENT_KEY: first.secret } : {}),
+        // ABSOLUTE, and a PATH rather than the secret. `.mcp.json` is read by
+        // every agent in the project and is the file most likely to be pasted
+        // into a chat; it must not carry a key. Absolute because the MCP
+        // server's working directory is the client's, not this project's.
+        ...(first
+          ? {
+              NEAR_VAULT_AGENT_ID: first.agentId,
+              NEAR_VAULT_AGENT_KEY_FILE: resolve(".float", "agent-keys.json"),
+            }
+          : {}),
       },
     };
     const targets = mcpTargets({

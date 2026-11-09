@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { loadKeyring } from "../../float-adapter/src/keyring.js";
+import { readKeyFile } from "./key-file.js";
 import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "float-agent-key-"));
@@ -94,13 +95,41 @@ describe("generateAgentKey", () => {
   });
 
   /** The env form the MCP server reads must name the vault as the agent. */
-  it("writes an env file with the vault as NEAR_VAULT_AGENT_ID", () => {
+  it("writes an env file that POINTS AT the keyring and holds no key itself", () => {
+    /**
+     * This used to assert `NEAR_VAULT_AGENT_KEY=ed25519:` — it pinned the
+     * inline form, so the leak was a tested guarantee rather than an
+     * oversight. A `cat` of this file to check which vault was configured
+     * printed a live private key into scrollback and into the transcript of
+     * whatever agent was driving.
+     *
+     * The keyring beside it is the durable record and `readKeyFile` reads that
+     * shape, so naming the secret twice bought a second place to leak from and
+     * nothing else.
+     */
     const dir = tmp();
     const out = generateAgentKey({ vault: "v.fac.testnet", dir });
     expect(existsSync(out.envPath)).toBe(true);
     const env = readFileSync(out.envPath, "utf8");
     expect(env).toContain("NEAR_VAULT_AGENT_ID=v.fac.testnet");
-    expect(env).toMatch(/NEAR_VAULT_AGENT_KEY=ed25519:/);
+    expect(env).toContain(`NEAR_VAULT_AGENT_KEY_FILE=${out.keyringPath}`);
+
+    // THE POINT: no secret in this file, by any spelling.
+    expect(env).not.toMatch(/NEAR_VAULT_AGENT_KEY=/);
+    const secret = JSON.parse(readFileSync(out.keyringPath, "utf8"))[0].secret;
+    expect(secret).toMatch(/^ed25519:/);
+    expect(env).not.toContain(secret);
+  });
+
+  it("the key it points at is readable back through readKeyFile", () => {
+    // Reachability is a separate claim from correctness: writing a path that
+    // nothing can parse would pass every assertion above and fail at payment.
+    const out = generateAgentKey({ vault: "v.fac.testnet", dir: tmp() });
+    const back = readKeyFile(out.keyringPath);
+    expect(back.secret).toBe(
+      JSON.parse(readFileSync(out.keyringPath, "utf8"))[0].secret,
+    );
+    expect(back.accountId).toBe("v.fac.testnet");
   });
 
   /** Two calls must never produce the same key. */

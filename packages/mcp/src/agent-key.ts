@@ -155,10 +155,15 @@ export function generateAgentKey(opts: {
   writeFileSync(
     envPath,
     [
-      `# Written by vault_create. Contains a PRIVATE KEY — do not commit or paste.`,
+      `# Written by vault_create. Points at the keyring; holds NO key itself.`,
       `# The agent can only call request_payment on this vault, inside its budget.`,
       `NEAR_VAULT_AGENT_ID=${opts.vault}`,
-      `NEAR_VAULT_AGENT_KEY=${secret}`,
+      // A PATH, NOT THE SECRET. This file used to carry the key inline, so a
+      // `cat` to check which vault was configured printed a live private key
+      // into scrollback and into the driving agent's transcript. The keyring
+      // beside it is the durable record and `readKeyFile` now reads that shape,
+      // so naming it twice bought nothing except a second place to leak from.
+      `NEAR_VAULT_AGENT_KEY_FILE=${keyringPath}`,
       ``,
     ].join("\n"),
   );

@@ -166,7 +166,75 @@ function fromJson(text: string, path: string): KeyFileContents {
     );
   }
 
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+  /**
+   * THE FLEET KEYRING IS A LEGITIMATE SHAPE, and accepting it is what lets the
+   * provisioning path stop writing a second copy of the secret.
+   *
+   * `.float/agent-keys.json` is an ARRAY of
+   * `{kind, vault, node, publicKey, privateKey}` — the durable record of every
+   * agent, written by create-float and by vault_create. Before this, pointing
+   * NEAR_VAULT_AGENT_KEY_FILE at it was refused as "the wrong shape", so the
+   * only way to configure an agent was the INLINE form: the secret pasted into
+   * .mcp.json and .float/adapter.env, where reading a config to answer "which
+   * vault is this?" prints a live private key into scrollback and into the
+   * driving agent's transcript. That exposure is realised, not theoretical.
+   *
+   * The alternative was writing a THIRD file in the credentials shape, which
+   * would duplicate the secret into one more place — more exposure, not less.
+   *
+   * AMBIGUITY IS REFUSED, NOT GUESSED. A keyring with several agents has no
+   * single answer to "which key", and picking the first would sign as an agent
+   * the operator did not choose — from the wrong node, against the wrong
+   * budget. They are told to name one with NEAR_VAULT_AGENT_ID instead.
+   */
+  if (Array.isArray(parsed)) {
+    /**
+     * TWO FIELD SPELLINGS EXIST, and assuming one cost a round of this change.
+     *
+     * `loadKeyring` documents the canonical entry as
+     * `{ nodeId, agentId, secret }` and `generateAgentKey` writes exactly
+     * that. But a keyring on this machine, written by an older path, uses
+     * `{ kind, vault, node, publicKey, privateKey }`. Both are real files an
+     * operator may point this at, so both are read — and a refusal names the
+     * keys it DID find, because "wrong shape" without the field names sends
+     * someone to re-read a file they already have open.
+     */
+    const entries = parsed.filter(
+      (e): e is Record<string, unknown> => e !== null && typeof e === "object",
+    );
+    const secretOf = (e: Record<string, unknown>): string =>
+      typeof e.secret === "string" && e.secret
+        ? e.secret
+        : typeof e.privateKey === "string" && e.privateKey
+          ? e.privateKey
+          : "";
+    const idOf = (e: Record<string, unknown>): string | undefined =>
+      typeof e.agentId === "string" ? e.agentId : typeof e.vault === "string" ? e.vault : undefined;
+
+    const withKeys = entries.filter((e) => secretOf(e) !== "");
+    if (withKeys.length === 0) {
+      const found = [...new Set(entries.flatMap((e) => Object.keys(e)))].join(", ") || "none";
+      throw new KeyFileError(
+        `key file ${path} is a JSON array but no entry carries a key. Expected a fleet ` +
+          `keyring entry with \`secret\` (or \`privateKey\`); the fields present were: ${found}.`,
+      );
+    }
+    if (withKeys.length > 1) {
+      // COUNT AND LABELS ONLY, never a key. The labels are the whole fix.
+      const names = withKeys
+        .map((e) => `${idOf(e) ?? "?"}#${String(e.nodeId ?? e.node ?? "?")}`)
+        .join(", ");
+      throw new KeyFileError(
+        `key file ${path} holds ${withKeys.length} agent keys (${names}), so which one to ` +
+          `sign as is ambiguous. Set NEAR_VAULT_AGENT_ID to name one, or point ` +
+          `NEAR_VAULT_AGENT_KEY_FILE at a single-key file.`,
+      );
+    }
+    const only = withKeys[0]!;
+    return { secret: secretOf(only).trim(), accountId: idOf(only) };
+  }
+
+  if (parsed === null || typeof parsed !== "object") {
     throw new KeyFileError(
       `key file ${path} is JSON but not an object. Expected the ~/.near-credentials ` +
         `shape ${CRED_SHAPE}.`,
