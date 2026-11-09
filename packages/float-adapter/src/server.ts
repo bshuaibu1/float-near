@@ -32,6 +32,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { toBaseUnits, fromBaseUnits } from "@floatonnear/mcp/amounts";
 import { accountExists, newRequestId, viewAccessKeys, viewFunction } from "@floatonnear/mcp";
+import { isUnavailable } from "./unavailable.js";
 import { buildRoute, sendRequestPayment, type RouteArg } from "@floatonnear/mcp/sign";
 import { getQuote, signBinding, toBase64 } from "@floatonnear/mcp/quote";
 import { toCliCommand } from "@floatonnear/mcp/payloads";
@@ -448,12 +449,38 @@ const server = createServer(async (req, res) => {
           reason: "NEAR_VAULT_FACTORY is not set on this adapter, so it cannot derive a vault id.",
         });
       }
-      const derived = await viewFunction<string | null>(
-        env.rpcUrl,
-        env.factory,
-        "vault_id_for",
-        { owner },
-      ).catch(() => null);
+      /**
+       * COULD NOT ASK != THE ANSWER IS NO.
+       *
+       * This was `.catch(() => null)`, so a transient RPC failure was
+       * reported as "an implicit account cannot have a vault" with HTTP 200 —
+       * a confident false claim about the caller's account, which the
+       * dashboard proxy then cached for the life of the process. Measured
+       * 2026-11-09: six identical calls gave four answers and two nulls,
+       * because the background refusal-follower saturates the RPC budget.
+       *
+       * 503 is the honest status. It is also what stops the proxy caching it.
+       */
+      let derived: string | null;
+      try {
+        derived = await viewFunction<string | null>(
+          env.rpcUrl,
+          env.factory,
+          "vault_id_for",
+          { owner },
+        );
+      } catch (e) {
+        if (isUnavailable(e)) {
+          return send(503, {
+            error: "UPSTREAM_UNAVAILABLE",
+            owner,
+            detail:
+              "Could not reach the chain to derive this account's vault id, so " +
+              "whether it has one is UNKNOWN — not no. Retry shortly.",
+          });
+        }
+        throw e;
+      }
       if (!derived) {
         return send(200, {
           owner,
@@ -470,7 +497,29 @@ const server = createServer(async (req, res) => {
       //
       // A view call that throws is the account not existing; it is not an
       // adapter failure, so it must not surface as one.
-      const exists = await accountExists(env.rpcUrl, derived).catch(() => false);
+      //
+      // SAME RULE FOR `exists`, and this one was the demo-killer: a 429 made
+      // it `false`, so an owner with a populated vault was shown the
+      // create-one empty state and invited to create a vault that already
+      // exists. `exists` flickered false->true across one measured run.
+      let exists: boolean;
+      try {
+        exists = await accountExists(env.rpcUrl, derived);
+      } catch (e) {
+        if (isUnavailable(e)) {
+          return send(503, {
+            error: "UPSTREAM_UNAVAILABLE",
+            owner,
+            vault: derived,
+            detail:
+              `Derived ${derived}, but could not reach the chain to check whether ` +
+              "it exists. Whether you have a vault is UNKNOWN — not no. Retry shortly.",
+          });
+        }
+        // A view call that throws for a NON-transport reason is the account
+        // not existing, which is a real answer.
+        exists = false;
+      }
       return send(200, { owner, vault: derived, exists, factory: env.factory });
     }
 
