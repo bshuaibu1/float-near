@@ -21,6 +21,42 @@ import { randomUUID } from "node:crypto";
  */
 export const DEFAULT_RPC_URL = "https://test.rpc.fastnear.com";
 
+/**
+ * The RPC to use for a given NETWORK.
+ *
+ * WHY THIS EXISTS. `vault_create` takes a `network` argument, resolved the
+ * right factory for it, and then asked `cfg.rpcUrl` — a single value
+ * defaulting to testnet. So a user asking for a mainnet vault got:
+ *
+ *   account usefloat.near does not exist while viewing
+ *
+ * about an account that demonstrably does exist. The factory was right and
+ * the chain was wrong, which reads as "the factory is broken" rather than
+ * "you asked the wrong network". Shipped in 0.6.0 and found by driving the
+ * published package instead of reading its diff.
+ */
+export const RPC_BY_NETWORK: Record<string, string> = {
+  testnet: "https://test.rpc.fastnear.com",
+  mainnet: "https://free.rpc.fastnear.com",
+};
+
+/**
+ * Pick an RPC for `net`, honouring an operator override ONLY where it applies.
+ *
+ * An explicit NEAR_VAULT_RPC_URL is configured for ONE network — whichever the
+ * operator set NEAR_VAULT_NETWORK to. Applying it to the other network is the
+ * same bug in a new place: it would send a mainnet question to a testnet
+ * endpoint and report the answer as fact. So the override wins only when the
+ * requested network is the one it was configured for.
+ */
+export function rpcForNetwork(
+  net: string,
+  opts: { configuredNetwork?: string; override?: string } = {},
+): string {
+  if (opts.override && net === opts.configuredNetwork) return opts.override;
+  return RPC_BY_NETWORK[net] ?? DEFAULT_RPC_URL;
+}
+
 export function encodeArgs(args: unknown): string {
   // Explicit utf8: a memo is free text, goes on-chain, and a latin-1
   // truncation here would corrupt it silently.

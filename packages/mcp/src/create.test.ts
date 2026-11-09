@@ -6,6 +6,7 @@ import {
   FACTORY_BY_NETWORK,
   PAGE_HEADROOM_YOCTO,
 } from "./create.js";
+import { rpcForNetwork } from "./rpc.js";
 
 /**
  * The create plan is the ONE place this server talks to a user who does not
@@ -279,5 +280,42 @@ describe("buildCreatePlan without a known owner", () => {
     const p = buildCreatePlan(base);
     expect(p.vault).toBe("alice-near.float.near");
     expect(new URL(p.url).searchParams.get("owner")).toBe("alice.near");
+  });
+});
+
+describe("rpcForNetwork", () => {
+  /**
+   * 0.6.0 shipped with vault_create resolving the right FACTORY for the
+   * requested network and then asking the process's default RPC — testnet —
+   * about it. A user asking for a mainnet vault was told
+   * "account usefloat.near does not exist while viewing", about an account
+   * verified on chain minutes earlier. The factory was right; the chain was
+   * wrong. Found by driving the published package, not by reading the diff.
+   */
+  it("sends a mainnet question to a mainnet endpoint", () => {
+    expect(rpcForNetwork("mainnet")).toBe("https://free.rpc.fastnear.com");
+    expect(rpcForNetwork("testnet")).toBe("https://test.rpc.fastnear.com");
+  });
+
+  it("honours an operator override for the network it was configured for", () => {
+    expect(
+      rpcForNetwork("testnet", { configuredNetwork: "testnet", override: "https://my.rpc" }),
+    ).toBe("https://my.rpc");
+  });
+
+  it("IGNORES that override for the OTHER network", () => {
+    // The same bug in a new place: a testnet-configured endpoint answering a
+    // mainnet question would report "does not exist" as fact.
+    expect(
+      rpcForNetwork("mainnet", { configuredNetwork: "testnet", override: "https://my.rpc" }),
+    ).toBe("https://free.rpc.fastnear.com");
+  });
+
+  it("falls back rather than returning undefined for an unknown network", () => {
+    expect(rpcForNetwork("sandbox")).toBe("https://test.rpc.fastnear.com");
+  });
+
+  it("the two networks never share an endpoint", () => {
+    expect(rpcForNetwork("mainnet")).not.toBe(rpcForNetwork("testnet"));
   });
 });
