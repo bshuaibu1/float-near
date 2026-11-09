@@ -349,6 +349,26 @@ Environment=NEAR_VAULT_TOKEN_DECIMALS=$TOKEN_DECIMALS
 # rendered 3 settled payments and ZERO refusals. The blocked payment is the
 # single most valuable thing in the fixture, so losing it silently is the
 # worst available failure.
+# THE REFUSAL FOLLOWER IS OFF ON THIS BOX, and the number is measured rather
+# than assumed. With it on: 117 rate-limit lines in two minutes, /healthz
+# answering 500, and /v1/resolve degraded — on a host whose BARE RPC health is
+# 40/40. It scans every block from its cursor to the chain head, so a longer
+# interval only batches the same reads; the cost is the block rate, not the
+# tick rate.
+#
+# AN EARLIER CONCLUSION HERE WAS WRONG AND IS CORRECTED: a measurement taken
+# on a dev machine said the follower was innocent, but that machine's own IP
+# was throttled, which masked the effect. On a clean host the effect is plain.
+#
+# What is lost: refusals that happen AFTER deployment are not picked up, so
+# the activity page's coverage window stops advancing. That is acceptable here
+# and the banner already tells the truth about it — outside the scanned range
+# refusals are UNKNOWN, not absent. /v1/pay is disabled on this box, so no
+# refusal can originate from it either.
+#
+# To refresh after a live demo, re-scan on the box and restart:
+#   NEAR_VAULT_CONTRACT=<vault> node scripts/scan-blocked.mjs --from <block>
+Environment=BLOCKED_FOLLOW=${BLOCKED_FOLLOW:-0}
 Environment=BLOCKED_LOG=$ROOT/.demo/blocked-log.$(printf '%s' "$VAULT" | sed 's/[^a-zA-Z0-9._-]/_/g').json
 Environment=RELAY_LEDGER=$ROOT/.demo/relay-ledger.json
 #
