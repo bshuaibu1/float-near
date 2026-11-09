@@ -381,7 +381,6 @@ Wants=network-online.target
 Type=simple
 User=$SERVICE_USER
 WorkingDirectory=$ROOT/apps/dashboard
-Environment=HOSTNAME=127.0.0.1
 Environment=PORT=$DASH_PORT
 Environment=NODE_ENV=production
 # Server-only, NOT NEXT_PUBLIC_: a NEXT_PUBLIC_ name is inlined into the
@@ -393,7 +392,13 @@ Environment=NEXT_PUBLIC_SIGNING_PAGE_URL=https://$DOMAIN/
 # mutating request without authenticating the caller, so setting it here
 # would let anyone on the internet POST /api/float/v1/pay.
 #
-ExecStart=$(command -v npm) run start
+# `-H 127.0.0.1` ON THE COMMAND LINE, because `next start` IGNORES the
+# HOSTNAME environment variable and defaults to 0.0.0.0. This unit used to set
+# Environment=HOSTNAME=127.0.0.1 and the dashboard bound every interface
+# anyway — confirmed by `ss -ltnp` showing `*:3000` and by the deploy's own
+# negative assertion getting HTTP 200 from the PUBLIC ip. A config that looks
+# right and is silently ignored is worse than one that errors.
+ExecStart=$(command -v npm) run start -- -H 127.0.0.1 -p $DASH_PORT
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
@@ -561,7 +566,10 @@ esac
 # The services are now RUNNING on these ports, so this stopped being "is it
 # absent" and became "is it bound to loopback only". Reaching them on the
 # public IP would bypass nginx and TLS entirely.
-for p in "$ADAPTER_PORT" "$DASH_PORT"; do
+# $PORT INCLUDED, and its absence is exactly how the signing page shipped
+# bound to 0.0.0.0. The loop checked the adapter and the dashboard and simply
+# never asked about the page itself, so `*:8080` passed every run.
+for p in "$PORT" "$ADAPTER_PORT" "$DASH_PORT"; do
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$server_ip:$p/" || true)"
   case "$code" in
     000) echo "    ok    :$p is not reachable on the public IP (loopback only)";;

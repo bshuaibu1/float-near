@@ -29,6 +29,21 @@ const ROOT = resolve(HERE, "..");
  * This page is the newcomer, so this page moves.
  */
 const PORT = Number(process.env.PORT ?? 8080);
+/**
+ * LOOPBACK BY DEFAULT. Exposure is opted into, never inherited.
+ *
+ * `.listen(PORT)` with no host binds 0.0.0.0 AND [::] — every interface, v4
+ * and v6 — while this file's own startup banner prints `http://127.0.0.1:…`
+ * and reads as if it were bound locally. That is the EXACT bug
+ * packages/float-adapter/src/gate.ts documents having fixed for the adapter;
+ * it was never fixed here.
+ *
+ * Measured on the production box 2026-11-09: `ss -ltnp` showed `*:8080`, so
+ * the signing page — the page where a user APPROVES CREATING A VAULT — was
+ * reachable over plain HTTP on the public IP, bypassing nginx and TLS.
+ * nginx proxies in over loopback, so nothing needs the wider bind.
+ */
+const HOST = process.env.HOST?.trim() || "127.0.0.1";
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -107,7 +122,7 @@ createServer((req, res) => {
     "cache-control": "no-store",
   });
   res.end(body);
-}).listen(PORT, () => {
+}).listen(PORT, HOST, () => {
   const bytes = readFileSync(WASM).length;
   console.log(`\n  create page   http://127.0.0.1:${PORT}/`);
   console.log(`  contract      ${bytes} bytes (${(bytes / 1024).toFixed(0)} KB), served from`);
