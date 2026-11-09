@@ -98,13 +98,45 @@ export class UnknownActionError extends Error {
 
 export type OwnerPlanEnv = { vault: string; token: string; decimals: number };
 
+/**
+ * A node-scoped action must name its node.
+ *
+ * THE TYPE SAYS `nodeId: number` AND THAT PROVES NOTHING AT RUNTIME. The body
+ * arrives as JSON and is cast, so a request that simply omits the field type-
+ * checks all the way through. Measured live on 2026-11-09:
+ * `{"action":"freeze"}` returned HTTP 200 with `args: {"frozen": false}` and
+ * the summary "Unfreeze node undefined" — `JSON.stringify` drops an undefined
+ * value, so `node_id` vanished from the args and from the CLI string, and the
+ * user was handed a confident command for a node that does not exist.
+ *
+ * It reverts rather than doing damage: `freeze_node(node_id: NodeId, ..)` uses
+ * `NodeId = u32` with no `#[serde(default)]`, so near-sdk fails to deserialize
+ * instead of falling back to `ROOT_NODE = 0`. Wasted gas and a confusing
+ * failure, not a silently frozen root.
+ *
+ * `!== "number"`, NOT `!b.nodeId`. Root is node 0 and 0 is falsy, so the
+ * obvious guard would refuse the node most likely to be frozen or re-capped.
+ * `NaN` is excluded too, because `JSON.parse` cannot produce it but a hand-
+ * built caller can, and `node_id: NaN` serialises to `null`.
+ */
+function requireNode(b: { nodeId?: unknown; action: string }): number {
+  if (typeof b.nodeId !== "number" || !Number.isInteger(b.nodeId) || b.nodeId < 0) {
+    throw new Error(
+      `action '${b.action}' needs nodeId: a non-negative integer naming the node to change. ` +
+        `Root is nodeId 0. Omitting it would build a command with no node_id at all, ` +
+        `which the contract refuses after the owner has already signed it.`,
+    );
+  }
+  return b.nodeId;
+}
+
 export function planOwnerAction(b: OwnerPlanRequest, env: OwnerPlanEnv) {
   switch (b.action) {
     case "caps":
       // HUMAN units, with decimals — `planSetNodeCaps` scales them itself via
       // limitsToArgs. Calling toBaseUnits here too would scale twice and turn
       // a 100 USDC cap into 100 million USDC, which is not a cap at all.
-      return planSetNodeCaps(env.vault, b.nodeId, [
+      return planSetNodeCaps(env.vault, requireNode(b), [
         {
           token: env.token,
           dailyCap: b.dailyCap ?? "0",
@@ -113,14 +145,14 @@ export function planOwnerAction(b: OwnerPlanRequest, env: OwnerPlanEnv) {
         },
       ]);
     case "cooldown":
-      return planSetCooldown(env.vault, b.nodeId, b.cooldownSec ?? 0);
+      return planSetCooldown(env.vault, requireNode(b), b.cooldownSec ?? 0);
     case "recipients":
       // `?? null` is load-bearing: an absent list means INHERIT. Defaulting to
       // `[]` would panic `validate_recipients`, which demands "1..=32
       // recipients, or None to inherit".
-      return planSetRecipients(env.vault, b.nodeId, b.recipients ?? null);
+      return planSetRecipients(env.vault, requireNode(b), b.recipients ?? null);
     case "freeze":
-      return planFreezeNode(env.vault, b.nodeId, b.frozen ?? false);
+      return planFreezeNode(env.vault, requireNode(b), b.frozen ?? false);
     case "pause":
       // Vault-wide. Takes no nodeId, because it stops every payment at every
       // level rather than muting one agent.

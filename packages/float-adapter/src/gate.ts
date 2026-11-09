@@ -59,27 +59,57 @@ export function corsHeaders(
 export type AuthVerdict = { ok: true } | { ok: false; status: number; error: string };
 
 /**
- * Only mutating requests need the token.
+ * Mutating routes that sign NOTHING, and may therefore work without a token.
  *
- * GETs are read-only and the bind is loopback, so they are reachable only from
- * the machine itself. OPTIONS must pass or the browser never reaches the real
- * request and the dashboard breaks for a reason nobody can see.
+ * AN ALLOWLIST, AND THAT DIRECTION IS THE SAFETY ARGUMENT. Gating used to be
+ * by METHOD, so every non-GET needed the token — which cannot exist on a
+ * public box, because `apps/dashboard/app/api/float/[...path]/route.ts`
+ * attaches it to any mutating request WITHOUT authenticating the caller. A
+ * hosted dashboard with a token set is an open `/v1/pay` for the internet,
+ * bounded only by the vault's caps.
+ *
+ * `/v1/owner-plan` qualifies: it returns an UNSIGNED payload and holds no key.
+ * The owner approving it in their own wallet IS the authority, so a token adds
+ * nothing an attacker could not already do by building the payload themselves.
+ *
+ * A DENYLIST OF `/v1/pay` WOULD BE WRONG. The next money-moving route would be
+ * born public and nobody would notice until it was exploited. Named-open means
+ * a new route is born shut and someone has to argue it open in a visible diff.
+ */
+const SIGNS_NOTHING: ReadonlySet<string> = new Set(["/v1/owner-plan"]);
+
+/**
+ * Reads are open; mutating routes need the token unless they sign nothing.
+ *
+ * OPTIONS must pass or the browser never reaches the real request and the
+ * dashboard breaks for a reason nobody can see.
  *
  * A MISSING token is 503, not 401. They are different problems: 401 tells a
  * caller to go and find a credential, and here there is none to find — the
  * operator has not configured one. Conflating them sends people hunting for a
  * secret that does not exist.
+ *
+ * `path` is OPTIONAL and an absent one is GATED, never open. A caller that
+ * forgets to pass it gets the safe answer; the alternative defaults to
+ * exposure, which is how the `0.0.0.0` bind above happened.
  */
 export function authorize({
   method,
+  path,
   authHeader,
   token,
 }: {
   method: string;
+  path?: string | undefined;
   authHeader: string | undefined;
   token: string | undefined;
 }): AuthVerdict {
   if (method === "GET" || method === "OPTIONS" || method === "HEAD") return { ok: true };
+
+  // EXACT match only. A prefix or case variant must not inherit the exemption:
+  // `/v1/owner-plan/extra` is a different route and may not exist yet, and
+  // NEAR paths are not case-folded anywhere else in this server.
+  if (path !== undefined && SIGNS_NOTHING.has(path)) return { ok: true };
 
   if (!token) {
     return {

@@ -94,14 +94,27 @@ async function forward(req: NextRequest, path: string[]) {
   /**
    * TURN THE `owner` THE PAGE SENT INTO THE `vault` THE ADAPTER READS.
    *
-   * Only for GETs: a mutating route is either `/v1/pay`, which is pinned to
-   * the adapter's own vault and must never be redirected, or an owner-plan,
-   * whose payload already names what it acts on.
+   * GETs, plus the mutating routes that SIGN NOTHING — the same allowlist the
+   * adapter's own gate uses, for the same reason.
+   *
+   * `/v1/pay` IS NEVER REWRITTEN. It signs with the agent key the adapter
+   * holds, so it is pinned to that vault by definition; redirecting it would
+   * ask one vault's key to spend from another's.
+   *
+   * `/v1/owner-plan` IS, and the comment here used to claim it needed no
+   * rewrite because "the payload already names what it acts on". It did not:
+   * the handler built against the adapter's configured vault unconditionally,
+   * so a visitor asking to freeze their own node got a command naming the
+   * OPERATOR's vault. Fixed on both sides — the adapter now reads `?vault=`
+   * on that route, and this is what supplies it.
    *
    * An explicit `?vault=` wins — that is how someone reaches a LABELLED vault,
    * which derivation alone cannot find.
    */
-  if (!MUTATING.has(req.method) && !target.searchParams.get("vault")) {
+  const RESOLVABLE_POST = new Set(["v1/owner-plan"]);
+  const mayResolve =
+    !MUTATING.has(req.method) || RESOLVABLE_POST.has(path.join("/"));
+  if (mayResolve && !target.searchParams.get("vault")) {
     const owner = target.searchParams.get("owner")?.trim();
     if (owner) {
       const resolved = await resolveVaultFor(owner);
