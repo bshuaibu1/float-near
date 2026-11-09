@@ -41,7 +41,44 @@ import { Account, KeyPair, KeyPairSigner, JsonRpcProvider, baseEncode } from "ne
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PARENT = process.env.PARENT ?? "test015.near";
-const FACTORY = process.env.FACTORY ?? `fac.${PARENT}`;
+/**
+ * REQUIRED. There is no default, and that is the whole point.
+ *
+ * This defaulted to `fac.${PARENT}` — i.e. `fac.test015.near` — which is a
+ * name DECISIONS.md explicitly REJECTED on 2026-11-08: "a personal
+ * sub-account would tie the product's namespace to one human's account
+ * forever." A factory name is embedded in every user's vault address
+ * permanently, because a vault is a sub-account of the factory. Getting it
+ * wrong is not a config mistake you fix later; it is the product's namespace.
+ *
+ * A default here is uniquely dangerous because the wrong value does not
+ * FAIL — it succeeds, on mainnet, spending ~1.64 NEAR to create a working
+ * factory under the wrong name.
+ *
+ * The decided name is `usefloat.near`. It is a TOP-LEVEL account, so it
+ * CANNOT be created by this script: `createAccount` emits a CreateAccount
+ * action, which only makes direct sub-accounts. Register it through the
+ * registrar first and this script will find it and deploy into it:
+ *
+    near account create-account fund-myself ${FACTORY} '1.8 NEAR' autogenerate-new-keypair save-to-legacy-keychain sign-as ${PARENT} network-config mainnet sign-with-keychain send`);
+ * ~/.near-credentials/mainnet/<id>.json, which is where this script looks.
+ * save-to-keychain hides it in the OS keychain and this script will refuse.
+ */
+const FACTORY = process.env.FACTORY;
+if (!FACTORY) {
+  console.error(`
+FATAL: FACTORY is required — this script will not guess it.`);
+  console.error(`  A factory name is embedded in EVERY user's vault address permanently,`);
+  console.error(`  because a vault is a sub-account of the factory. The old default was`);
+  console.error(`  fac.${PARENT}, a name DECISIONS.md rejected for exactly that reason.`);
+  console.error(`
+  The decided name is usefloat.near. Register it first (it is top-level,`);
+  console.error(`  so this script cannot create it), then re-run:`);
+  console.error(`
+    FACTORY=usefloat.near node scripts/deploy-factory-mainnet.mjs
+`);
+  process.exit(2);
+}
 const RPC = process.env.RPC ?? "https://free.rpc.fastnear.com";
 const FACTORY_WASM = join(ROOT, "target", "near", "factory", "factory.wasm");
 const VAULT_WASM = join(ROOT, "packages", "create-float", "res", "vault.wasm");
@@ -136,8 +173,41 @@ if (parentFree !== null && parentFree < FUND + 5n * 10n ** 22n) {
 
 if (!LIVE) {
   console.log(`\n  Nothing was sent. To do it for real:`);
-  console.log(`    $env:CONFIRM_MAINNET="1"; node scripts/deploy-factory-mainnet.mjs\n`);
+  // FACTORY INCLUDED. Without it this line is a command that now exits 2,
+  // and the person following their own instructions has to work out why.
+  console.log(`    $env:FACTORY="${FACTORY}"; $env:CONFIRM_MAINNET="1"; node scripts/deploy-factory-mainnet.mjs`);
+  console.log(`    FACTORY=${FACTORY} CONFIRM_MAINNET=1 node scripts/deploy-factory-mainnet.mjs`);
   process.exit(0);
+}
+
+/**
+ * A TOP-LEVEL NAME CANNOT BE CREATED HERE, and learning that mid-flight is
+ * worse than being told now.
+ *
+ * `createAccount` emits a CreateAccount action, which the protocol permits
+ * only for a DIRECT sub-account of the signer. `usefloat.near` belongs to the
+ * top-level `near` registrar, not to the funder, so the action is refused.
+ *
+ * This matters more than a tidy error because the key file is written BEFORE
+ * the creation attempt -- deliberately, so a funded account can never exist
+ * without a saved key. A creation that fails after that leaves a credential
+ * for an account that does not exist, and the NEXT run reads the presence of
+ * that file as "the account exists, reuse its key".
+ */
+if (!existing && !FACTORY.endsWith(`.${PARENT}`)) {
+  console.error(`
+FATAL: ${FACTORY} does not exist and is not a sub-account of ${PARENT},`);
+  console.error(`  so this script cannot create it. A CreateAccount action only makes`);
+  console.error(`  direct sub-accounts; a top-level .near name goes through the registrar.`);
+  console.error(`
+  Register it first -- note save-to-LEGACY-keychain, which is where this`);
+  console.error(`  script looks for the key:`);
+  console.error(`
+    near account create-account fund-myself ${FACTORY} '1.8 NEAR' autogenerate-new-keypair save-to-legacy-keychain sign-as ${PARENT} network-config mainnet sign-with-keychain send`);
+  console.error(`
+  Then re-run this. It will find the account and deploy into it.
+`);
+  process.exit(2);
 }
 
 // ---- 1. the key, BEFORE the money ------------------------------------------
