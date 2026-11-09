@@ -294,6 +294,16 @@ if [ -z "$SKIP_DASHBOARD" ]; then
   # build and an error pointing at the compiler rather than at this choice.
   say "installing and building the adapter (workspace root)"
   ( cd "$ROOT" && npm install >/dev/null )
+  # DEPENDENCY ORDER, EXPLICITLY. The adapter's tsc reads @floatonnear/mcp's
+  # TYPES from packages/mcp/dist/*.d.ts, so mcp must be built FIRST. Building
+  # only the adapter on a fresh checkout fails with "has no exported member"
+  # for every symbol mcp provides — an error that reads like a missing feature
+  # rather than a missing build step. Measured on wattson 2026-11-09.
+  #
+  # Not relying on `npm run build --workspaces` to topologically sort: being
+  # explicit costs one line and removes a dependency on npm's ordering.
+  ( cd "$ROOT" && npm run build --workspace @floatonnear/mcp >/dev/null )
+  [ -f "$ROOT/packages/mcp/dist/index.d.ts" ]     || die "@floatonnear/mcp did not build; the adapter cannot resolve its types."
   ( cd "$ROOT" && npm run build --workspace @floatonnear/float-adapter >/dev/null )
   # ASSERT THE ARTIFACT, do not trust the exit code. `cargo near build` in this
   # repo has printed success while doing nothing; a build tool reporting ok is
