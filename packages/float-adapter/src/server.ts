@@ -313,6 +313,33 @@ function perRequest(vault: string, isDefault: boolean) {
   return { reqCfg, reqView };
 }
 
+/**
+ * The network this vault lives on, read ONCE.
+ *
+ * `get_config.network` is immutable for a given vault — a contract cannot
+ * migrate chains — so re-reading it per request buys nothing and costs a
+ * round trip on a path that is otherwise pure local computation.
+ *
+ * `NEAR_NETWORK` is a FALLBACK, not the primary. The chain is authoritative:
+ * an operator who mistypes the env var would otherwise get CLI commands
+ * carrying the wrong `network-config`, which fail after the owner has already
+ * approved them. Asking the vault first means the env var can only help when
+ * the chain is unreachable, never override it.
+ */
+let cachedNetwork: string | undefined;
+async function networkName(): Promise<string> {
+  if (cachedNetwork) return cachedNetwork;
+  try {
+    const c = await viewFunction<{ network: string }>(env.rpcUrl, env.vault, "get_config", {});
+    cachedNetwork = c.network;
+    return cachedNetwork;
+  } catch (e) {
+    const fallback = process.env.NEAR_NETWORK?.trim();
+    if (fallback) return fallback; // NOT cached: the chain still wins once reachable
+    throw e;
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${env.port}`);
 
@@ -583,7 +610,27 @@ const server = createServer(async (req, res) => {
 
       // The NETWORK, not the vault — it is a property of the chain, so the
       // configured vault answers for it even when the plan targets another.
-      const net = await view<{ network: string }>("get_config", {});
+      //
+      // CACHED, because it CANNOT CHANGE and this was an RPC round trip on
+      // every single call. The deploy's own assertion caught the cost: the
+      // refusal-follower's cold-start catch-up briefly saturates the RPC, and
+      // during that window this read threw and the route answered 500 instead
+      // of the 400 it owed the caller. A static value should not be able to
+      // make a request fail.
+      let net: { network: string };
+      try {
+        net = { network: await networkName() };
+      } catch (e) {
+        if (isUnavailable(e)) {
+          return send(503, {
+            error: "UPSTREAM_UNAVAILABLE",
+            detail:
+              "Could not reach the chain to determine the network, so the CLI " +
+              "command cannot be written correctly. Retry shortly.",
+          });
+        }
+        throw e;
+      }
       let payload;
       try {
         payload = planOwnerAction(b, { ...env, vault: planVault });
