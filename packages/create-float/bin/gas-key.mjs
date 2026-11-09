@@ -72,3 +72,67 @@ export function gasKeyFunding({ tgas = 60, payments = 50 } = {}) {
   }
   return gasReservation(tgas) + PAYMENT_BURN * BigInt(payments);
 }
+
+/**
+ * What to ADD to an existing key so it can make `payments` more calls.
+ *
+ * NOT `gasKeyFunding()`. That returns reservation + burn x payments, and the
+ * RESERVATION IS ALREADY SITTING IN THE KEY once it has been funded — it is
+ * held per in-flight call and refunded a receipt later, so it is charged once
+ * for the key's whole life, not once per top-up. Reusing `gasKeyFunding()`
+ * here would overcharge by a full reservation (0.0609 at 60 TGas) on every
+ * top-up, which is 50x the cost of the payments being bought.
+ *
+ * The shape that is right in BOTH directions:
+ *
+ *   needed = (reservation + burn x payments) - balance, floored at zero
+ *
+ * A healthy key needs only the burn, because its balance already covers the
+ * reservation. A DEPLETED key — one that fell below the reservation and can no
+ * longer transact at all — is lifted back over that line first, which is
+ * exactly what it needs and what a naive `burn x payments` would miss.
+ *
+ * Returns 0n when the key can already cover the request. Callers should treat
+ * that as "nothing to do" rather than sending a zero-value transfer.
+ */
+export function topUpFor({ balance = 0n, tgas = 60, payments = 50 } = {}) {
+  if (tgas < MIN_TGAS) {
+    throw new Error(`tgas must be at least ${MIN_TGAS} (the vault's MIN_GAS_FOR_DISPATCH)`);
+  }
+  if (payments < 0) throw new Error("payments cannot be negative");
+  // ADD CAPACITY FOR `payments` MORE, rather than topping up TO a level.
+  //
+  // The first draft read "ensure the key can make N payments", which meant
+  // asking to top up an already-healthy key answered "nothing to do". That is
+  // defensible arithmetic and the wrong command: `topup --payments 50` on a
+  // key with 50 left should leave it with 100, not with a shrug.
+  const have = BigInt(balance);
+  const reservation = gasReservation(tgas);
+  // A DEPLETED key — below the reservation, so unable to transact at all — is
+  // lifted back over that line FIRST. Charging only `burn x payments` there
+  // would buy payments the key still cannot make.
+  const shortfall = have >= reservation ? 0n : reservation - have;
+  return shortfall + PAYMENT_BURN * BigInt(payments);
+}
+
+/**
+ * The inverse: how many payments can a key make if `amount` is added?
+ *
+ * This is the question a user actually asks — "I'll put in 0.05, what does
+ * that buy?" — and the one an agent should be able to answer before anyone
+ * signs anything.
+ *
+ * ZERO IS A REAL ANSWER, and the important one. A key whose balance plus the
+ * top-up still cannot cover one reservation can make NO calls — not "a few".
+ * Reporting a fraction there would promise capability that does not exist:
+ * every call fails with NotEnoughBalance, which reads as a broken agent rather
+ * than an underfunded one.
+ */
+export function paymentsAfterTopUp({ balance = 0n, tgas = 60, amount = 0n } = {}) {
+  if (tgas < MIN_TGAS) {
+    throw new Error(`tgas must be at least ${MIN_TGAS} (the vault's MIN_GAS_FOR_DISPATCH)`);
+  }
+  const spendable = BigInt(balance) + BigInt(amount) - gasReservation(tgas);
+  if (spendable <= 0n) return 0;
+  return Number(spendable / PAYMENT_BURN);
+}
