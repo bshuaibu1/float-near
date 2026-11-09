@@ -116,14 +116,28 @@ export const GAS_RESERVATION_YOCTO = CREATE_GAS_TGAS * 10n ** 12n * 10n ** 9n;
 /**
  * Known factories.
  *
- * MAINNET IS DELIBERATELY ABSENT until one is deployed and verified. A wrong
- * default here does not fail safely: it sends a real user with real NEAR to
- * sign a 3.4 NEAR deposit into an account we do not control. Absent means the
- * tool asks, which is the correct behaviour for a value nobody has measured.
+ * MAINNET WAS DELIBERATELY ABSENT until one was deployed AND VERIFIED, because
+ * a wrong default here does not fail safely: it sends a real user with real
+ * NEAR to sign a ~3.4 NEAR deposit into an account we do not control.
+ *
+ * That precondition is now met. `usefloat.near` was registered on 2026-11-09
+ * (tx 2Gfh9H5T1VhEZ465NJ15CnuxFZpyMgsjchY66Lgsvntm) and the factory deployed
+ * into it, verified against the chain rather than against the deploy's own
+ * report:
+ *
+ *   local sha256                  ee925937c7b90771c477dd5e0a36770cd2c9654e…
+ *   chain code_hash (b58 -> hex)  ee925937c7b90771c477dd5e0a36770cd2c9654e…
+ *   deployed bytes fetched        163,525 — byte-for-byte equal to the artifact
+ *   get_config                    network mainnet, not paused, deposit 0.1
+ *   vault_id_for(test015.near)    test015-near.usefloat.near
+ *
+ * The name is TOP-LEVEL on purpose (DECISIONS.md 2026-11-08): it is embedded
+ * in every user's vault address permanently, because a vault is a sub-account
+ * of its factory, and `float.near` was already taken.
  */
 export const FACTORY_BY_NETWORK: Record<string, string | undefined> = {
   testnet: "fac.floatv4.testnet",
-  mainnet: undefined,
+  mainnet: "usefloat.near",
 };
 
 export interface CreatePlanInput {

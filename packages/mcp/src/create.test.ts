@@ -186,13 +186,28 @@ describe("buildCreatePlan", () => {
 
 describe("FACTORY_BY_NETWORK", () => {
   /**
-   * A mainnet default must never be a guess. An unset mainnet factory has to
-   * read as absent so the tool asks for one, rather than silently pointing a
-   * real user with real NEAR at an account that may not be ours.
+   * A mainnet default must never be a GUESS — that was the original rule and
+   * it still is. What changed is that the value is no longer a guess:
+   * usefloat.near was registered and the factory deployed into it on
+   * 2026-11-09, verified by fetching the deployed bytes and comparing them to
+   * the local artifact, not by trusting the deploy's own success report.
+   *
+   * Pinned exactly, because this string sends real users with real NEAR to
+   * sign a ~3.4 NEAR deposit. A typo here is not a failed build; it is a
+   * deposit into an account nobody controls.
    */
-  it("has a testnet default and no invented mainnet one", () => {
+  it("pins both factories exactly", () => {
     expect(FACTORY_BY_NETWORK.testnet).toBe("fac.floatv4.testnet");
-    expect(FACTORY_BY_NETWORK.mainnet ?? null).toBeNull();
+    expect(FACTORY_BY_NETWORK.mainnet).toBe("usefloat.near");
+  });
+
+  it("the mainnet factory is the TOP-LEVEL name, not a sub-account", () => {
+    // DECISIONS.md 2026-11-08 rejected fac.test015.near precisely because a
+    // personal sub-account ties the product namespace to one human forever.
+    // A regression to that shape must fail here, not on mainnet.
+    const m = FACTORY_BY_NETWORK.mainnet!;
+    expect(m.endsWith(".near")).toBe(true);
+    expect(m.split(".").length, `${m} must be top-level`).toBe(2);
   });
 });
 
