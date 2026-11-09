@@ -160,13 +160,44 @@ console.log(`  COST`);
 console.log(`    ${near(BigInt(code.length) * 10n ** 19n).padStart(9)}  storage stake for the code   RECOVERABLE`);
 console.log(`    ${near(12n * 10n ** 22n).padStart(9)}  headroom for state + gas`);
 console.log(`    ${"-".repeat(9)}`);
-console.log(`    ${near(FUND).padStart(9)}  total, moved from ${PARENT}`);
+// WHERE THE MONEY COMES FROM depends on the path, and saying the wrong one
+// is a money figure that reads as fact. An existing factory pays for its own
+// code out of the balance it already holds; nothing moves from the parent.
+console.log(existing
+  ? `    ${near(FUND).padStart(9)}  total, already held by ${FACTORY} (nothing moves from ${PARENT})`
+  : `    ${near(FUND).padStart(9)}  total, moved from ${PARENT}`);
 console.log();
 console.log(`  each vault created through it will then cost its owner`);
 console.log(`    ${near(BigInt(vaultBytes) * 10n ** 19n + REQUIRED_DEPOSIT)} deposit + 0.20000 gas reservation`);
 console.log(`  (the global contract would take that to ~0.11)`);
 
-if (parentFree !== null && parentFree < FUND + 5n * 10n ** 22n) {
+/**
+ * WHO ACTUALLY PAYS DEPENDS ON WHETHER THE ACCOUNT EXISTS, and checking the
+ * wrong one blocks a deploy that is fully funded.
+ *
+ * When the factory must be CREATED, the parent funds it: FUND moves across
+ * in the createAccount action, so the parent is what needs the balance.
+ *
+ * When it ALREADY EXISTS, no money moves from the parent at all -- that
+ * branch is skipped entirely. What matters then is whether the FACTORY can
+ * cover its own code's storage stake. Requiring the parent to hold FUND in
+ * that case refuses a deploy nobody is asking it to pay for: measured here
+ * with usefloat.near already holding 1.8 and the parent down to 1.616
+ * having just funded it.
+ */
+const STAKE = BigInt(code.length) * 10n ** 19n;
+if (existing) {
+  const facFree = await free(FACTORY);
+  if (facFree !== null && facFree < STAKE) {
+    console.error(`
+  FATAL: ${FACTORY} holds ${near(facFree)}, but its code needs ${near(STAKE)} of storage stake.`);
+    console.error(`  No money moves from ${PARENT} for an account that already exists --`);
+    console.error(`  the factory pays for its own code. Top it up with:`);
+    console.error(`    near tokens ${PARENT} send-near ${FACTORY} '<amount> NEAR' network-config mainnet sign-with-legacy-keychain send`);
+    process.exit(1);
+  }
+  console.log(`  ${FACTORY} holds ${near(facFree ?? 0n)}; code stake ${near(STAKE)} -- covered.`);
+} else if (parentFree !== null && parentFree < FUND + 5n * 10n ** 22n) {
   console.error(`\n  FATAL: ${PARENT} holds ${near(parentFree)}, needs ~${near(FUND + 5n * 10n ** 22n)}.`);
   process.exit(1);
 }
