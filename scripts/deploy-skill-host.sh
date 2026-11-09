@@ -285,6 +285,16 @@ Environment=NEAR_VAULT_CONTRACT=$VAULT
 Environment=NEAR_VAULT_FACTORY=$FACTORY
 Environment=NEAR_VAULT_TOKEN=$TOKEN
 Environment=NEAR_VAULT_TOKEN_DECIMALS=$TOKEN_DECIMALS
+# ABSOLUTE, because these default to CWD-RELATIVE paths and the service's CWD
+# is not the repo root. Measured 2026-11-09: the adapter run from
+# packages/float-adapter wrote its refusal store to
+# packages/float-adapter/.demo/ while scripts/scan-blocked.mjs, run from the
+# repo root, wrote to .demo/ — two files for one vault, and the dashboard
+# rendered 3 settled payments and ZERO refusals. The blocked payment is the
+# single most valuable thing in the fixture, so losing it silently is the
+# worst available failure.
+Environment=BLOCKED_LOG=$ROOT/.demo/blocked-log.$(printf '%s' "$VAULT" | sed 's/[^a-zA-Z0-9._-]/_/g').json
+Environment=RELAY_LEDGER=$ROOT/.demo/relay-ledger.json
 #
 # DELIBERATELY ABSENT, and this emptiness is the security property:
 #   FLOAT_API_TOKEN       every token-gated route answers 503. /v1/owner-plan

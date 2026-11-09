@@ -61,25 +61,38 @@ const TOKEN = process.env.FLOAT_API_TOKEN;
  * an implicit account — would otherwise re-ask the factory on every request
  * for an answer that cannot change.
  */
+type Resolved =
+  | { kind: "ok"; vault: string | null; exists: boolean }
+  /** We could not ask. NOT the same as "you have no vault". */
+  | { kind: "unavailable" };
+
 const vaultCache = new Map<string, { vault: string | null; exists: boolean }>();
 
-async function resolveVaultFor(owner: string) {
+async function resolveVaultFor(owner: string): Promise<Resolved> {
   const hit = vaultCache.get(owner);
-  if (hit) return hit;
+  if (hit) return { kind: "ok", ...hit };
   try {
     const r = await fetch(new URL(`/v1/resolve?owner=${encodeURIComponent(owner)}`, ADAPTER), {
       cache: "no-store",
     });
-    if (!r.ok) return { vault: null, exists: false };
+    /**
+     * A NON-OK RESPONSE IS "UNKNOWN", NOT "NONE", and conflating them is what
+     * made this dangerous. The adapter answers 503 UPSTREAM_UNAVAILABLE when
+     * it cannot reach the chain; this used to flatten that to
+     * `{vault: null}`, which the caller below renders as "no legal vault id
+     * for that account — use a named account". A confident false claim, shown
+     * to someone whose account is perfectly fine.
+     */
+    if (!r.ok) return { kind: "unavailable" };
     const j = (await r.json()) as { vault?: string | null; exists?: boolean };
     const out = { vault: j.vault ?? null, exists: Boolean(j.exists) };
     vaultCache.set(owner, out);
-    return out;
+    return { kind: "ok", ...out };
   } catch {
     // A resolve failure must NOT be cached: the adapter being briefly down is
     // not a fact about the owner, and caching it would pin them to the wrong
     // vault until this process restarts.
-    return { vault: null, exists: false };
+    return { kind: "unavailable" };
   }
 }
 
@@ -133,6 +146,19 @@ async function forward(req: NextRequest, path: string[]) {
     const owner = target.searchParams.get("owner")?.trim();
     if (owner) {
       const resolved = await resolveVaultFor(owner);
+      if (resolved.kind === "unavailable") {
+        // Pass the uncertainty through rather than resolving it to a fact.
+        return Response.json(
+          {
+            error: "UPSTREAM_UNAVAILABLE",
+            owner,
+            detail:
+              "Could not reach the chain to work out which vault is yours, so " +
+              "whether you have one is UNKNOWN — not no. Retry shortly.",
+          },
+          { status: 503 },
+        );
+      }
       if (resolved.vault && resolved.exists) {
         target.searchParams.set("vault", resolved.vault);
       } else if (resolved.vault) {

@@ -142,6 +142,47 @@ const VAULT = LABEL === "" ? `${prefix}.${FACTORY}` : `${prefix}-${LABEL}.${FACT
  * The deposit, derived from the artifact exactly as the signing page does it.
  * Hardcoding either figure is how this repo's two stale numbers shipped.
  */
+/**
+ * ASK THE FACTORY FOR THE UNLABELLED ID, and only that.
+ *
+ * `vault_id_for(owner)` TAKES ONLY AN OWNER — no label — so it always returns
+ * the unlabelled `<prefix>.<factory>`. A first version of this check passed a
+ * `label` too and compared the result; serde ignores the unknown field, so it
+ * agreed for the unlabelled case and could never fail, while for LABEL=fleet
+ * it compared `<prefix>-fleet.<f>` against `<prefix>.<f>` and would have
+ * refused the DEFAULT path. A check that cannot fail where it matters and
+ * fires where it should not is worse than no check.
+ *
+ * So it is asserted only where the factory is actually authoritative: the
+ * unlabelled id, which is also the one `/v1/resolve` derives and therefore the
+ * one that must match exactly or the dashboard cannot find this vault. The
+ * labelled form is governed by the charset rule above, which mirrors
+ * `resolve_vault`'s own `a-z0-9`, 1-16 check.
+ *
+ * It does NOT validate the label argument — nothing cheap does. `resolve_vault`
+ * panics BAD_LABEL on `Some("")` inside the create, and that is what cost a
+ * reverted deposit here: this script sent `label: ""` where the factory needed
+ * `None`. The repair for that is sending null, a few lines below; this check is
+ * only about the id agreeing.
+ */
+if (LABEL === "") {
+  const factoryId = await view(FACTORY, "vault_id_for", { owner: OWNER }).catch((e) => {
+    console.error(`
+FATAL: the factory could not derive an id for ${OWNER}`);
+    console.error(`  ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  });
+  if (factoryId !== VAULT) {
+    console.error(`
+FATAL: this script and the factory disagree about the unlabelled vault id.`);
+    console.error(`  script:  ${VAULT}`);
+    console.error(`  factory: ${factoryId}   <- authoritative, and what /v1/resolve derives`);
+    console.error(`  Nothing was signed.`);
+    process.exit(1);
+  }
+  console.log(`  verified  the factory agrees this is the id /v1/resolve derives`);
+}
+
 const stake = BigInt(wasm.length) * 10n ** 19n;
 const AGENT_GAS = 12n * 10n ** 22n; // AGENT_GAS_KEY_FUNDING in the factory
 const deposit = stake + 36n * 10n ** 22n + AGENT_GAS;
@@ -208,7 +249,12 @@ await owner.callFunction({
   methodName: "create_vault_with_code",
   args: {
     code: wasm.toString("base64"),
-    label: LABEL,
+    // NULL, NOT "". The factory's `resolve_vault` takes an Option<String>:
+    // `None` derives the unlabelled `<prefix>.<factory>`, but `Some("")` hits
+    // the charset branch and panics BAD_LABEL. Measured live 2026-11-09 — the
+    // create reverted and refunded the 3.4692 deposit, having burnt 0.0042 in
+    // gas, because this sent an empty string.
+    label: LABEL === "" ? null : LABEL,
     root_limits: [
       { token: TOKEN, daily_cap: (100n * USDC).toString(), per_tx_cap: (2n * USDC).toString() },
     ],
