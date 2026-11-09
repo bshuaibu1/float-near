@@ -1,4 +1,4 @@
-<!-- STAMP commit=a22af46 date=2026-11-09 -->
+<!-- STAMP commit=a209508 date=2026-11-09 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -104,7 +104,8 @@ so drift fails two suites.
 | fixture tree | `root(0) -> agent(1), marketing(2)` — an agent gets its OWN node since 2026-11-08 |
 | fixture history | 3 settled + 1 refusal (`seed-fleet-blocked`, `PER_TX_LIMIT`). Refusal scan covers 276664820–276666019 (1,200 blocks) with **1** unread block (276665614), so the banner reads "incomplete" — correctly, since a refusal there would be invisible |
 | stranded on testnet | `work12-testnet.fac.floatv4.testnet` holds **3.370330** with **zero access keys** — unrecoverable, the testnet twin of `r1.float.test015.near`. Predates the factory line that installs the owner's key. `float-exit` refuses it correctly rather than shrinking it |
-| **demo blocker** | **connecting as `work12.testnet` shows an EMPTY vault.** Derivation is unlabelled, so it resolves to the stranded `work12-testnet.fac…` (0.00 USDC, 0 keys, 1 node) — not the `-fleet` fixture (**42.25 USDC, 2 keys, 3 nodes**). Measured 2026-11-09. Fix before pointing anyone at it: reseed the fixture **unlabelled under a fresh owner**, since work12's unlabelled slot is permanently occupied |
+| **demo blocker** | **connecting as `work12.testnet` shows an EMPTY vault**, and the cause was structural: `seed-fixture.mjs` could only ever build `<owner>-fleet.<factory>` while the dashboard only ever derives `<owner>.<factory>`. `LABEL=` now builds unlabelled (2026-11-09), so the code can do it. **Still needs doing**: deposit is **3.4692** derived from the 298,920 B artifact, testnet holds **2.33** in total, and work12's unlabelled slot is permanently occupied by a keyless vault — so it needs a faucet top-up AND a fresh owner |
+| RPC | **`rpc.testnet.near.org` is DEPRECATED** — answers `-429 "STOP USING IT NOW"`. Use `test.rpc.fastnear.com`. The adapter's var is `NEAR_VAULT_RPC_URL`, **not** `NEAR_RPC_URL`; the wrong name silently keeps the default |
 | hosting | **not deployed yet.** `scripts/deploy-skill-host.sh` is written and waits only on an IP: `DOMAIN=usefloat.xyz ./scripts/deploy-skill-host.sh`. Only `web/serve.mjs` goes public (signing page + `/skill.md`); the adapter and dashboard stay on loopback and the script FAILS if anything answers on 8787 or 3000 |
 | DNS caution | `usefloat.xyz`, `www` and `app` already resolve to **209.209.10.210**, the box serving `pythscan.com` and the discord avatar app — with **no vhost answering**, so repointing breaks nothing. Do NOT deploy Float there |
 | **mainnet** | **gone / bricked.** No mainnet factory (`FACTORY_BY_NETWORK.mainnet = undefined`, deliberate) |
@@ -153,14 +154,19 @@ so drift fails two suites.
    therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
    realised, not theoretical — reading a config to answer "which vault is this pointed at"
    prints a live private key into scrollback and into the driving agent's transcript.
-5. **READS are multi-tenant; `/v1/pay` can never be.** Fixed 2026-11-09: the adapter accepts
+5. **Multi-tenant for reads AND owner actions; `/v1/pay` can never be.** Fixed 2026-11-09: the adapter accepts
    `?vault=` / `?owner=` per request and answers `/v1/resolve`, and the dashboard's proxy
    rewrites every GET to the connected wallet's own vault. **The pages never changed** — all
    seven have always sent `?owner=`; the adapter just ignored it, which is the whole reason a
    visitor saw the operator's vault. Having no vault answers 404 `NO_VAULT` and renders a
-   create-one empty state, rather than falling through to the configured vault. **`/v1/pay`
-   stays pinned** to the vault whose agent key the process holds, so mutating methods are never
-   rewritten; the public box will run with **no agent key at all**. Caveat: derivation finds the
+   create-one empty state, rather than falling through to the configured vault.
+   The gate is now by **ROUTE, not method** (an ALLOWLIST, so a new route is born shut):
+   `/v1/owner-plan` needs no token because it returns an **unsigned** payload the owner signs
+   in their own wallet, so a hosted box can offer owner actions with **no token and no agent
+   key**. **`/v1/pay` always needs it** and is never rewritten — it signs with the key the
+   process holds. This matters because the dashboard proxy attaches `FLOAT_API_TOKEN` *without
+   authenticating the caller*: a public dashboard **with** a token set is an open `/v1/pay`.
+   So **never set `FLOAT_API_TOKEN` on the public box.** Caveat: derivation finds the
    **unlabelled** vault only — a labelled one needs an explicit `?vault=` (see Live state).
 6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
 7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
