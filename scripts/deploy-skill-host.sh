@@ -60,12 +60,23 @@
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-}"
-# `app.` IS CLAIMED AND MUST STAY A REDIRECT. The published @floatonnear/mcp
-# 0.5.0 builds signing links at app.$DOMAIN, so pointing it at the dashboard
-# would break vault creation for everyone already installed. The dashboard gets
-# `dash.` — a new name nothing has been told about yet.
-ALT_NAMES="${ALT_NAMES:-www.$DOMAIN app.$DOMAIN}"
-DASH_NAME="${DASH_NAME:-dash.$DOMAIN}"
+# THE DASHBOARD LIVES AT `app.`, AND THE SIGNING LINKS STILL WORK.
+#
+# `app.$DOMAIN` was a pure redirect to the apex because the published
+# @floatonnear/mcp 0.5.0 hardcodes its signing links there, and taking the name
+# would have broken vault creation for every install (1,338 downloads in the
+# last month — not a number to wave away).
+#
+# But a signing link is DISTINGUISHABLE: create.ts sets `factory` on every one
+# of them, unconditionally. So `app.` can serve the dashboard and still bounce
+# anything carrying `?factory=` to the apex signing page, which is where that
+# page actually lives. One nginx condition, no guessing.
+#
+# `dash.` stays as an alias so anything already pointed at it keeps working and
+# the certificate keeps covering it.
+ALT_NAMES="${ALT_NAMES:-www.$DOMAIN}"
+DASH_NAME="${DASH_NAME:-app.$DOMAIN}"
+DASH_ALIAS="${DASH_ALIAS:-dash.$DOMAIN}"
 ROOT="${ROOT:-/srv/float-near-web}"
 SERVICE="${SERVICE:-float-near-web}"
 PORT="${PORT:-8080}"
@@ -149,7 +160,7 @@ done
 server_ip="$(curl -s --max-time 10 https://api.ipify.org || true)"
 [ -n "$server_ip" ] || die "could not determine this machine's public IP; is it online?"
 CERT_NAMES="$DOMAIN $ALT_NAMES"
-[ -n "$SKIP_DASHBOARD" ] || CERT_NAMES="$CERT_NAMES $DASH_NAME"
+[ -n "$SKIP_DASHBOARD" ] || CERT_NAMES="$CERT_NAMES $DASH_NAME $DASH_ALIAS"
 for name in $CERT_NAMES; do
   resolved="$(getent hosts "$name" | awk '{print $1}' | head -1 || true)"
   [ -n "$resolved" ] || die "$name does not resolve. Create an A record -> $server_ip first.
@@ -506,11 +517,18 @@ sudo tee -a "/etc/nginx/sites-available/$SERVICE" >/dev/null <<NGINX
 server {
     listen 80;
     listen [::]:80;
-    server_name $DASH_NAME;
+    server_name $DASH_NAME $DASH_ALIAS;
 
     location /.well-known/acme-challenge/ { root /var/www/html; }
 
     location / {
+        # SIGNING LINKS STILL REACH THE SIGNING PAGE. Every link the MCP builds
+        # carries `factory`, unconditionally (create.ts), and nothing the
+        # dashboard links to does. So this routes by the one parameter that
+        # tells them apart, instead of taking the name away from installs that
+        # already exist. \$request_uri keeps the whole query — dropping it
+        # would land the user on a blank create page.
+        if (\$arg_factory) { return 301 https://$DOMAIN\$request_uri; }
         proxy_pass http://127.0.0.1:$DASH_PORT;
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -535,7 +553,7 @@ if [ -z "${SKIP_CERTBOT:-}" ]; then
   # The cert covers dash. too, but dash. is NOT in ALT_NAMES — ALT_NAMES is the
   # set that gets 301'd to the apex, and the dashboard must serve, not redirect.
   names="-d $DOMAIN"; for n in $ALT_NAMES; do names="$names -d $n"; done
-  [ -n "$SKIP_DASHBOARD" ] || names="$names -d $DASH_NAME"
+  [ -n "$SKIP_DASHBOARD" ] || names="$names -d $DASH_NAME -d $DASH_ALIAS"
   email_arg="--register-unsafely-without-email"
   [ -n "$EMAIL" ] && email_arg="--email $EMAIL"
   say "requesting a certificate for $DOMAIN $ALT_NAMES"
@@ -574,10 +592,19 @@ code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$DOMAIN/" 
 check "the signing page serves" "200" "$code"
 
 # The redirect must keep the query string, or every signing link breaks.
-loc="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 "https://app.$DOMAIN/?factory=x&label=y" || true)"
+# THE COMPATIBILITY SHIM, asserted rather than assumed. app.$DOMAIN now serves
+# the dashboard, so the ONE thing that must still work is a published signing
+# link: it carries ?factory= and has to land on the apex with its query intact.
+loc="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 "https://$DASH_NAME/?factory=x&label=y" || true)"
 case "$loc" in
-  *"factory=x"*) echo "    ok    app.$DOMAIN redirect preserves the query string";;
-  *) echo "    BROKEN  app.$DOMAIN redirect lost the query string: '$loc'"; problems=$((problems+1));;
+  *"factory=x"*"label=y"*) echo "    ok    a signing link to $DASH_NAME still reaches the signing page, query intact";;
+  *) echo "    BROKEN  signing link to $DASH_NAME went to '$loc' — published installs cannot create a vault"; problems=$((problems+1));;
+esac
+# And the opposite: a plain visit must get the DASHBOARD, not a redirect.
+plain="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DASH_NAME/" || true)"
+case "$plain" in
+  200) echo "    ok    a plain visit to $DASH_NAME serves the dashboard";;
+  *) echo "    BROKEN  $DASH_NAME returned $plain for a plain visit"; problems=$((problems+1));;
 esac
 
 # NEGATIVE ASSERTIONS. The point is not that the page is up; it is that
@@ -671,7 +698,7 @@ echo "The install line is now:"
 echo "    Set up https://$DOMAIN/skill.md"
 if [ -z "$SKIP_DASHBOARD" ]; then
   echo
-  echo "The dashboard is at https://$DASH_NAME — it shows each visitor THEIR"
+  echo "The dashboard is at https://$DASH_NAME (and https://$DASH_ALIAS) — it shows each visitor THEIR"
   echo "own vault, derived from the wallet they connect, and an empty state"
   echo "with a create link when they have none."
   echo
