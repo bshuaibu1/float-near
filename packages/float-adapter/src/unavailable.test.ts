@@ -94,4 +94,37 @@ describe("isUnavailable", () => {
     expect(isUnavailable(new Error("RPC https://x returned HTTP 400"))).toBe(false);
     expect(isUnavailable(new Error("RPC https://x returned HTTP 404"))).toBe(false);
   });
+
+  it("recognises a THROTTLE that arrives as HTTP 200 with a JSON error body", () => {
+    // The case that broke the live dashboard. fastnear answers a rate limit
+    // with 200 and `{"code": -429, "message": "Rate limits exceeded..."}`, so
+    // `r.ok` is true and nothing downstream looks like a transport failure.
+    // accountExists then throws this, and it matched nothing:
+    expect(
+      isUnavailable(
+        new Error(
+          "could not determine whether flatdata6673-testnet.fac.floatv4.testnet exists: " +
+            "Rate limits exceeded. For higher rate limits get a subscription at https://fastnear.com",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("treats 'could not determine whether' as uncertainty, always", () => {
+    // accountExists returns false WITHOUT throwing for a real absence, so it
+    // only ever throws when it cannot tell. That wording is never a verdict.
+    expect(isUnavailable(new Error("could not determine whether x.near exists: whatever"))).toBe(true);
+  });
+
+  it("still calls a genuine UNKNOWN_ACCOUNT an answer, not an outage", () => {
+    // This one must NOT be unavailable: it is the real "no such account",
+    // which is how the create-one empty state is reached legitimately.
+    expect(isUnavailable(new Error("UNKNOWN_ACCOUNT"))).toBe(false);
+  });
+
+  it("recognises the bare rate-limit wordings providers use", () => {
+    for (const m of ["Rate limits exceeded", "rate limit reached", "Too Many Requests", "error -429"]) {
+      expect(isUnavailable(new Error(m)), m).toBe(true);
+    }
+  });
 });

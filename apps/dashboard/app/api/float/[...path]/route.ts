@@ -86,7 +86,23 @@ async function resolveVaultFor(owner: string): Promise<Resolved> {
     if (!r.ok) return { kind: "unavailable" };
     const j = (await r.json()) as { vault?: string | null; exists?: boolean };
     const out = { vault: j.vault ?? null, exists: Boolean(j.exists) };
-    vaultCache.set(owner, out);
+    /**
+     * CACHE ONLY WHAT CANNOT CHANGE.
+     *
+     * A vault that EXISTS will never stop existing, so that is safe to keep
+     * forever. A vault that does NOT exist yet may exist a minute from now —
+     * which is the entire point of the empty state's "create one" link.
+     * Caching the absence meant that the moment after a user created their
+     * vault, this process would still insist they had none, until restarted.
+     *
+     * It also pinned a WRONG absence. The adapter briefly reported
+     * `exists:false` for a funded vault because a throttle was misclassified
+     * as an answer, and this cache then made that lie permanent — the live
+     * dashboard showed UPSTREAM_UNAVAILABLE and zeros to the vault's actual
+     * owner. The classifier is fixed; not caching a negative means the next
+     * such mistake lasts one request instead of forever.
+     */
+    if (out.exists) vaultCache.set(owner, out);
     return { kind: "ok", ...out };
   } catch {
     // A resolve failure must NOT be cached: the adapter being briefly down is

@@ -543,9 +543,21 @@ const server = createServer(async (req, res) => {
               "it exists. Whether you have a vault is UNKNOWN — not no. Retry shortly.",
           });
         }
-        // A view call that throws for a NON-transport reason is the account
-        // not existing, which is a real answer.
-        exists = false;
+        /**
+         * NEVER `exists = false` HERE. `accountExists` returns false WITHOUT
+         * throwing for a genuine absence (UNKNOWN_ACCOUNT); it throws only
+         * when it cannot tell. So every throw is uncertainty, and turning
+         * uncertainty into "you have no vault" is the exact bug this route
+         * was already fixed for once.
+         */
+        return send(503, {
+          error: "UPSTREAM_UNAVAILABLE",
+          owner,
+          vault: derived,
+          detail:
+            `Derived ${derived}, but could not determine whether it exists: ` +
+            `${e instanceof Error ? e.message : String(e)}. UNKNOWN, not no.`,
+        });
       }
       return send(200, { owner, vault: derived, exists, factory: env.factory });
     }
