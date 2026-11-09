@@ -71,6 +71,7 @@ import {
 } from "./payloads.js";
 import {
   accountExists,
+  rpcForNetwork,
   DEFAULT_RPC_URL,
   newRequestId,
   requireAgentKey,
@@ -272,7 +273,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.6.0" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.6.1" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -456,7 +457,14 @@ server.tool(
           `guessing it wrong would send a real deposit somewhere unverified.`,
       );
     }
-    const rpc = cfg.rpcUrl;
+    // THE RPC MUST FOLLOW THE NETWORK, not the process's default. 0.6.0
+    // resolved the right factory for `net` and then asked the testnet RPC
+    // about it, so a mainnet request answered "usefloat.near does not exist"
+    // about an account that does.
+    const rpc = rpcForNetwork(net, {
+      configuredNetwork: cfg.network,
+      override: process.env.NEAR_VAULT_RPC_URL,
+    });
 
     // Only ask the factory to derive an id when there IS an owner. With none,
     // the address is decided by whichever wallet signs, and inventing one here
