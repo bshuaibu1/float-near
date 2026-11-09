@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@floatonnear/mcp": "^0.5.0"
+    "@floatonnear/mcp": "^0.6.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
