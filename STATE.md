@@ -94,19 +94,21 @@ so drift fails two suites.
 
 | | |
 |---|---|
-| active vault | `work12-testnet-fleet.fac.floatv4.testnet` (**testnet**) |
-| owner | `work12.testnet` |
+| active vault | **`flatdata6673-testnet.fac.floatv4.testnet`** (**testnet**) — UNLABELLED, so `/v1/resolve` derivation finds it. 42.25 USDC, 3 nodes, 1 gas key |
+| owner | **`flatdata6673.testnet`** (key already on disk). `work12.testnet` is the browser-test wallet and holds 3.50 USDC |
 | factory | `fac.floatv4.testnet` |
 | token | `usdc.fakes.testnet`, 6 decimals |
 | RPC | `https://test.rpc.fastnear.com` |
 | adapter | port 8787, quote-signer key present (Intents rail open) |
 | adapter config | `scripts/restart-adapter.ps1` **hardcodes** the env. `.float/adapter.env` is NOT read by the local stack and still names the dead mainnet `float.test015.near` — edit the script, not the env file |
 | fixture tree | `root(0) -> agent(1), marketing(2)` — an agent gets its OWN node since 2026-11-08 |
-| fixture history | 3 settled + 1 refusal (`seed-fleet-blocked`, `PER_TX_LIMIT`). Refusal scan covers 276664820–276666019 (1,200 blocks) with **1** unread block (276665614), so the banner reads "incomplete" — correctly, since a refusal there would be invisible |
+| old fixture | `work12-testnet-fleet.fac…` is **drained** (0 USDC) — its 42.25 was migrated to the new unlabelled one. Still holds ~3.3 NEAR; tear down with `float-exit` to recover |
+| fixture history | 3 settled + **1 refusal `PARENT_PER_TX_LIMIT`** (`seed--blocked`) — the HIERARCHY differentiator, not a plain per-tx cap. Scan coverage 276892844–276893243, 0 holes |
 | stranded on testnet | `work12-testnet.fac.floatv4.testnet` holds **3.370330** with **zero access keys** — unrecoverable, the testnet twin of `r1.float.test015.near`. Predates the factory line that installs the owner's key. `float-exit` refuses it correctly rather than shrinking it |
-| **demo blocker** | **connecting as `work12.testnet` shows an EMPTY vault**, and the cause was structural: `seed-fixture.mjs` could only ever build `<owner>-fleet.<factory>` while the dashboard only ever derives `<owner>.<factory>`. `LABEL=` now builds unlabelled (2026-11-09), so the code can do it. **Still needs doing**: deposit is **3.4692** derived from the 298,920 B artifact, testnet holds **2.33** in total, and work12's unlabelled slot is permanently occupied by a keyless vault — so it needs a faucet top-up AND a fresh owner |
+| demo blocker | **RESOLVED 2026-11-09.** Was: the seeder could only build `<owner>-fleet.<factory>` while the dashboard only derives `<owner>.<factory>`. Verified end to end that `?owner=flatdata6673.testnet` returns the right vault and 42.250000, with the refusal first in the activity feed |
+| CWD TRAP | `BLOCKED_LOG` and `RELAY_LEDGER` default to **cwd-relative** paths. Run the adapter from the **repo root** or the refusal store splits in two and the activity feed shows ZERO refusals while looking fine. The systemd unit now sets both absolute |
 | RPC | **`rpc.testnet.near.org` is DEPRECATED** — answers `-429 "STOP USING IT NOW"`. Use `test.rpc.fastnear.com`. The adapter's var is `NEAR_VAULT_RPC_URL`, **not** `NEAR_RPC_URL`; the wrong name silently keeps the default |
-| hosting | **not deployed yet**, waits only on an IP. Now deploys the **dashboard too**: `DOMAIN=usefloat.xyz VAULT=<demo> TOKEN=usdc.fakes.testnet ./scripts/deploy-skill-host.sh` (`SKIP_DASHBOARD=1` for page-only). Three services: `web/serve.mjs` public on the apex, adapter + dashboard on **loopback with NO credentials**. Dashboard is served at **`dash.$DOMAIN`** — **not `app.`**, which the published MCP 0.5.0 uses for signing links and must stay a redirect. Needs a **`dash` A record** or certbot's HTTP-01 fails |
+| hosting | **not deployed yet**, waits only on an IP. Now deploys the **dashboard too**: `DOMAIN=usefloat.xyz VAULT=flatdata6673-testnet.fac.floatv4.testnet TOKEN=usdc.fakes.testnet ./scripts/deploy-skill-host.sh` (`SKIP_DASHBOARD=1` for page-only). Three services: `web/serve.mjs` public on the apex, adapter + dashboard on **loopback with NO credentials**. Dashboard is served at **`dash.$DOMAIN`** — **not `app.`**, which the published MCP 0.5.0 uses for signing links and must stay a redirect. Needs a **`dash` A record** or certbot's HTTP-01 fails |
 | hosting guards | the script REFUSES to run if `FLOAT_API_TOKEN` / `NEAR_VAULT_AGENT_KEY` / the quote-signer vars are so much as PRESENT in its shell (`${X+set}`, so an EMPTY value is refused too). Final assertions are **positive-controlled**: a read must return 200 through the public hostname BEFORE the 503s are believed, because "gate shut" and "nothing listening" are the same output. It also fires the repo's own published `local-dev-token` at the box, and requires `/v1/owner-plan` to answer **400 not 503** so a regression to method-gating fails the deploy |
 | DNS caution | `usefloat.xyz`, `www` and `app` already resolve to **209.209.10.210**, the box serving `pythscan.com` and the discord avatar app — with **no vhost answering**, so repointing breaks nothing. Do NOT deploy Float there. **Also add a `dash` A record** — the dashboard's own name |
 | **mainnet** | **gone / bricked.** No mainnet factory (`FACTORY_BY_NETWORK.mainnet = undefined`, deliberate) |
