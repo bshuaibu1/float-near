@@ -59,6 +59,23 @@ const NETWORK = process.env.NETWORK ?? "testnet";
 const OWNER = need("OWNER", "The account that will own the vault and pay the deposit.");
 const FACTORY = need("FACTORY", "The vault factory, e.g. fac.floatv4.testnet");
 const TOKEN = need("TOKEN", "The fungible token to fund it with, e.g. usdc.fakes.testnet");
+/**
+ * The label, WHICH MAY BE EMPTY — and that is the whole point of this knob.
+ *
+ * THE SEEDER AND THE DASHBOARD COULD NEVER AGREE. This defaulted to "fleet"
+ * with no way to opt out, so every fixture was `<owner>-fleet.<factory>`. The
+ * dashboard resolves a visitor's vault by DERIVATION, which is unlabelled by
+ * construction — `<owner>.<factory>` — so connecting as the fixture's own
+ * owner found a different account entirely. Measured 2026-11-09:
+ * `work12.testnet` resolved to the stranded `work12-testnet.fac…` holding
+ * 0.00 USDC across 1 node, while the fixture held 42.25 across 3. The demo
+ * showed an empty vault, and no amount of dashboard work could fix it —
+ * the seeder was structurally unable to create the vault being looked for.
+ *
+ * `LABEL=` (empty) now means unlabelled, matching the contract's own
+ * `derive_prefix`. `LABEL` unset still means "fleet", so every existing
+ * invocation keeps working.
+ */
 const LABEL = process.env.LABEL ?? "fleet";
 const RPC =
   process.env.RPC ??
@@ -68,8 +85,9 @@ if (NETWORK === "mainnet") {
   console.error("FATAL: this seeds a DEMO fixture and spends a real deposit. Testnet only.");
   process.exit(2);
 }
-if (!/^[a-z0-9]{1,16}$/.test(LABEL)) {
-  console.error(`FATAL: LABEL "${LABEL}" must match the page's own rule, /^[a-z0-9]{1,16}$/.`);
+if (LABEL !== "" && !/^[a-z0-9]{1,16}$/.test(LABEL)) {
+  console.error(`FATAL: LABEL "${LABEL}" must match the page's own rule, /^[a-z0-9]{1,16}$/,`);
+  console.error(`  or be EMPTY for an unlabelled vault, which is the one derivation finds.`);
   process.exit(2);
 }
 
@@ -115,7 +133,10 @@ const ownerKp = KeyPair.fromString(
  *  become hyphens so alice.near and alice.testnet cannot collapse onto one
  *  vault id. */
 const prefix = OWNER.replace(/\./g, "-");
-const VAULT = `${prefix}-${LABEL}.${FACTORY}`;
+// EMPTY LABEL MEANS NO SEPARATOR EITHER. `${prefix}-.${FACTORY}` would be a
+// trailing-hyphen label, which is not what derivation looks for and is not a
+// legal NEAR account id anyway.
+const VAULT = LABEL === "" ? `${prefix}.${FACTORY}` : `${prefix}-${LABEL}.${FACTORY}`;
 
 /**
  * The deposit, derived from the artifact exactly as the signing page does it.
