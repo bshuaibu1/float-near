@@ -170,13 +170,15 @@ so drift fails two suites.
    sign `DeleteAccount`, and a parent cannot delete a sub-account. Standing mainnet up again
    needs ~1.64 (factory, 163,525 B of code) + 3.468 (a vault with an agent) = **~5.11, so the
    gap is ~1.68** — not the ~1.3 recorded before, which went stale when the factory's code grew.
-4. **Key files work but are not the DEFAULT.** `NEAR_VAULT_AGENT_KEY_FILE` /
-   `FLOAT_QUOTE_SIGNER_KEY_FILE` are wired into both servers (shipped in `b649e3b`), but the
-   provisioning path still *writes* the inline form: `create-float.mjs` (~981-1031),
-   `print-mcp-command.mjs:88`, `print-agent-env.mjs:117`, `agent-key.ts:143-152`. A new user
-   therefore still gets the exposed shape and only a docs-reader opts out. The exposure is
-   realised, not theoretical — reading a config to answer "which vault is this pointed at"
-   prints a live private key into scrollback and into the driving agent's transcript.
+4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
+   now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
+   `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
+   env file does the same. `readKeyFile` learned the fleet-keyring shape so **no third file
+   holding the same secret was created** — that would have been more exposure, not less.
+   Verified end to end: the env file does not contain the secret, and the server still
+   resolves it and learns the account id. Two field spellings exist in real keyrings
+   (`{agentId, secret}` canonical, `{vault, privateKey}` older) and both are read; a refusal
+   names the fields it found, never a value.
 5. **Multi-tenant for reads AND owner actions; `/v1/pay` can never be.** Fixed 2026-11-09: the adapter accepts
    `?vault=` / `?owner=` per request and answers `/v1/resolve`, and the dashboard's proxy
    rewrites every GET to the connected wallet's own vault. **The pages never changed** — all

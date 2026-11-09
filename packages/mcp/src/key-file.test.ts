@@ -405,3 +405,76 @@ describe("resolveKeySource", () => {
     expect(resolveKeySource({ file: "  ", ...VARS }).source).toBe("none");
   });
 });
+
+/**
+ * THE FLEET KEYRING AS A KEY FILE.
+ *
+ * `.float/agent-keys.json` is the durable record of every agent. Until now a
+ * JSON array was refused as "the wrong shape", so the ONLY way to configure an
+ * agent was the inline secret in `.mcp.json` and `.float/adapter.env` — where
+ * reading a config to answer "which vault is this?" prints a live private key
+ * into scrollback and into the driving agent's transcript.
+ *
+ * Accepting the keyring is what lets the provisioning path write a PATH
+ * instead. The alternative — a third file in the credentials shape — would
+ * duplicate the secret into one more place, which is more exposure, not less.
+ */
+describe("the fleet keyring shape", () => {
+  const keyring = (entries: unknown[]) => JSON.stringify(entries);
+
+  it("reads a single-agent keyring and reports the vault as the account", () => {
+    const f = file(
+      keyring([{ nodeId: 1, agentId: "v.testnet", secret: "ed25519:SECRET" }]),
+    );
+    const out = readKeyFile(f);
+    expect(out.secret).toBe("ed25519:SECRET");
+    expect(out.accountId).toBe("v.testnet");
+  });
+
+  it("REFUSES a multi-agent keyring rather than picking one", () => {
+    // Guessing would sign as an agent the operator did not choose — from the
+    // wrong node, against the wrong budget.
+    const f = file(
+      keyring([
+        { agentId: "v.testnet", nodeId: 1, secret: "ed25519:A" },
+        { agentId: "v.testnet", nodeId: 2, secret: "ed25519:B" },
+      ]),
+    );
+    expect(() => readKeyFile(f)).toThrow(/ambiguous|2 agent keys/i);
+  });
+
+  it("names the agents in the refusal but NEVER a key", () => {
+    const f = file(
+      keyring([
+        { agentId: "v.testnet", nodeId: 1, secret: "ed25519:LEAKME" },
+        { agentId: "v.testnet", nodeId: 7, secret: "ed25519:ALSOLEAK" },
+      ]),
+    );
+    let msg = "";
+    try { readKeyFile(f); } catch (e) { msg = (e as Error).message; }
+    expect(msg).toMatch(/v\.testnet#1/);
+    expect(msg).toMatch(/v\.testnet#7/);
+    expect(msg).not.toMatch(/LEAKME|ALSOLEAK/);
+  });
+
+  it("refuses an array with no privateKey, naming the expected shapes", () => {
+    const f = file(keyring([{ agentId: "v.testnet", nodeId: 1, publicKey: "ed25519:pub" }]));
+    expect(() => readKeyFile(f)).toThrow(/secret/);
+  });
+
+  it("still refuses a bare JSON array of strings", () => {
+    // The original reason arrays were rejected: `["ed25519:..."]` must not be
+    // fed to the bare-key reader, which would accept the literal text.
+    const f = file(JSON.stringify(["ed25519:NOTAKEY"]));
+    expect(() => readKeyFile(f)).toThrow();
+  });
+
+  it("also reads the older {vault, privateKey} spelling, which exists in the wild", () => {
+    // A keyring on the author's machine uses these names. Supporting only the
+    // canonical pair would refuse a real file as "the wrong shape".
+    const f = file(keyring([{ kind: "virtual", vault: "v.testnet", node: 2, privateKey: "ed25519:OLD" }]));
+    const out = readKeyFile(f);
+    expect(out.secret).toBe("ed25519:OLD");
+    expect(out.accountId).toBe("v.testnet");
+  });
+});
