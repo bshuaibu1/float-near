@@ -181,15 +181,15 @@ so drift fails two suites.
      3 receipts, 0 failures, no key). near-workspaces 0.23 maps `GasKeyFunctionCall` to
      `unimplemented!()` and panics on read. That path is proven on mainnet instead (7/7).
    - Toolchain now on the VPS: Rust 1.99.1, `cargo-near` 0.23 (needs `libudev-dev`).
-3. **Two real defects found 2026-11-10, one fixed.** (a) `vault_create` returned
-   `https://app.usefloat.xyz`, which serves the **dashboard** — 200, wrong page, no create flow,
-   `./vault.wasm` 404 beside it. The create page is on the APEX, `https://usefloat.xyz`. Fixed,
-   and `scripts/check-create-page.mjs` now follows the real default over the network.
-   (b) **The served `vault.wasm` is STALE** — 298,920 B `c1a9ce7d` vs the pinned 298,839 B
-   `dc7a3fb6`, i.e. the build from before the `#[payable]` fix, so any vault created right now
-   gets an **unreachable `bind_virtual_agent`**. Needs a VPS redeploy of `web/`; the probe stays
-   red until then. **No architecture change is needed or planned** — `deploy_contract` is already
-   the live path.
+3. **The web host is serving a STALE `vault.wasm`.** 298,920 B `c1a9ce7d` against the pinned
+   298,839 B `dc7a3fb6` — the build from before the `#[payable]` fix — so a vault created right
+   now gets an **unreachable `bind_virtual_agent`**. Cause is mundane: the VPS checkout is at
+   `d90eb8e`, an ancestor of `9b1fb88` which rebuilt the artifact. A `git pull` deploy fixes it;
+   `scripts/check-create-page.mjs` stays red until then. **Two things I reported as defects were
+   NOT real** — `app.usefloat.xyz` serving the dashboard is correct (nginx bounces `?factory=`
+   links to the apex, verified live), and `create_vault`'s unpublished global contract is latent
+   because nothing calls it. Both errors had one shape: a product-level claim from a probe that
+   never reproduced the product's own path.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

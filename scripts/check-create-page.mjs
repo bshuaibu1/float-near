@@ -2,24 +2,32 @@
 /**
  * Does the URL we hand users actually create a vault?
  *
- * WHY THIS EXISTS. On 2026-11-10 three separate things were wrong at once, and
- * every existing check was green through all of them:
+ * WHY THIS EXISTS. On 2026-11-10 the web host was serving a `vault.wasm` of
+ * 298,920 B — the build from BEFORE the `#[payable]` fix — while the repo and
+ * every quote used the 298,839 B build. Any vault created in that window got a
+ * `bind_virtual_agent` that cannot be called at all, and all 28 checks were
+ * green throughout, because the defect is not in the repo: it is the
+ * relationship between a constant here, a file on a web server, and an account
+ * on chain. The deploy's config assertions could not see it either — they
+ * described the bytes we uploaded, and the break was in what we uploaded them
+ * NEXT TO.
  *
- *   1. `vault_create` returned `https://app.usefloat.xyz`, which serves the
- *      DASHBOARD. The create page is at `https://usefloat.xyz`. Every user
- *      following the MCP's own URL landed somewhere with no create flow.
- *   2. The `vault.wasm` served beside the page was 298,920 B — the build from
- *      BEFORE the `#[payable]` fix. Vaults created from it get a
- *      `bind_virtual_agent` that cannot be called at all.
- *   3. The factory's OTHER method, `create_vault`, references a global
- *      contract that was never published. Unused, but one `set_code_hash`
- *      away from being the live path.
+ * TWO NON-DEFECTS THIS FILE ALSO RECORDS, because I reported both as real and
+ * was wrong both times:
  *
- * None of that is visible to a unit test, because none of it is in the repo:
- * it is the relationship between a constant here, a file on a web server, and
- * an account on chain. The deploy's config assertions could not see it either
- * — they described the bytes we uploaded, and the break was in what we
- * uploaded them NEXT TO.
+ *   - `app.usefloat.xyz` serving the dashboard is CORRECT. nginx bounces
+ *     anything with `?factory=` to the apex signing page. I probed the bare
+ *     URL, which no user is ever given, and called it broken.
+ *   - `create_vault` referencing an unpublished global contract is LATENT, not
+ *     live. Nothing calls it; every client calls `create_vault_with_code`,
+ *     which deploys the code per vault. I read the registry and concluded
+ *     something about the product without tracing the call path.
+ *
+ * Both mistakes have one shape: assert a product-level failure from a probe
+ * that never reproduced the product's own path. Hence the rule this file
+ * follows — fetch the URL shape `buildCreatePlan` really emits, follow the
+ * redirects, and check the artifact at whatever origin the page actually
+ * landed on.
  *
  * So this check ATTEMPTS THE PRODUCT ACTION's preconditions, over the network,
  * against the real default URL. It is deliberately not in `verify-all`: it
@@ -64,20 +72,41 @@ const get = async (u, init) => {
 
 // 1. THE PAGE IS THE CREATE PAGE, not merely a 200.
 //
-// `app.usefloat.xyz` answered 200 for a month while serving the dashboard. A
-// status code says a server is up, not that it is the right server — so match
-// on the thing only the create page contains: the method it calls.
-const page = await get(appUrl);
+// A status code says a server is up, not that it is the right server — so
+// match on the thing only the create page contains: the method it calls.
+//
+// FETCH THE SHAPE `buildCreatePlan` ACTUALLY EMITS, with `?factory=`, and
+// follow redirects. The first version of this check fetched the BARE url and
+// concluded `app.usefloat.xyz` was broken because it answered with the
+// dashboard. It is not broken: nginx bounces anything carrying `?factory=` to
+// the apex signing page, deliberately, because the published @floatonnear/mcp
+// 0.5.0 hardcodes `app.` and breaking it would break vault creation for every
+// existing install. `create.ts` sets `factory` on every link unconditionally,
+// which is exactly what makes a signing link distinguishable from a dashboard
+// visit.
+//
+// So a probe that drops the query string is not testing the product's URL —
+// it is testing one no user is ever given, and it reported a defect that did
+// not exist. Reproduce the real path or prove nothing.
+const probeUrl = (() => {
+  const u = new URL(appUrl);
+  u.searchParams.set("factory", "probe.near");
+  u.searchParams.set("network", "mainnet");
+  return u.toString();
+})();
+const page = await get(probeUrl, { redirect: "follow" });
 const html = page.ok ? await page.text() : "";
 if (!page.ok) {
-  fail(`${appUrl} returned ${page.status}${page._err ? ` (${page._err})` : ""}`);
+  fail(`${probeUrl} returned ${page.status}${page._err ? ` (${page._err})` : ""}`);
 } else if (!html.includes("create_vault_with_code")) {
   fail(
-    `${appUrl} responded 200 but is not the create page — no create_vault_with_code in it.`,
-    `It is probably the dashboard. The create page is served by web/serve.mjs.`,
+    `${probeUrl} responded 200 but did not land on the create page.`,
+    `Followed redirects to ${page.url || "?"}. Either the apex is not serving ` +
+      `web/index.html, or the nginx rule that bounces ?factory= links stopped matching.`,
   );
 } else {
-  console.log(`  page           OK  (${html.length} B, calls create_vault_with_code)`);
+  const hop = page.url && page.url !== probeUrl ? ` via ${new URL(page.url).origin}` : "";
+  console.log(`  page           OK  (${html.length} B, calls create_vault_with_code${hop})`);
 }
 
 // 2. IT MUST NOT CALL THE GLOBAL PATH.
@@ -99,7 +128,12 @@ if (html.includes('"create_vault"') || /methodName:\s*"create_vault"/.test(html)
 // exactly what the `#[payable]` fix produced, but a change that happens to
 // preserve length would slip through, and "same size" has already been
 // mistaken for "same code" in this repo.
-const wasmUrl = new URL("./vault.wasm", appUrl.endsWith("/") ? appUrl : appUrl + "/").toString();
+// RESOLVE AGAINST THE LANDING ORIGIN, not `appUrl`. The page fetches
+// `./vault.wasm` relative to wherever it was finally served, so after a
+// redirect those are different hosts — and checking the wrong one is how a
+// stale artifact hides behind a correct-looking URL.
+const wasmBase = page.url || appUrl;
+const wasmUrl = new URL("./vault.wasm", wasmBase).toString();
 const w = await get(wasmUrl);
 if (!w.ok) {
   fail(
