@@ -36,7 +36,7 @@
  * clean failure: CreateAccount succeeds and the vault sits below its own
  * storage requirement, bricking on the first write.
  */
-export const CONTRACT_BYTES = 298920;
+export const CONTRACT_BYTES = 298839;
 
 /** NEAR charges 1e19 yoctoNEAR per byte of storage. */
 export const STORAGE_COST_PER_BYTE = 10n ** 19n;
