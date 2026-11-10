@@ -133,6 +133,27 @@ const free = async (id) => {
   const a = await acctOrNull(id);
   return a ? BigInt(a.amount) - BigInt(a.storage_usage) * 10n ** 19n : null;
 };
+/**
+ * Bytes of code currently deployed at `id`, or null if it cannot be read.
+ *
+ * NULL IS NOT ZERO, and the caller must not treat it as such: an unreadable
+ * answer means "price the full stake", while zero would mean "the account is
+ * empty, the whole new contract is growth". Collapsing the two understates
+ * the requirement exactly when the RPC is least trustworthy.
+ *
+ * `contractId` is the parameter name — `accountId` silently returns nothing
+ * here, which this repo has already mistaken for a failed deploy once.
+ */
+const codeLength = async (id) => {
+  try {
+    const r = await p.viewContractCode({ contractId: id, blockQuery: { finality: "final" } });
+    const raw = r?.code ?? r?.code_base64;
+    if (raw == null) return null;
+    return typeof raw === "string" ? Buffer.from(raw, "base64").length : raw.length;
+  } catch {
+    return null;
+  }
+};
 
 if (!existsSync(credPath(PARENT))) {
   console.error(`FATAL: no mainnet credential for ${PARENT} at ${credPath(PARENT)}`);
@@ -188,15 +209,44 @@ console.log(`  (the global contract would take that to ~0.11)`);
 const STAKE = BigInt(code.length) * 10n ** 19n;
 if (existing) {
   const facFree = await free(FACTORY);
-  if (facFree !== null && facFree < STAKE) {
+
+  // A REDEPLOY COSTS THE DELTA, NOT THE WHOLE STAKE.
+  //
+  // This compared `facFree < STAKE` and refused a deploy that fits easily.
+  // `free()` is `amount - storage_usage * 1e19`, and `storage_usage` ALREADY
+  // counts the code on the account — so the old code's stake is deducted from
+  // `facFree` before the comparison, and testing it against the full new stake
+  // charges for that code twice.
+  //
+  // Measured 2026-11-10 on usefloat.near: free 0.16034, new code 164,596 B.
+  // The check demanded 1.64596 and printed a FATAL telling the operator to
+  // send ~1.5 NEAR from the parent. The real requirement was the 1,071-byte
+  // difference — 0.01071 — and the parent only held 1.616, most of which is
+  // needed for the first vault's 3.088 deposit. A false FATAL that says "send
+  // money" is worse than one that just stops.
+  //
+  // Reads the deployed length from the CHAIN rather than assuming the local
+  // previous build is what is up there; that assumption is how a redeploy
+  // gets priced against the wrong baseline.
+  const onChain = await codeLength(FACTORY);
+  const delta = onChain === null ? STAKE : BigInt(Math.max(0, code.length - onChain)) * 10n ** 19n;
+  const why =
+    onChain === null
+      ? `could not read the deployed code, so pricing the FULL stake`
+      : `${onChain.toLocaleString()} B on chain -> ${code.length.toLocaleString()} B`;
+
+  if (facFree !== null && facFree < delta) {
     console.error(`
-  FATAL: ${FACTORY} holds ${near(facFree)}, but its code needs ${near(STAKE)} of storage stake.`);
+  FATAL: ${FACTORY} holds ${near(facFree)}, but this deploy grows its storage by ${near(delta)}.`);
+    console.error(`  (${why})`);
     console.error(`  No money moves from ${PARENT} for an account that already exists --`);
     console.error(`  the factory pays for its own code. Top it up with:`);
     console.error(`    near tokens ${PARENT} send-near ${FACTORY} '<amount> NEAR' network-config mainnet sign-with-legacy-keychain send`);
     process.exit(1);
   }
-  console.log(`  ${FACTORY} holds ${near(facFree ?? 0n)}; code stake ${near(STAKE)} -- covered.`);
+  console.log(
+    `  ${FACTORY} holds ${near(facFree ?? 0n)}; this deploy needs ${near(delta)} more (${why}) -- covered.`,
+  );
 } else if (parentFree !== null && parentFree < FUND + 5n * 10n ** 22n) {
   console.error(`\n  FATAL: ${PARENT} holds ${near(parentFree)}, needs ~${near(FUND + 5n * 10n ** 22n)}.`);
   process.exit(1);
