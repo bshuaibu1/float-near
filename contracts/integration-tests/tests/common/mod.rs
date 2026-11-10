@@ -127,6 +127,23 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
             "owner": owner.id(),
             "network": "sandbox",
             "strict_allocation": false, // overcommit is the subject under test
+            // ROOT LIMITS ARE PASSED AT INIT, and omitting them was what made
+            // this whole tier dead. `new` grew this required field when the
+            // factory learned to create a funded, bound vault in one
+            // signature; `setup` was never updated, so every test in every
+            // file failed at the first call with
+            //   missing field `root_limits` at line 1 column 101
+            // Nothing noticed because near-workspaces ships no Windows
+            // sandbox, so the tier had never been run at all — it rotted in
+            // place while looking like coverage.
+            "root_limits": [{
+                "token": ft.id(),
+                "daily_cap": CAP.to_string(),
+                "per_tx_cap": CAP.to_string(),
+            }],
+            // The payee, set HERE rather than by a later add_node, because
+            // `new` now creates the root node itself.
+            "root_recipients": [payee.id()],
         }))
         .transact()
         .await?
@@ -167,8 +184,9 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
         }])
     };
 
-    add_node(&owner, &vault, None, "root", lim(CAP, CAP), Some(vec![payee.id().to_string()]))
-        .await?;
+    // NO `add_node` FOR ROOT. `new` creates it, so adding one is refused
+    // INVALID_CONFIG: root already exists. This line used to be how root got
+    // its caps and payee; both now travel in `new` above.
     add_node(&owner, &vault, Some(ROOT), "team", lim(CAP, CAP), None).await?;
 
     let mut accounts = Vec::with_capacity(agents);

@@ -17,6 +17,8 @@ near-workspaces = "=0.23.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 anyhow = "1"
 serde_json = "1"
+# Only to read a NEP-611 gas key, which near-workspaces 0.23 panics on.
+reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 futures = "0.3"
 # Real ed25519 signatures for the virtual-agent tier. Same crate the vault's

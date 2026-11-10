@@ -12,12 +12,40 @@
 //! hides whether the production provisioning path grants the right authority.
 //! This file drives the key the contract itself issued, with nothing injected.
 //!
+//! PROVISIONED BY `add_role`, WHICH IS WHAT SHIPS. This file used to call
+//! `create_agent_account` — removed in the virtual-agent change, because every
+//! agent sub-account it made STRANDED its funding permanently (10.7752 NEAR
+//! across 18 testnet agents, unrecoverable by anyone). The call survived here
+//! because near-workspaces takes the method name as a STRING: the test went on
+//! compiling, and could only ever fail at runtime with MethodNotFound. Nobody
+//! saw it because the whole tier needs Linux and had never been run.
+//!
+//! WHY NOT JUST DELETE IT. `self_submit.rs` tests the same restriction
+//! behaviourally, but it INSTALLS the key itself with the right permission and
+//! then checks a call fails — so it proves nothing about what the CONTRACT
+//! provisions. This file is the only place that reads the key's permission back
+//! off-chain and asserts its shape, which is the claim the README actually
+//! makes.
+//!
+//! IGNORED, AND THE REASON IS NOT A BUG IN THE CONTRACT. The sandbox `neard`
+//! that near-workspaces 0.23 bundles does not implement NEP-611 gas keys. It
+//! ACCEPTS the `AddGasKey` action and silently does nothing: measured here as
+//! 3 receipts, 0 failures, and no key on the account afterwards. The same gap
+//! shows in the library's own types, which map `GasKeyFunctionCall` to
+//! `unimplemented!()` (types/mod.rs:552) and panic if you try to read one.
+//!
+//! So this cannot run until the bundled node supports gas keys. The path IS
+//! proven on real chains — mainnet 7/7, 2026-10-31 — and `self_submit.rs`
+//! covers the behavioural half by installing a key by hand. What stays
+//! uncovered is whether the CONTRACT grants the right permission, which is
+//! exactly what this file was written to check.
+//!
 //! Prerequisite: scripts/build-wasm.sh (Linux/WSL).
 
 mod common;
 use common::*;
 
-use near_workspaces::types::{AccessKeyPermission, KeyType, NearToken, SecretKey};
+use near_workspaces::types::{KeyType, NearToken, SecretKey};
 use near_workspaces::Account;
 use serde_json::json;
 
@@ -44,65 +72,144 @@ fn rejected_because<T: std::fmt::Debug, E: std::fmt::Debug>(
     );
 }
 
+
+/// The raw `AccessKeyPermissionView` for one key, straight from the node.
+///
+/// near-workspaces cannot deserialize a gas key (see the call site), so this
+/// goes to the sandbox's own JSON-RPC and returns the permission as JSON.
+async fn gas_key_permission(e: &Env, public_key: &str) -> anyhow::Result<serde_json::Value> {
+    let body = json!({
+        "jsonrpc": "2.0", "id": "keys-test", "method": "query",
+        "params": {
+            "request_type": "view_access_key_list",
+            "finality": "final",
+            "account_id": e.vault.id(),
+        }
+    });
+    let url = format!("http://{}", e.worker.rpc_addr().trim_start_matches("http://"));
+    let out: serde_json::Value = reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    let keys = out
+        .get("result")
+        .and_then(|r| r.get("keys"))
+        .and_then(|k| k.as_array())
+        .ok_or_else(|| anyhow::anyhow!("no keys in RPC reply: {out}"))?;
+    let hit = keys
+        .iter()
+        .find(|k| k.get("public_key").and_then(|v| v.as_str()) == Some(public_key))
+        .ok_or_else(|| {
+            anyhow::anyhow!("add_role did not install {public_key}. Keys present: {keys:#?}")
+        })?;
+    hit.get("access_key")
+        .and_then(|a| a.get("permission"))
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("key has no permission field: {hit}"))
+}
+
+/// Assert a key is pinned to `request_payment` on this vault, and nothing else.
+///
+/// Reads the JSON view rather than a typed enum, so it works for both a plain
+/// function-call key and a NEP-611 gas key — the same restriction expressed
+/// two ways. The clauses that matter are identical either way: receiver and
+/// method. FULL ACCESS is rejected explicitly, because that is the one shape
+/// that would silently grant everything.
+fn assert_restricted_to_request_payment(perm: &serde_json::Value, vault: &str) {
+    let text = perm.to_string();
+    assert!(
+        !text.contains("FullAccess"),
+        "the provisioned key is FULL ACCESS, not restricted: {text}"
+    );
+    let inner = perm
+        .get("FunctionCall")
+        .or_else(|| perm.get("GasKeyFunctionCall"))
+        .unwrap_or_else(|| panic!("not a function-call or gas key: {text}"));
+    assert_eq!(
+        inner.get("receiver_id").and_then(|v| v.as_str()),
+        Some(vault),
+        "key is not pinned to this vault: {text}"
+    );
+    let methods: Vec<String> = inner
+        .get("method_names")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        methods,
+        vec!["request_payment".to_string()],
+        "key is not pinned to request_payment alone: {text}"
+    );
+}
+
 #[tokio::test]
+#[ignore = "the bundled sandbox neard ignores NEP-611 AddGasKey: 3 receipts, 0 failures, no key installed"]
 async fn provisioned_agent_key_can_only_call_request_payment_on_this_vault()
 -> anyhow::Result<()> {
-    // One node, no bound account: the contract will create and bind it.
+    // One node, no bound account: `add_role` creates and binds it.
     let e = setup(0, CAP * 10).await?;
     let lim = json!([{ "token": e.ft.id(),
                        "daily_cap": CAP.to_string(),
                        "per_tx_cap": CAP.to_string() }]);
-    let node = add_node(&e.owner, &e.vault, Some(TEAM), "a0", lim, None).await?;
 
     // The owner generates the keypair; only the PUBLIC half is sent on-chain.
-    //
-    // The allowance must cover PREPAID gas, not expected burn: NEAR reserves
-    // the whole prepaid amount against the signer up front. 2 NEAR comfortably
-    // covers the 100 Tgas calls below.
     let sk = SecretKey::from_random(KeyType::ED25519);
-    let allowance = NearToken::from_near(2);
+    let pk = sk.public_key();
+
+    // `add_role` AUTHORISES BY DEPOSIT, not by assert_owner: a function-call
+    // key cannot attach one at all, so an attached balance proves a
+    // full-access signature. It also funds the gas key, so below
+    // MIN_AGENT_GAS_FUNDING it refuses rather than making an agent that
+    // cannot transact.
     let out = e
         .owner
-        .call(e.vault.id(), "create_agent_account")
+        .call(e.vault.id(), "add_role")
         .args_json(json!({
-            "node_id": node,
-            "sub_label": "a0",
-            "public_key": sk.public_key(),
-            "key_allowance": allowance,
+            "label": "a0",
+            "limits": lim,
+            "cooldown_sec": 0,
+            "recipients": serde_json::Value::Null,
+            "public_key": pk.to_string(),
         }))
-        .deposit(allowance.saturating_add(NearToken::from_near(1)))
+        .deposit(NearToken::from_millinear(120))
         .max_gas()
         .transact()
         .await?;
     assert!(out.is_success(), "provisioning failed: {out:#?}");
-
-    let agent_id: near_workspaces::AccountId =
-        format!("a0.{}", e.vault.id()).parse()?;
-
-    // The account exists, and its ONLY key is a function-call key scoped to
-    // this vault and this one method. Read it off-chain rather than trusting
-    // the call we just made.
-    let keys = e.worker.view_access_keys(&agent_id).await?;
-    assert_eq!(keys.len(), 1, "agent account should hold exactly one key");
-    match &keys[0].access_key.permission {
-        AccessKeyPermission::FunctionCall(fc) => {
-            assert_eq!(
-                fc.receiver_id,
-                e.vault.id().to_string(),
-                "key is not pinned to this vault"
-            );
-            assert_eq!(
-                fc.method_names,
-                vec!["request_payment".to_string()],
-                "key is not pinned to request_payment alone"
-            );
-            assert!(fc.allowance.is_some(), "key should carry a bounded gas allowance");
-        }
-        other => panic!("expected a FunctionCall key, got {other:?}"),
+    // SUCCESS ON THE OUTER TX IS NOT SUCCESS OF THE PROMISE IT SCHEDULED.
+    // add_role installs the gas key via a Promise whose Drop constructs it, so
+    // a receipt can fail while the call reports success.
+    for r in out.receipt_failures() {
+        panic!("add_role scheduled a receipt that FAILED: {r:#?}");
     }
+    println!("  receipts: {} ok, {} failed", out.receipt_outcomes().len(), out.receipt_failures().len());
 
-    // The node was bound, so the key has somewhere to spend from.
-    let agent = Account::from_secret_key(agent_id.clone(), sk, &e.worker);
+    // THE KEY LIVES ON THE VAULT, not on a sub-account. That is the whole
+    // point of the virtual-agent change: there is no account to strand.
+    //
+    // Read the permission back OFF-CHAIN rather than trusting the call we
+    // just made — this is the only assertion in the repo that checks what the
+    // CONTRACT granted, as opposed to what a test installed by hand.
+    // READ IT OVER RAW JSON-RPC, NOT through near-workspaces.
+    //
+    // `worker.view_access_keys` PANICS on any account holding a NEP-611 gas
+    // key: near-workspaces 0.23.0 maps `GasKeyFunctionCall` and
+    // `GasKeyFullAccess` to `unimplemented!()` (types/mod.rs:552). Since
+    // `add_role` installs exactly such a key, the typed API cannot see what
+    // this test exists to check — so it asks the node directly.
+    //
+    // That is also why no other test asserts this shape: the only ones that
+    // touch gas keys install them by hand and check behaviour instead.
+    let perm = gas_key_permission(&e, &pk.to_string()).await?;
+    assert_restricted_to_request_payment(&perm, e.vault.id().as_str());
+
+    // The node was bound, so the key has somewhere to spend from. The signer
+    // is the VAULT account driven by the agent's restricted key — which is
+    // exactly how a real agent transacts.
+    let agent = Account::from_secret_key(e.vault.id().clone(), sk, &e.worker);
 
     // ---- clause 1: the one allowed method works.
     let ok = agent
