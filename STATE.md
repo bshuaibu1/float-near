@@ -159,10 +159,25 @@ so drift fails two suites.
    agree).
    Grepped every file for `hackathon|submission|devpost|2026-11-14`: **zero matches** — the
    submission requirements are recorded nowhere in this repo. ← biggest gap, 6 days left.
-2. **Sandbox/integration tier has never run on this machine** (needs Linux `neard`). Consequence:
-   `contracts/integration-tests/tests/keys.rs:66` still calls `create_agent_account`, which was
-   **removed from the contract** — that test cannot pass, and nobody sees it. 9 mutations
-   (M9/M10/M17/M18/M22) blocked on this tier; M29's re-run rests on one manual testnet run.
+2. **The integration tier RUNS now — 25 passing, 9 failing, 1 ignored** (2026-11-10, on the
+   Linux VPS; Windows has no sandbox binary, which is why it had never run). It was entirely
+   DEAD and nobody could see it:
+   - `common/setup` omitted `root_limits`, a field `new()` grew when the factory learned the
+     one-signature flow. **Every test in every file** died on the first call. Fixed.
+   - `setup` also still called `add_node(.., "root", ..)`, which `new()` now does itself —
+     `INVALID_CONFIG: root already exists`. Fixed; root caps and payee travel in `new()`.
+   - `keys.rs` called `create_agent_account`, REMOVED in the virtual-agent change. It kept
+     compiling because near-workspaces takes the method name as a **string**, so it could only
+     ever fail at runtime. Rewritten onto `add_role`.
+   - **The bundled sandbox `neard` does not implement NEP-611 gas keys.** It ACCEPTS
+     `AddGasKey` and silently does nothing — measured: 3 receipts, 0 failures, no key on the
+     account. near-workspaces 0.23 agrees: its types map `GasKeyFunctionCall` to
+     `unimplemented!()` and PANIC if you read one. So the gas-key path cannot be covered here
+     at all; it is proven on mainnet instead (7/7). `keys.rs` is `#[ignore]`d with that reason.
+   - **Still failing: 9 of 10 in `self_submit.rs`**, on stale deposit expectations —
+     `bind_virtual_agent` is not `#[payable]` and rejects a deposit before the body runs, while
+     a neighbouring call requires exactly 1 yocto. Needs each call site read individually; a
+     context-matched bulk edit merely swapped one error for the other.
 3. **Mainnet is empty, and one account on it can never be closed.** Re-measured 2026-11-08:
    `float.test015.near` is **gone** (we closed it — that teardown is the proof the sequence
    works on mainnet). `test015.near` holds **3.425**. `r1.float.test015.near` holds **0.546779**
