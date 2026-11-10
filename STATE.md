@@ -197,7 +197,13 @@ so drift fails two suites.
    owner actions in production while the PR claimed they worked. Found only by curling a
    token-less stack; now 10 tests + 7 killed mutants. Caveat: derivation finds the
    **unlabelled** vault only — a labelled one needs an explicit `?vault=` (see Live state).
-6. **`deploy-vps.sh` has never run on a host.** No systemd unit, no `pm2 startup`, no log rotation.
+6. ~~`deploy-vps.sh` has never run on a host.~~ **SUPERSEDED, not pending.** It deploys the
+   adapter under **pm2** to `/srv/float-near`, for a box already running pm2 — a path
+   `DECISIONS.md` (2026-11-08) rejected in favour of **systemd on a dedicated box**. The
+   chosen script, `scripts/deploy-skill-host.sh`, HAS now run on `154.12.117.17` repeatedly
+   with all 14 post-deploy assertions green. `deploy-vps.sh` is kept because
+   `docs/DEPLOY-VPS.md` documents the pm2 alternative, but nothing in the current deployment
+   uses it — so "never run" is true and no longer a gap.
 7. **A solver has never filled an Intents order** — the testnet deposit address was ours and the
    quote was `dry`. SETTLED on the Intents rail ≠ delivered.
 8. Daily window is a **cliff, not rolling** — 2× daily budget across midnight. Open by decision.
