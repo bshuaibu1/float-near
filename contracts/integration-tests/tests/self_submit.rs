@@ -83,7 +83,13 @@ async fn install_key_on_vault(e: &Env, pk: &PublicKey) -> Result<()> {
             AccessKey::function_call_access(
                 e.vault.id(),
                 &["request_payment"],
-                Some(NearToken::from_near(1)),
+                // 5, NOT 1. A max_gas call reserves prepaid_gas x the MAX gas
+                // price, and measured here that is 1.000919 — just over a
+                // 1 NEAR allowance, so every self-submit died
+                // NotEnoughAllowance by 0.0009. The allowance is a fixture
+                // bound, not product behaviour: the real per-agent cap is the
+                // gas key's own balance.
+                Some(NearToken::from_near(5)),
             ),
         )
         .transact()
