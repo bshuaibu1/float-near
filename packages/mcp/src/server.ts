@@ -291,9 +291,117 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.6.1" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.6.2" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
+
+/**
+ * Wait for a create to land, and prove the result belongs to the user.
+ *
+ * WHY A TOOL AND NOT A SENTENCE IN THE NOTE. `vault_create` knows the derived
+ * address before anything is signed, so "did it work?" is answerable from the
+ * chain — yet the flow used to end at "approve it in your wallet", leaving the
+ * human to read an account id back to an agent that already had it. That was
+ * the clunkiest step in onboarding and it was a documentation gap, not a
+ * technical limit.
+ *
+ * EXISTENCE IS NOT OWNERSHIP, and conflating them is the actual hazard here.
+ * `derive_prefix` is not injective — `a.b.near` and `a-b.near` land on the same
+ * id — so an account AT the derived address may belong to whoever created
+ * first. Reporting "your vault is live" on existence alone would point a user's
+ * agent at a stranger's money. So this reads `get_config` back and compares
+ * `owner`, and reports THREE outcomes, never two: yours, someone else's, or
+ * could-not-read. "I could not check" is not "it is yours".
+ *
+ * Polls rather than asking once, because a `final`-finality read immediately
+ * after a write can be a whole transaction behind.
+ */
+server.tool(
+  "vault_await_create",
+  "After the user signs the create link, confirm the vault is live and VERIFY IT IS THEIRS. Reads the chain, so it needs no key. Call this instead of asking the user to paste their vault id back — vault_create already told you the address.",
+  {
+    vault: z.string().describe("the derived vault id, from vault_create's `confirm.vault`"),
+    owner: z.string().describe("who it must belong to — compared against the vault's own get_config.owner"),
+    network: z.enum(["mainnet", "testnet"]).optional(),
+    timeoutSeconds: z
+      .number()
+      .int()
+      .min(1)
+      .max(300)
+      .optional()
+      .describe("how long to wait for the account to appear, default 90"),
+  },
+  async ({ vault, owner, network, timeoutSeconds }) => {
+    const net = network ?? cfg.network;
+    const rpc = rpcForNetwork(net, {
+      configuredNetwork: cfg.network,
+      override: process.env.NEAR_VAULT_RPC_URL,
+    });
+    const deadline = Date.now() + (timeoutSeconds ?? 90) * 1000;
+
+    let appeared = false;
+    for (;;) {
+      if (await accountExists(rpc, vault).catch(() => false)) {
+        appeared = true;
+        break;
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+
+    if (!appeared) {
+      return json({
+        status: "NOT_YET",
+        vault,
+        instruction:
+          `${vault} does not exist yet. That is not a failure — the user may not have ` +
+          `signed, or may have cancelled. Ask whether they approved it, and call this ` +
+          `again. Do NOT tell them the vault is created.`,
+      });
+    }
+
+    // THE OWNER READ IS THE POINT. Getting here only proves an account exists.
+    const config = await viewFunction<{ owner?: string }>(rpc, vault, "get_config", {}).catch(
+      () => null,
+    );
+
+    if (!config || typeof config.owner !== "string") {
+      return json({
+        status: "UNVERIFIED",
+        vault,
+        instruction:
+          `${vault} exists but its get_config could not be read, so whether it is ${owner}'s ` +
+          `is UNKNOWN — not assumed. It may not be a Float vault at all. Do not point an ` +
+          `agent at it until this is resolved: near view ${vault} get_config`,
+      });
+    }
+
+    if (config.owner !== owner) {
+      return json({
+        status: "NOT_YOURS",
+        vault,
+        actualOwner: config.owner,
+        instruction:
+          `${vault} exists but is owned by ${config.owner}, NOT ${owner}. The vault id ` +
+          `derivation is not injective, so a different account can hold this address — ` +
+          `whoever created it first. Do NOT configure anything against it. Create one ` +
+          `under a label instead, which lands on a different address.`,
+      });
+    }
+
+    return json({
+      status: "LIVE",
+      vault,
+      owner: config.owner,
+      config,
+      nextSteps: [
+        `Set NEAR_VAULT_CONTRACT=${vault} so every other tool reads this vault.`,
+        `vault_tree shows the budget; vault_budget shows what is left today.`,
+        `Nothing can spend from it until an agent is bound with a budget — vault_add_role.`,
+      ],
+    });
+  },
+);
 
 server.tool(
   "vault_tree",
@@ -461,8 +569,39 @@ server.tool(
       .describe(
         "generate an agent key and bind it in the SAME transaction, so one signature creates the vault and authorises you. Adds 0.12 NEAR of gas-key funding to the deposit. The user is shown the public key and must confirm it before signing. Requires `owner`, because the credential is filed under the vault id and that cannot be derived without one.",
       ),
-  },
-  async ({ owner, network, factory, bindAgent }) => {
+      daily: z
+      .string()
+      .optional()
+      .describe(
+        "ASK THE USER. The root budget per UTC day, in HUMAN units of the token, e.g. \"100\" or \"2.04\" — not base units. Defaults on the page to 2.04 (mainnet) / 100 (testnet). This is the number the vault enforces on chain, so it is worth asking rather than defaulting.",
+      ),
+    perTx: z
+      .string()
+      .optional()
+      .describe(
+        "ASK THE USER. Maximum per single payment, HUMAN units. Must be <= daily or it can never bind. Page defaults: 0.51 (mainnet) / 10 (testnet).",
+      ),
+    token: z
+      .string()
+      .optional()
+      .describe(
+        "the NEP-141 token the caps are denominated in. Defaults per network (USDC on mainnet). Caps are keyed PER TOKEN, so a wrong id silently gives the agent no budget for the token it actually pays in.",
+      ),
+    decimals: z
+      .number()
+      .int()
+      .min(0)
+      .max(24)
+      .optional()
+      .describe("the token's decimals, default 6. Wrong here scales every cap by a power of ten."),
+    label: z
+      .string()
+      .optional()
+      .describe(
+        "optional vault label, 1-16 chars of a-z0-9. IT BECOMES PART OF THE ADDRESS (<prefix>-<label>.<factory>), so pass it only if the user wants a second vault or a specific name.",
+      ),
+},
+  async ({ owner, network, factory, bindAgent, daily, perTx, token, decimals, label }) => {
     const net = network ?? cfg.network;
     const fac = factory ?? cfg.factory ?? FACTORY_BY_NETWORK[net];
     if (!fac) {
@@ -561,6 +700,15 @@ server.tool(
         exists,
         existingOwner,
         agentPk: generated?.publicKey ?? null,
+        // The interview answers, forwarded verbatim. Undefined stays undefined
+        // so the PAGE's own defaults apply — substituting a default here would
+        // mean two places deciding the same number, which is how the deposit
+        // quote came to disagree with the page by 0.26 NEAR.
+        daily,
+        perTx,
+        token,
+        decimals,
+        label,
       });
       return json({
         ...plan,

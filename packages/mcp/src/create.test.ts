@@ -319,3 +319,81 @@ describe("rpcForNetwork", () => {
     expect(rpcForNetwork("mainnet")).not.toBe(rpcForNetwork("testnet"));
   });
 });
+
+/**
+ * THE INTERVIEW PARAMS — the whole point of the agentic flow.
+ *
+ * The page has read `?daily=`, `?pertx=`, `?token=`, `?decimals=` and `?label=`
+ * since it was written. This builder sent four params and never those, so an
+ * agent could not ask a user their budget and hand back a ready-to-sign link.
+ * These tests pin the wiring AND the refusals, because every one of these
+ * values becomes part of a transaction a human approves.
+ */
+describe("the create link carries the interview answers", () => {
+  const withCaps = (extra: Record<string, unknown>) =>
+    new URL(buildCreatePlan({ ...base, ...extra } as never).url).searchParams;
+
+  it("puts the caps in the URL under the PAGE's param names", () => {
+    const q = withCaps({ daily: "100", perTx: "10", token: "usdc.fakes.testnet", decimals: 6 });
+    // `pertx`, NOT `perTx`. The page reads the lowercase name; a camelCase key
+    // is silently ignored and the user gets the page's default instead of the
+    // cap they were asked about.
+    expect(q.get("daily")).toBe("100");
+    expect(q.get("pertx")).toBe("10");
+    expect(q.get("token")).toBe("usdc.fakes.testnet");
+    expect(q.get("decimals")).toBe("6");
+  });
+
+  it("omits what was not asked, so the PAGE's defaults apply", () => {
+    const q = withCaps({});
+    // Not "", and not a default chosen here. Two places deciding one number is
+    // how the deposit quote came to disagree with the page by 0.26 NEAR.
+    for (const k of ["daily", "pertx", "token", "decimals", "label"]) {
+      expect(q.has(k), `${k} should be absent`).toBe(false);
+    }
+  });
+
+  /**
+   * A LABEL IS PART OF THE ADDRESS, so the reported vault must move with it.
+   *
+   * `resolve_vault` builds `{prefix}-{label}.{factory}`. Reporting the
+   * unlabelled id while the user signs for the labelled one tells them the
+   * wrong address — and they would then point an agent at an account that does
+   * not exist.
+   */
+  it("moves the reported vault id when a label is given", () => {
+    const plan = buildCreatePlan({ ...base, label: "two" } as never);
+    expect(plan.vault).toBe("alice-near-two.float.near");
+    expect(new URL(plan.url).searchParams.get("label")).toBe("two");
+  });
+
+  it("refuses more decimal places than the token has", () => {
+    // The page TRUNCATES rather than rounding, so this would silently become
+    // 2.040000 — a cap that is not the one the user agreed to.
+    expect(() => withCaps({ daily: "2.0400001", decimals: 6 })).toThrow(/truncates/);
+  });
+
+  it("refuses a perTx above the daily cap", () => {
+    expect(() => withCaps({ daily: "10", perTx: "100" })).toThrow(/swapped/);
+  });
+
+  it("refuses a zero or non-numeric cap", () => {
+    expect(() => withCaps({ daily: "0" })).toThrow(/greater than 0/);
+    expect(() => withCaps({ daily: "100 USDC" })).toThrow(/HUMAN units/);
+  });
+
+  it("refuses a label the FACTORY would reject after payment", () => {
+    // The contract's own rule, so BAD_LABEL cannot arrive post-signature.
+    expect(() => withCaps({ label: "WAY-TOO-LONG-AND-UPPERCASE" })).toThrow(/1-16 characters/);
+    // And the TLD ban added to the factory on 2026-11-10, which the page
+    // predates and does not know about. `base.factory` is float.near.
+    expect(() => withCaps({ label: "near" })).toThrow(/factory's own suffix/);
+  });
+
+  it("tells the agent to verify the vault itself rather than ask the user", () => {
+    const plan = buildCreatePlan(base as never);
+    expect(plan.confirm.tool).toBe("vault_await_create");
+    expect(plan.confirm.vault).toBe(base.vaultId);
+    expect(plan.confirm.instruction).toMatch(/Do NOT ask the user to paste/);
+  });
+});

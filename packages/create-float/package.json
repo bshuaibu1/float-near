@@ -1,6 +1,6 @@
 {
   "name": "@floatonnear/create-float",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "One command to stand up a Float vault on NEAR: account, contract, budget tree, agent keys, and client config.",
   "type": "module",
   "license": "MIT",

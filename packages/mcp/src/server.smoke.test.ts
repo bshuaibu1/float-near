@@ -141,6 +141,7 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_add_role",
         "vault_roles",
         "vault_gas",
+        "vault_await_create",
       ].sort(),
     );
   });
@@ -197,6 +198,22 @@ describe("the MCP server starts and registers its tools", () => {
        * read is the feature, not an implementation detail.
        */
       "vault_teardown_report",
+      /**
+       * Polls for a newly created vault and VERIFIES THE OWNER. View calls
+       * only, no key, nothing signed.
+       *
+       * A read even though it is part of a write flow, and the distinction
+       * matters: the signature happened in the user's own wallet, on the
+       * create page. This only looks at the result. It exists so the agent
+       * stops asking the user to read back an account id it already derived.
+       *
+       * Its reason for existing is the owner comparison, not the polling.
+       * `derive_prefix` is not injective, so an account AT the derived id can
+       * belong to whoever created first — reporting "live" on existence alone
+       * would point a user's agent at a stranger's money. Three outcomes:
+       * LIVE, NOT_YOURS, UNVERIFIED.
+       */
+      "vault_await_create",
     ]);
     // PROVISIONING: generates an AGENT's keypair locally, writes the secret
     // to the keyring, and returns an UNSIGNED payload for the owner's wallet.
