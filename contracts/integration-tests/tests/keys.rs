@@ -32,7 +32,7 @@
 mod common;
 use common::*;
 
-use near_workspaces::types::{AccessKeyPermission, KeyType, NearToken, SecretKey};
+use near_workspaces::types::{KeyType, NearToken, SecretKey};
 use near_workspaces::Account;
 use serde_json::json;
 
@@ -60,38 +60,68 @@ fn rejected_because<T: std::fmt::Debug, E: std::fmt::Debug>(
 }
 
 
+/// The raw `AccessKeyPermissionView` for one key, straight from the node.
+///
+/// near-workspaces cannot deserialize a gas key (see the call site), so this
+/// goes to the sandbox's own JSON-RPC and returns the permission as JSON.
+async fn gas_key_permission(e: &Env, public_key: &str) -> anyhow::Result<serde_json::Value> {
+    let body = json!({
+        "jsonrpc": "2.0", "id": "keys-test", "method": "query",
+        "params": {
+            "request_type": "view_access_key",
+            "finality": "final",
+            "account_id": e.vault.id(),
+            "public_key": public_key,
+        }
+    });
+    let url = format!("http://{}", e.worker.rpc_addr().trim_start_matches("http://"));
+    let out: serde_json::Value = reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    let perm = out
+        .get("result")
+        .and_then(|r| r.get("permission"))
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no permission in RPC reply: {out}"))?;
+    Ok(perm)
+}
+
 /// Assert a key is pinned to `request_payment` on this vault, and nothing else.
 ///
-/// TWO VARIANTS ARE ACCEPTED because a NEP-611 gas key and a plain
-/// function-call key are the same restriction expressed differently, and which
-/// one near-workspaces reports depends on its version. The assertion that
-/// matters is identical either way: receiver and method. Matching loosely on
-/// the variant while checking those strictly keeps the test about the security
-/// property rather than about a library's enum.
-fn assert_restricted_to_request_payment(perm: &AccessKeyPermission, vault: &str) {
-    match perm {
-        AccessKeyPermission::FunctionCall(fc) => {
-            assert_eq!(fc.receiver_id, vault, "key is not pinned to this vault");
-            assert_eq!(
-                fc.method_names,
-                vec!["request_payment".to_string()],
-                "key is not pinned to request_payment alone"
-            );
-        }
-        other => {
-            // A gas key prints its receiver and methods in its Debug form.
-            let d = format!("{other:?}");
-            assert!(d.contains(vault), "key is not pinned to this vault: {d}");
-            assert!(
-                d.contains("request_payment"),
-                "key is not pinned to request_payment: {d}"
-            );
-            assert!(
-                !d.contains("FullAccess"),
-                "the provisioned key is FULL ACCESS: {d}"
-            );
-        }
-    }
+/// Reads the JSON view rather than a typed enum, so it works for both a plain
+/// function-call key and a NEP-611 gas key — the same restriction expressed
+/// two ways. The clauses that matter are identical either way: receiver and
+/// method. FULL ACCESS is rejected explicitly, because that is the one shape
+/// that would silently grant everything.
+fn assert_restricted_to_request_payment(perm: &serde_json::Value, vault: &str) {
+    let text = perm.to_string();
+    assert!(
+        !text.contains("FullAccess"),
+        "the provisioned key is FULL ACCESS, not restricted: {text}"
+    );
+    let inner = perm
+        .get("FunctionCall")
+        .or_else(|| perm.get("GasKeyFunctionCall"))
+        .unwrap_or_else(|| panic!("not a function-call or gas key: {text}"));
+    assert_eq!(
+        inner.get("receiver_id").and_then(|v| v.as_str()),
+        Some(vault),
+        "key is not pinned to this vault: {text}"
+    );
+    let methods: Vec<String> = inner
+        .get("method_names")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        methods,
+        vec!["request_payment".to_string()],
+        "key is not pinned to request_payment alone: {text}"
+    );
 }
 
 #[tokio::test]
@@ -134,12 +164,18 @@ async fn provisioned_agent_key_can_only_call_request_payment_on_this_vault()
     // Read the permission back OFF-CHAIN rather than trusting the call we
     // just made — this is the only assertion in the repo that checks what the
     // CONTRACT granted, as opposed to what a test installed by hand.
-    let keys = e.worker.view_access_keys(e.vault.id()).await?;
-    let mine = keys
-        .iter()
-        .find(|k| k.public_key == pk)
-        .unwrap_or_else(|| panic!("add_role did not install the key it was given"));
-    assert_restricted_to_request_payment(&mine.access_key.permission, e.vault.id().as_str());
+    // READ IT OVER RAW JSON-RPC, NOT through near-workspaces.
+    //
+    // `worker.view_access_keys` PANICS on any account holding a NEP-611 gas
+    // key: near-workspaces 0.23.0 maps `GasKeyFunctionCall` and
+    // `GasKeyFullAccess` to `unimplemented!()` (types/mod.rs:552). Since
+    // `add_role` installs exactly such a key, the typed API cannot see what
+    // this test exists to check — so it asks the node directly.
+    //
+    // That is also why no other test asserts this shape: the only ones that
+    // touch gas keys install them by hand and check behaviour instead.
+    let perm = gas_key_permission(&e, &pk.to_string()).await?;
+    assert_restricted_to_request_payment(&perm, e.vault.id().as_str());
 
     // The node was bound, so the key has somewhere to spend from. The signer
     // is the VAULT account driven by the agent's restricted key — which is
