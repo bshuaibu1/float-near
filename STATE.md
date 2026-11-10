@@ -201,8 +201,7 @@ so drift fails two suites.
    The charset rule waves `near` through and the rooting is satisfied, so neither existing guard
    catches it. Fixed by banning a label equal to the factory's own TLD; mutation-tested (guard off
    -> only that test reds, and a merely-TLD-containing label like `nearby` stays allowed).
-   **`usefloat.near` still runs the old build** — new factory is `164,596 B ec28be51`, chain has
-   `H4HTsyZW`. Nothing has reached the hole (no vault exists), but a factory redeploy is staged and
+   **`usefloat.near` still runs the old build** — new factory is `164,596 B ec28be51` (`GtsFXF993GPYooShKAMWQF4YDJLur2Kk1cVwYpnxckSP`), chain has `H4HTsyZW`, re-read 2026-11-10. Dry run is staged for Bashir — `$env:FACTORY="usefloat.near"; node scripts/deploy-factory-mainnet.mjs` (PowerShell form; the bash `VAR=x cmd` prefix sets nothing on his shell), then the same with `$env:CONFIRM_MAINNET="1"`. No borsh migration: the guard added no struct fields. Nothing has reached the hole (no vault exists), but a factory redeploy is staged and
    needs Bashir's full-access key.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
