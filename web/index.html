@@ -76,11 +76,35 @@
       :root {
         --bg: #fbfbfa;
         --ink: #111111;
-        --muted: #787774;
-        --faint: #a0a09a;
-        --line: #eaeaea;
+
+        /**
+         * THE TEXT RAMP IS THREE READABLE STEPS, NOT TWO AND A DECORATIVE ONE.
+         *
+         * `--faint` was #a0a09a and `.note` rendered it at 12px — roughly
+         * 2.4:1 against the card, well under the 4.5:1 WCAG AA asks for body
+         * text. It is gone rather than darkened, because the problem was not
+         * its value. `.note` is the style carrying "check this public key
+         * matches the one your agent showed you": the sentence that stops a
+         * swapped key was set in the quietest ink on the page, which is the
+         * same shout-the-label-whisper-the-consequence mistake `.subject` and
+         * `#x-warn` were each fixed for.
+         *
+         * Now: --ink decides, --ink-soft explains, --muted labels. Measured
+         * against --card: ink-soft 9.7:1, muted 5.4:1.
+         */
+        --ink-soft: #3f3e3a;
+        --muted: #6e6c67;
+
+        /**
+         * TWO LINE WEIGHTS, BY ROLE, for the same reason there are two radii.
+         * `--line` separates one REGION of the card from another; `--line-soft`
+         * separates rows WITHIN one table. A single weight made a three-row
+         * spec table read as three stacked panels.
+         */
+        --line: #e8e6e1;
+        --line-soft: #f1efeb;
         --card: #ffffff;
-        --chip: #f3f3f1;
+        --chip: #f4f3f0;
 
         /**
          * Status, taken from the dashboard's lib/colors.ts rather than
@@ -115,7 +139,7 @@
         font: 14px/1.6 "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
       }
-      .col { width: 100%; max-width: 448px; display: flex; flex-direction: column; gap: 20px; align-items: center; }
+      .col { width: 100%; max-width: 448px; display: flex; flex-direction: column; gap: 16px; align-items: center; }
 
       /* The card's own header: title, then one line of orientation.
          Separated by a rule rather than by space alone, so the panel below it
@@ -123,23 +147,72 @@
          you where you are. */
       .head { text-align: center; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
 
-      /* 72px, above the card. `.col` centres it via align-items, so no auto
+      /* 52px, above the card. `.col` centres it via align-items, so no auto
          margins are needed — and `height: auto` lets the intrinsic aspect
          ratio hold if the asset is ever replaced with a non-square one,
-         rather than squashing it to a square that happens to be wrong. */
-      #logo { width: 72px; height: auto; object-fit: contain; }
+         rather than squashing it to a square that happens to be wrong.
+
+         Down from 72. At 72 with a 20px gap the mark was a hero element
+         floating alone over the card, and the first thing the eye landed on
+         was a logo rather than the question being asked. It is a mark
+         identifying the page, not the page's subject. */
+      #logo { width: 52px; height: auto; object-fit: contain; }
 
       /* 26px, down from 32. At 32 inside a 448px card the title wrapped to two
          lines on a phone and crowded the mark above it; the heading no longer
          has a whole page to itself. */
       h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 0; text-align: center; line-height: 1.25; }
-      .sub { color: var(--muted); text-align: center; margin: 8px auto 0; max-width: 340px; font-size: 13.5px; line-height: 1.5; }
+      .sub { color: var(--muted); text-align: center; margin: 8px auto 0; max-width: 340px; font-size: 13px; line-height: 1.5; }
+      /* Three flows deliberately clear the subtitle — the signing, done and
+         error screens each carry their own heading and would otherwise show
+         the previous step's instruction above it. Cleared, it still occupied
+         a line's height plus its margin, so the rule under the title sat ~28px
+         further down on exactly those screens. `:empty` rather than a class,
+         because the JS already says what it means by setting "". */
+      .sub:empty { display: none; }
       code { background: var(--chip); border-radius: var(--r-control); padding: 2px 6px; font-size: 13px; font-family: var(--mono); }
-      .card { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 24px; }
-      .row { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; }
-      .row span:first-child { color: var(--muted); }
-      .row span:last-child { font-family: var(--mono); font-size: 12.5px; text-align: right; word-break: break-all; }
-      .total { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 14px; font-weight: 600; }
+
+      /**
+       * THE CARD IS AN OBJECT, NOT AN OUTLINE.
+       *
+       * It was #fff on #fbfbfa with a 1px hairline and no shadow — about two
+       * percent of lightness between the surface and the page behind it. At
+       * that separation the card reads as a wireframe of a card, and this is
+       * the one screen in the product where someone is asked to sign
+       * something: the thing holding the decision should look like a thing.
+       *
+       * Two shadows, both low-opacity. The 1px contact shadow seats it on the
+       * page; the wide, heavily-offset one gives it depth without a visible
+       * grey halo. 4% and 10% — a signing surface is not the place for a card
+       * that looks like it is floating six inches off the screen.
+       */
+      .card {
+        width: 100%; background: var(--card);
+        border: 1px solid var(--line); border-radius: var(--r-panel); padding: 26px;
+        box-shadow: 0 1px 2px rgba(17, 17, 17, 0.04), 0 14px 32px -18px rgba(17, 17, 17, 0.10);
+      }
+
+      /**
+       * THE SPEC TABLE. These rows are the facts a user checks the heading
+       * against, so they are built like a table and not like a list of
+       * leftovers: a hairline per row, room to breathe, and a value size that
+       * does not lose to its own label.
+       *
+       * `overflow-wrap: anywhere`, NOT `break-all` — the same measurement
+       * recorded on `.detail` applies here and was never carried across. These
+       * cells hold account ids, and at 375px `break-all` split
+       * `testdey-near.usefloat.near` mid-token with no regard for the dots.
+       * `anywhere` prefers the break opportunities an account id is full of.
+       */
+      .row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 9px 0; }
+      .row + .row { border-top: 1px solid var(--line-soft); }
+      .row span:first-child { color: var(--muted); flex: 0 0 auto; }
+      .row span:last-child { font-family: var(--mono); font-size: 13px; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+      /* The sum is separated from the things being summed by the heavier
+         weight, so it reads as a different kind of row rather than the last
+         one. Overrides the `.row + .row` hairline on purpose. */
+      .row.total { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 14px; font-weight: 600; }
+      .row.total span:first-child { color: var(--ink); }
       /**
        * PRIMARY AND SECONDARY MUST NOT WEIGH THE SAME.
        *
@@ -190,15 +263,89 @@
       @media (pointer: coarse) {
         button.ghost { height: 44px; }
       }
-      .note { color: var(--faint); font-size: 12px; text-align: center; line-height: 1.5; }
+
+      /**
+       * A THIRD TIER, because two was not enough for three actions.
+       *
+       * The agent gate ends in "The key matches, continue", "Create the vault
+       * without an agent" and "Use a different wallet" — stacked, full width,
+       * near-identical in height. The bottom third of the card became a wall
+       * of slabs, and the rule above about primary-vs-secondary not weighing
+       * the same quietly stopped holding once there were two secondaries.
+       *
+       * So the actions are tiered BY ROLE rather than by position:
+       *
+       *   primary  — the thing this screen exists to do.
+       *   ghost    — a different way THROUGH the flow (bind no agent).
+       *   linkbtn  — leave and come back differently (switch wallet). It is
+       *              the same escape hatch on every panel, so it gets the
+       *              same quietest treatment on every panel, and a panel with
+       *              only one secondary no longer promotes an escape hatch to
+       *              look like a choice.
+       *
+       * Still a <button>, not an <a>: it does not navigate, and a link that
+       * goes nowhere is worse for a screen reader than a quiet button.
+       */
+      button.linkbtn {
+        width: auto; height: auto; min-height: 0; margin: 0 auto; display: block;
+        padding: 6px 4px; background: transparent; border-color: transparent;
+        color: var(--muted); font-size: 13px; font-weight: 400;
+        text-decoration: underline; text-underline-offset: 3px;
+        text-decoration-color: var(--line);
+        transition: color 120ms ease, text-decoration-color 120ms ease;
+      }
+      button.linkbtn:hover:not(:disabled) {
+        background: transparent; color: var(--ink); text-decoration-color: currentColor;
+      }
+      /* Same reasoning as `.ghost` above: the hierarchy here is carried by
+         weight and decoration, not by height, so a finger still gets its 44px
+         without the control growing back into a slab. */
+      @media (pointer: coarse) {
+        button.linkbtn { min-height: 44px; }
+      }
+
+      /* `--muted`, not the retired `--faint`. See the token block: this style
+         carries the key-verification sentence, and it was the quietest ink on
+         the page. */
+      .note { color: var(--muted); font-size: 12.5px; text-align: center; line-height: 1.55; }
+
+      /* The sentence a user is meant to ACT on, as against `.note`, which is
+         the aside they are meant to be reassured by. Left-aligned by default
+         because every instance of it is prose rather than a caption. */
+      .lede { color: var(--ink-soft); font-size: 13px; line-height: 1.55; text-align: left; margin: 0; }
 
       /**
        * Status panels, at the dashboard's exact tokens. `--r-panel`, because
        * these are containers, not controls.
        */
-      .warn { background: var(--warn-bg); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 14px; font-size: 13px; color: var(--warn); }
-      .err { background: var(--danger-bg); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 14px; font-size: 13px; color: var(--danger); white-space: pre-wrap; }
-      .ok { background: var(--success-bg); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 14px; font-size: 13px; color: var(--success); }
+      /**
+       * A STATUS PANEL'S BORDER IS ITS OWN COLOUR, not the neutral hairline.
+       *
+       * All three carried `1px solid var(--line)` around a tinted fill, so the
+       * cream of a warning met a warm grey edge that belongs to nothing on
+       * screen. The fill had no boundary of its own and read as a wash someone
+       * had spilled behind the text rather than a panel.
+       *
+       * The borders are the status ink at low alpha, so each one is the same
+       * hue as the text it contains and darkens with it. Alpha, not a fourth
+       * hex per status: a literal would be a colour nobody could trace back to
+       * `--warn`, and `lib/colors.ts` does not hold one to copy.
+       */
+      .warn, .err, .ok {
+        border-radius: var(--r-panel); padding: 13px 15px;
+        font-size: 13px; line-height: 1.5;
+      }
+      .warn { background: var(--warn-bg); border: 1px solid rgba(146, 64, 14, 0.18); color: var(--warn); }
+      .err { background: var(--danger-bg); border: 1px solid rgba(159, 47, 45, 0.18); color: var(--danger); white-space: pre-wrap; }
+      .ok { background: var(--success-bg); border: 1px solid rgba(52, 101, 56, 0.18); color: var(--success); }
+
+      /* The panel's own heading, in the eyebrow style `.field-label` already
+         establishes for this page, rather than a bolded sentence followed by a
+         <br>. One vocabulary for "this labels the thing below it". */
+      .warn strong, .err strong, .ok strong {
+        display: block; margin-bottom: 4px;
+        font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      }
 
       /**
        * THE THING BEING APPROVED.
@@ -279,8 +426,19 @@
       /* The value and its copy button. The button is `height: 44px` from the
          base rule and `width: auto` here, because a full-width copy control
          beside a full-width value is two slabs competing. */
-      .copyrow { display: flex; align-items: stretch; gap: 8px; }
-      .copyrow .detail { flex: 1; min-width: 0; }
+      /**
+       * `flex-start`, not `stretch`.
+       *
+       * Stretch matched the button to the value box, which is fine at one or
+       * two lines and absurd at three: at 375px the agent key wraps to three
+       * rows and the Copy button grew to 98px of empty black-on-white beside
+       * it. The button is a control with a correct size — the base rule's
+       * 44px, which is also the touch floor — and a value box is whatever
+       * height its contents need. Pinning the two together made one of them
+       * wrong whenever they disagreed.
+       */
+      .copyrow { display: flex; align-items: flex-start; gap: 8px; }
+      .copyrow .detail, .copyrow #a-key { flex: 1; min-width: 0; }
       button.copy {
         width: auto; flex: 0 0 auto; padding: 0 14px;
         background: var(--card); color: var(--muted); border-color: var(--line);
@@ -291,16 +449,64 @@
       /* Each block of the done screen separated by a rule, so "what happened",
          "what it is called" and "what to do next" read as three answers rather
          than one run-on panel. */
-      #d-detail-wrap, #d-wire { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+      /**
+       * ONE BLOCK OF THE CARD, separated by a rule.
+       *
+       * `#d-detail-wrap, #d-wire` had this by id, so the done screen read as
+       * three answers — what happened, what it is called, what to do next —
+       * while the agent gate ran a banner, a key, four rows and a disclaimer
+       * together as one undifferentiated column. Same job, so the same class,
+       * and a new panel gets it by writing `class="section"` rather than by
+       * someone remembering to append an id here.
+       */
+      .section, #d-detail-wrap, #d-wire { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
       #d-actions { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
       #d-actions a { display: block; text-decoration: none; }
       /* The agent key is rendered IN FULL and never truncated — an ellipsis in
          the middle is exactly where a swapped key hides. `break-all` because
          a base58 key has no break opportunities and would otherwise overflow
          the card on a phone. */
-      #a-key, #x-args { font-family: var(--mono); font-size: 12px; line-height: 1.6;
-               background: var(--chip); border: 1px solid var(--line); border-radius: var(--r-panel);
-               padding: 12px; word-break: break-all; user-select: all; }
+      /* `--r-control`, matching `.detail`. These are the same kind of object —
+         a machine value in a box you can select — and were on different radii
+         for no reason beyond which one was written first. */
+      #x-args { font-family: var(--mono); font-size: 12px; line-height: 1.6;
+               background: var(--chip); border: 1px solid var(--line); border-radius: var(--r-control);
+               padding: 12px; overflow-wrap: anywhere; user-select: all; }
+
+      /**
+       * THE AGENT KEY, CHUNKED IN FOURS.
+       *
+       * This is the only string on the page a human is asked to compare
+       * character by character, and it was the worst-presented thing on it: 52
+       * unbroken mono characters, `word-break: break-all`, wrapping wherever
+       * the box happened to end. At 448px that left a single orphaned `c` on
+       * line two — which is not merely ugly. A swapped key hides in exactly
+       * the place the eye stops tracking, and an unstructured run of base58
+       * gives the eye nowhere to hold on to at all.
+       *
+       * So it is grouped in fours, the way every other string humans are asked
+       * to read back is grouped — card numbers, IBANs, licence keys, recovery
+       * codes. The comparison becomes eleven short units instead of one long
+       * one, and the lines break between groups rather than mid-group.
+       *
+       * THE GROUPING ADDS NO CHARACTERS. The gaps are `margin-right` on the
+       * spans and the break opportunities are `<wbr>`, neither of which
+       * contributes to `textContent`. So selecting the field, or pressing
+       * Copy, yields the exact key and never a prettified one — `renderKey()`
+       * asserts that and falls back to flat text if it ever stops being true.
+       * A display that silently differs from what it copies is worse here than
+       * no formatting at all.
+       */
+      #a-key {
+        font-family: var(--mono); font-size: 13px; line-height: 1.85;
+        background: var(--chip); border: 1px solid var(--line); border-radius: var(--r-control);
+        padding: 12px 14px; user-select: all; color: var(--ink);
+      }
+      /* The `ed25519:` prefix is the same on every NEAR key, so it carries no
+         information to compare and should not compete with the part that
+         does. */
+      #a-key .pre { color: var(--muted); margin-right: 0.5em; }
+      #a-key .ch { margin-right: 0.5em; }
       .hide { display: none; }
       a { color: var(--ink); }
 
@@ -382,18 +588,37 @@
         -->
         <div id="agent" class="hide">
           <div class="warn">
-            <strong>Security check.</strong><br />
+            <strong>Security check</strong>
             You are authorising an AI agent to spend from the vault you are
             about to create.
           </div>
-          <p class="note" style="text-align: left; margin: 14px 0 6px">
-            Check this public key matches the one your agent showed you. If it
-            does not match, close this page. Someone has altered your link.
-          </p>
-          <div id="a-key"></div>
-          <div class="row" style="margin-top: 14px">
-            <span>can spend</span><span id="a-limit"></span>
+
+          <!--
+            THE KEY IS A LABELLED FIELD, not a grey rectangle after a caption.
+
+            It was an unlabelled box under a 12px `.note` — the faintest style
+            on the page carrying the one instruction that stops a swapped key.
+            It now uses the same label/value/copy vocabulary as the done
+            screen's vault id (`.field-label` + `.copyrow`), because it is the
+            same kind of object and was the only machine value on the page
+            without a name on it.
+
+            Copy matters more here than anywhere else: comparing 44 base58
+            characters by eye is the fallback, not the plan. An agent that
+            printed the key into a chat can have it pasted straight back.
+          -->
+          <div class="section">
+            <p class="field-label">Agent public key</p>
+            <p class="lede" style="margin-bottom: 10px">
+              Check this matches the key your agent showed you. If it does not
+              match, close this page — someone has altered your link.
+            </p>
+            <div class="copyrow">
+              <div id="a-key"></div>
+              <button class="copy" id="a-copy" type="button" aria-label="Copy the agent public key">Copy</button>
+            </div>
           </div>
+
           <!--
             THE CONNECTED WALLET IS SHOWN HERE, not only on the plan.
 
@@ -408,10 +633,22 @@
             open, which is the flexibility and also the trap. Naming the
             account, not just the derived vault, makes the mismatch legible
             without having to recognise a prefix.
+
+            ORDER: who, where, how much. The spend caps come last so they sit
+            directly above the sentence that qualifies them, rather than being
+            the first number read and the first one forgotten. They are also
+            two rows now — "25 / day, 10 / tx" crammed two independent limits
+            into one cell, and the one that actually refuses a payment is
+            usually the per-tx one.
           -->
-          <div class="row"><span>owner</span><span id="a-owner"></span></div>
-          <div class="row"><span>from vault</span><span id="a-vault"></span></div>
-          <p class="note" style="text-align: left; margin: 14px 0 18px">
+          <div class="section">
+            <div class="row"><span>owner</span><span id="a-owner"></span></div>
+            <div class="row"><span>from vault</span><span id="a-vault"></span></div>
+            <div class="row"><span>daily limit</span><span id="a-limit"></span></div>
+            <div class="row"><span>per payment</span><span id="a-limit-tx"></span></div>
+          </div>
+
+          <p class="note" style="margin: 18px 0 20px">
             This agent can never exceed those limits, and you can revoke it at
             any time from your vault.
           </p>
@@ -419,7 +656,7 @@
           <button id="btn-agent-no" class="ghost" style="margin-top: 10px">
             Create the vault without an agent
           </button>
-          <button id="btn-agent-switch" class="ghost" style="margin-top: 10px">
+          <button id="btn-agent-switch" class="linkbtn" style="margin-top: 8px">
             Use a different wallet
           </button>
         </div>
@@ -478,7 +715,7 @@
           -->
           <div id="x-warn" class="warn hide" style="text-align: left; margin: 16px 0 18px"></div>
           <button id="btn-action">Approve in my wallet</button>
-          <button id="btn-action-switch" class="ghost" style="margin-top: 10px">
+          <button id="btn-action-switch" class="linkbtn" style="margin-top: 8px">
             Use a different wallet
           </button>
         </div>
@@ -503,14 +740,20 @@
             a row in a table of things you are being asked to check.
           -->
           <div class="row"><span>daily limit</span><span id="p-daily"></span></div>
+          <div class="row"><span>per payment</span><span id="p-pertx"></span></div>
           <div class="row hide" id="p-agent-row"><span>agent</span><span id="p-agent"></span></div>
           <div class="row total"><span>you send</span><span id="p-total"></span></div>
-          <p class="note" style="text-align: left; margin: 14px 0 18px">
-            Almost all of this is a refundable deposit, not a fee. Nothing can
-            spend from this vault until you add an agent.
-          </p>
+          <!--
+            SET PER BRANCH, because the static version contradicted the row
+            above it. "Nothing can spend from this vault until you add an
+            agent" sat directly beneath an `agent` row listing the key being
+            bound in this very transaction — the one screen where a user is
+            checking facts against each other, telling them two opposite
+            things about the same transaction.
+          -->
+          <p class="note" id="p-note" style="text-align: left; margin: 16px 0 18px"></p>
           <button id="btn-create">Create vault</button>
-          <button id="btn-disconnect" class="ghost" style="margin-top: 10px">Use a different wallet</button>
+          <button id="btn-disconnect" class="linkbtn" style="margin-top: 8px">Use a different wallet</button>
         </div>
 
         <!--
@@ -1164,6 +1407,62 @@
       }
       wireCopy("d-copy", "d-vault");
       wireCopy("d-env-copy", "d-env");
+      wireCopy("a-copy", "a-key");
+
+      /**
+       * Regroup an already-rendered key into fours, for the eye only.
+       *
+       * WHY IT READS THE NODE INSTEAD OF TAKING A STRING. The line that puts
+       * the key on screen — `$("a-key").textContent = RAW_AGENT` — is pinned
+       * by a test whose whole point is that the gate never truncates. Making
+       * this function the renderer would replace that line, and the guard
+       * would then be watching a function that could quietly start formatting
+       * the key into something other than the key. So the assignment stays
+       * exactly as it was and this only ever rearranges what is already there.
+       *
+       * THE SAFETY PROPERTY, and it is the reason for the probe. The grouping
+       * must add NO characters: the gaps are CSS margins and the break
+       * opportunities are `<wbr>`, neither of which lands in `textContent`.
+       * That is what keeps `user-select: all` and the Copy button yielding the
+       * real key rather than a prettified one. The probe asserts it on every
+       * call instead of trusting the claim — if the round trip ever differs by
+       * so much as one character, the node is left exactly as it was found.
+       * An ugly key is a cosmetic problem; a key that displays differently
+       * from what it copies is the bug this entire panel exists to prevent.
+       */
+      function groupKey(el) {
+        if (!el) return;
+        const raw = el.textContent ?? "";
+        if (!raw) return;
+        // `ed25519:` is on every NEAR key, so it carries nothing to compare
+        // and is split off to be greyed rather than grouped.
+        const cut = raw.indexOf(":");
+        const prefix = cut === -1 ? "" : raw.slice(0, cut + 1);
+        const body = cut === -1 ? raw : raw.slice(cut + 1);
+
+        const frag = document.createDocumentFragment();
+        const add = (cls, text) => {
+          const s = document.createElement("span");
+          s.className = cls;
+          s.textContent = text;
+          frag.append(s);
+        };
+        if (prefix) {
+          add("pre", prefix);
+          frag.append(document.createElement("wbr"));
+        }
+        for (let i = 0; i < body.length; i += 4) {
+          add("ch", body.slice(i, i + 4));
+          if (i + 4 < body.length) frag.append(document.createElement("wbr"));
+        }
+
+        const probe = document.createElement("div");
+        probe.append(frag.cloneNode(true));
+        if (probe.textContent !== raw) return;
+
+        el.textContent = "";
+        el.append(frag);
+      }
 
       function render() {
         /**
@@ -1373,7 +1672,8 @@
         $("p-vault").textContent = vault;
         $("p-factory").textContent = FACTORY ?? "not configured";
         $("p-net").textContent = NETWORK;
-        $("p-daily").textContent = `${DAILY} / day, ${PERTX} / tx`;
+        $("p-daily").textContent = DAILY;
+        $("p-pertx").textContent = PERTX;
 
         // THE AGENT GATE COMES BEFORE THE PLAN, not after.
         //
@@ -1398,8 +1698,20 @@
           // authorised.
           $("p-agent-row").classList.toggle("hide", !bindAgent);
           if (bindAgent) $("p-agent").textContent = `${bindAgent.slice(0, 20)}…`;
+          // The deposit sentence is true either way; the second one is not.
+          $("p-note").textContent = bindAgent
+            ? "Almost all of this is a refundable deposit, not a fee. The agent " +
+              "above can only ever spend within the limits shown, and you can " +
+              "revoke it at any time."
+            : "Almost all of this is a refundable deposit, not a fee. Nothing can " +
+              "spend from this vault until you add an agent.";
           $("p-total").textContent = `${near(total)} NEAR`;
           $("btn-create").onclick = () => create(who, vault, total);
+          // The subtitle belongs to the STEP — the rule `renderAction` already
+          // follows. `render()` sets it to "Connect the wallet that owns …"
+          // for the connect screen, and by the time the plan renders that is
+          // an instruction to do something two screens ago.
+          $("sub").textContent = "Check these details, then create it in your wallet.";
           show("plan");
 
           // CHECK AFFORDABILITY AGAINST THE FIGURE ACTUALLY BEING SIGNED.
@@ -1409,10 +1721,24 @@
         };
 
         if (RAW_AGENT) {
+          // THE EXACT KEY FIRST, ALWAYS. `groupKey` is a pure visual regroup
+          // of whatever is already in the node, and reverts itself if the
+          // characters do not survive the round trip — so this assignment
+          // stays the single source of what the user is shown.
           $("a-key").textContent = RAW_AGENT;
-          $("a-limit").textContent = `${DAILY} / day, ${PERTX} / tx`;
+          groupKey($("a-key"));
+          // The LABEL carries the unit, so the value does not repeat it.
+          // "daily limit: 25 / day, 10 / tx" crammed two independent caps into
+          // one cell and said "day" twice.
+          $("a-limit").textContent = DAILY;
+          $("a-limit-tx").textContent = PERTX;
           $("a-owner").textContent = who;
           $("a-vault").textContent = vault;
+          // Same rule, and this panel is where the stale copy was most
+          // obviously wrong: "Connect the wallet that will own it" sat above a
+          // key the user was being asked to authorise, on a screen that only
+          // renders once a wallet IS connected.
+          $("sub").textContent = "One signature creates the vault and authorises this agent.";
           $("btn-agent-ok").onclick = () => {
             bindAgent = RAW_AGENT;
             renderPlan();

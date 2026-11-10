@@ -6,19 +6,23 @@ import { describe, expect, it } from "vitest";
  * The create page's agent gate.
  *
  * WHAT THIS CAN AND CANNOT COVER. `web/index.html` is standalone HTML served
- * to a browser with no build step, so it cannot export anything and there is
- * no DOM library installed to drive it headlessly. These tests therefore do
- * two different things, and the difference matters:
+ * to a browser with no build step, so it cannot export anything. These tests
+ * therefore do two different things, and the difference matters:
  *
- *   - The key validator is EXTRACTED from the page and executed. That is a
- *     real behavioural test of the most security-critical line, run against
- *     the same source the browser gets.
+ *   - The key validator and `groupKey` are EXTRACTED from the page and
+ *     executed — the validator against plain strings, `groupKey` against a
+ *     real DOM. Those are behavioural tests of the most security-critical
+ *     lines, run against the same source the browser gets.
  *   - Everything else is a source assertion. Weaker — it pins shape, not
  *     behaviour — but it catches the specific regressions that would
  *     otherwise be silent, and silence is the whole problem with this
  *     feature: a gate that fails open looks exactly like a gate that passed.
  *
- * A rendered check is still owed here. Recorded rather than implied.
+ * The "no DOM library is installed" note that used to stand here was WRONG:
+ * `happy-dom` has been a root devDependency the whole time, so the rendered
+ * check it said was owed was available for the asking. It is imported
+ * directly rather than via a vitest `environment`, so the rest of this file
+ * keeps running in node and nothing else in the package pays for it.
  */
 
 const PAGE = resolve(import.meta.dirname, "..", "..", "..", "web", "index.html");
@@ -162,6 +166,119 @@ describe("consent, not the link, decides what is signed", () => {
     expect(src).toMatch(/\$\("a-key"\)\.textContent = RAW_AGENT;/);
     // The plan row may abbreviate; the gate must not.
     expect(src).not.toMatch(/\$\("a-key"\)\.textContent = RAW_AGENT\.slice/);
+    /**
+     * And the grouping runs AFTER that assignment, never instead of it. If
+     * `groupKey` ever became the renderer, the assertion above would be
+     * watching a line that no longer decides what is on screen.
+     */
+    expect(src).toMatch(
+      /\$\("a-key"\)\.textContent = RAW_AGENT;\s*(?:\/\/[^\n]*\n\s*)*groupKey\(\$\("a-key"\)\);/,
+    );
+  });
+});
+
+/**
+ * THE GROUPING, EXECUTED — this pays off the "a rendered check is still owed
+ * here" note at the top of this file, for the one function where the debt
+ * actually mattered.
+ *
+ * `groupKey` chunks the key into fours so a human can compare it. The whole
+ * safety argument for doing that is that it adds NO characters: the gaps are
+ * CSS margins and the break opportunities are `<wbr>`, so `textContent` — which
+ * is what `user-select: all` hands the clipboard, and what `wireCopy` reads —
+ * still yields the exact key. That claim is worth nothing asserted; it is
+ * cheap to run.
+ */
+describe("the agent key grouping", () => {
+  /**
+   * Extracted from the page and EXECUTED against a real DOM, so this cannot
+   * drift into testing a retyped copy that agrees with itself.
+   */
+  function pageGroupKey(doc: Document): (el: unknown) => void {
+    const src = html();
+    const start = src.indexOf("function groupKey(el) {");
+    expect(start, "groupKey not found in web/index.html").toBeGreaterThan(-1);
+    let depth = 0;
+    let end = -1;
+    for (let i = src.indexOf("{", start); i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    expect(end, "groupKey's body did not close").toBeGreaterThan(start);
+    return new Function("document", `${src.slice(start, end)}; return groupKey;`)(doc);
+  }
+
+  async function dom() {
+    const { Window } = await import("happy-dom");
+    const win = new Window();
+    const doc = win.document as unknown as Document;
+    return { doc, groupKey: pageGroupKey(doc) };
+  }
+
+  const render = async (key: string) => {
+    const { doc, groupKey } = await dom();
+    const el = doc.createElement("div");
+    el.textContent = key;
+    groupKey(el);
+    return el;
+  };
+
+  /** The live mainnet agent key from a real `vault_create` response. */
+  const REAL = "ed25519:4Cc9dLATgH5RnsqKqhR3ZGEWV4JEX4dRqfvtkCi5r1Uc";
+
+  it("shows exactly the key it was given", async () => {
+    expect((await render(REAL)).textContent).toBe(REAL);
+  });
+
+  it("groups the body in fours and leaves the prefix alone", async () => {
+    const el = await render(REAL);
+    const body = REAL.slice(REAL.indexOf(":") + 1);
+    expect(el.querySelectorAll(".ch").length).toBe(Math.ceil(body.length / 4));
+    expect(el.querySelector(".pre")?.textContent).toBe("ed25519:");
+    // A break opportunity between every pair, or the wrapping this exists to
+    // fix does not happen and the key runs off the card again.
+    expect(el.querySelectorAll("wbr").length).toBeGreaterThan(0);
+  });
+
+  /**
+   * THE PROPERTY, over many shapes rather than one.
+   *
+   * Lengths that divide by four and lengths that do not; base58 excludes
+   * 0/O/I/l, so the alphabet is the real one rather than a convenient a-z.
+   * Any character added, dropped or reordered by the grouping shows up here.
+   */
+  it("round-trips every key shape exactly", async () => {
+    const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const keys: string[] = [];
+    let seed = 7;
+    for (let len = 1; len <= 48; len++) {
+      let body = "";
+      for (let i = 0; i < len; i++) {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        body += B58[seed % B58.length];
+      }
+      keys.push(`ed25519:${body}`);
+    }
+    for (const key of keys) {
+      expect((await render(key)).textContent, `round trip failed for ${key}`).toBe(key);
+    }
+  });
+
+  /**
+   * A key with no `ed25519:` prefix is still rendered in full. The page
+   * validates the prefix elsewhere; this function must not be the thing that
+   * silently eats a string it did not expect.
+   */
+  it("handles a key with no prefix, and an empty node", async () => {
+    const bare = "4Cc9dLATgH5RnsqKqhR3ZGEWV4JEX4dRqfvtkCi5r1Uc";
+    expect((await render(bare)).textContent).toBe(bare);
+    expect((await render("")).textContent).toBe("");
   });
 });
 
