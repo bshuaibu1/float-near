@@ -241,6 +241,28 @@ const steps = [
   },
   {
     /**
+     * A deploy script's heredocs must not execute their own comments.
+     *
+     * `<<UNIT` unquoted is deliberate — the systemd units interpolate `$ROOT`
+     * and `$PORT` — but bash cannot expand variables selectively, so backticks
+     * in prose are command substitution. Measured on wattson 2026-11-10:
+     * `ss -ltnp` in a comment RAN, and its socket listing (ports, PIDs) was
+     * written into the live `float-near-dash.service`. `ExecStart` survived,
+     * the service came up, and all 14 post-deploy assertions passed — the only
+     * trace was three "command not found" lines beside a successful deploy.
+     *
+     * In the gate and not just in the deploy because the damage lands on a
+     * remote box, in a file nobody re-reads, and whatever a future comment
+     * happens to quote is what runs there.
+     */
+    name: "heredoc expansion",
+    cmd: "node scripts/check-heredoc-expansion.mjs",
+    cwd: ".",
+    mustMatch: /no self-executing content/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
+    /**
      * The plugin is how a user installs this without copying
      * `claude mcp add float-near -- npx -y @floatonnear/mcp` correctly: its
      * manifest declares the server, so installing the plugin starts it.
