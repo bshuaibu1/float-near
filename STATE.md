@@ -120,7 +120,7 @@ so drift fails two suites.
 | **Float VPS** | **`154.12.117.17`** (`wattson`, Ubuntu 24.04.5, 2 cores / 1.9Gi / 58G). **PREPPED 2026-11-09**: Node **22.23.4** via NodeSource (NOT apt's EOL 18.19), nginx 1.24.0, certbot 2.9.0, git; **4G swap** added + fstab entry, because `next build` on 1.9Gi with no swap was an unmeasured OOM risk; ports 443/8080/8787/3000 free. Non-root **`float`** user with passwordless sudo and the deploy key — the script REFUSES to run as root, and only root existed |
 | VPS read reliability | **40/40 (100%)** measured ON that host. Settles it: fastnear free tier is adequate, no subscription. (Dev machine was 26% — per-IP throttle, not a product defect) |
 | DNS | **nothing resolves yet.** `usefloat.xyz`, `www`, `app`, `dash` all need A records -> **154.12.117.17**. The old `209.209.10.210` note was STALE — those records are gone, so there is no repointing risk and nothing to break on the pythscan box. `dash` is required or certbot's HTTP-01 fails for the dashboard vhost |
-| **mainnet** | **FACTORY IS LIVE: `usefloat.near`** (2026-11-09). Code verified against the CHAIN, not the deploy's report: local sha256 `ee925937c7b9…` == `code_hash` base58-decoded, and the deployed bytes fetched and compared **byte-for-byte**, 163,525 B. `get_config`: owner `test015.near`, network mainnet, `required_deposit` 0.1, not paused. `vault_id_for(test015.near)` -> `test015-near.usefloat.near`. 1 FullAccess key, still matching the saved secret |
+| **mainnet** | **THE FACTORY CANNOT CREATE A VAULT.** `usefloat.near` is deployed, initialised and unpaused, but it deploys via `use_global_contract(code_hash)` and mainnet answers **`NO_GLOBAL_CONTRACT`** for `E2ys5n3K…` — nothing was ever published, and no hash in `docs/` is on chain either. Every `create_vault_with_code` fails. **The 2026-11-09 deploy's 5/5 checks did not catch this**: they asserted code hash, owner, network, paused and key, and never attempted the product action. Reachability is a separate claim from correctness |
 | mainnet: the fix is NOT on chain | `bind_virtual_agent` was unreachable and is fixed in the repo, but the vault ships as a **global contract** the factory references by hash. Publishing a new one burns **29.9 NEAR** (1e20/byte x 298,839) against **3.42** held — short ~26.5. **Nothing is broken for anyone today**: no mainnet vault exists, and `add_role` (the primary path) is payable and binds internally. `res/vault.wasm` is rebuilt WITH the fix (`dc7a3fb6…`, 298,839 B, `CONTRACT_BYTES` re-pinned) so the publish is a funded decision, not a blocked one |
 | mainnet: usable | **`@floatonnear/mcp` 0.6.1 IS LIVE AND VERIFIED.** Installed UNPINNED from the registry (as users get it) and DRIVEN over stdio: handshake `0.6.1`, `vault_create(network=mainnet)` -> factory `usefloat.near`, deposit **3.34920**, no error. **0.6.0 is deprecated** ("queries the testnet RPC") — it resolved the right factory then asked testnet, so users were told a verified account did not exist. Lesson repeated twice today: 224 green tests did not catch either, because nothing imported both sides of the wiring |
 | mainnet: caution | the factory's OWNER is `test015.near` — a personal account. The NAMESPACE is no longer personal (that was the point of `usefloat.near`), but pause/config authority still is. Fine for now; worth moving before this is anyone else's money |
@@ -181,13 +181,15 @@ so drift fails two suites.
      3 receipts, 0 failures, no key). near-workspaces 0.23 maps `GasKeyFunctionCall` to
      `unimplemented!()` and panics on read. That path is proven on mainnet instead (7/7).
    - Toolchain now on the VPS: Rust 1.99.1, `cargo-near` 0.23 (needs `libudev-dev`).
-3. **Mainnet is empty, and one account on it can never be closed.** Re-measured 2026-11-08:
-   `float.test015.near` is **gone** (we closed it — that teardown is the proof the sequence
-   works on mainnet). `test015.near` holds **3.425**. `r1.float.test015.near` holds **0.546779**
-   with **zero full-access keys**, so it is unreachable forever — a function-call key cannot
-   sign `DeleteAccount`, and a parent cannot delete a sub-account. Standing mainnet up again
-   needs ~1.64 (factory, 163,525 B of code) + 3.468 (a vault with an agent) = **~5.11, so the
-   gap is ~1.68** — not the ~1.3 recorded before, which went stale when the factory's code grew.
+3. **OPEN DECISION — mainnet architecture.** Creating a vault costs, per architecture:
+   `use_global_contract` (current) = user **3.348**, you burn **29.884 BEFORE the first vault
+   exists** and again per bug fix; `deploy_contract` = user **6.337**, you burn **0**, fixes are
+   free because each vault gets its own copy. Held: **3.42**, so the global path is not a later
+   cost but a gate you cannot currently pass. The 2026-10-31 amendment justified global
+   contracts as a *prerequisite for the wallet-signed browser flow* — **that reason is refuted**:
+   Meteor rendered a 294 KB transaction cleanly, so the size worry was misplaced. Reverting is
+   one line (`use_global_contract` -> `deploy_contract`) plus a factory redeploy, and is
+   reversible later via the factory's own `set_code_hash`. **Bashir's call.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
