@@ -134,11 +134,7 @@ async fn bind_va(owner: &Account, vault: &Contract, node_id: u32, pk: &str) -> R
     owner
         .call(vault.id(), "bind_virtual_agent")
         .args_json(json!({ "node_id": node_id, "public_key": pk }))
-        // NO DEPOSIT. `bind_virtual_agent` and `unbind_virtual_agent` gate on
-        // assert_owner (predecessor), not on a 1-yocto full-access proof, and
-        // near-sdk REJECTS a deposit to a non-payable method before the body
-        // runs: "Method X doesn't accept deposit". These lines attached one
-        // anyway and killed 9 of 10 tests in this file.
+        .deposit(NearToken::from_yoctonear(1))
         .max_gas()
         .transact()
         .await?
@@ -567,6 +563,7 @@ async fn rebinding_a_revoked_key_does_not_reset_its_nonce() -> Result<()> {
     e.owner
         .call(e.vault.id(), "unbind_virtual_agent")
         .args_json(json!({ "public_key": pk }))
+        .deposit(NearToken::from_yoctonear(1))
         .max_gas()
         .transact()
         .await?

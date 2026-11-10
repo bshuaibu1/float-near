@@ -60,11 +60,7 @@ async fn bind(e: &Env, node: u32, pk: &PublicKey) -> Result<()> {
     e.owner
         .call(e.vault.id(), "bind_virtual_agent")
         .args_json(json!({ "node_id": node, "public_key": pk.to_string() }))
-        // NO DEPOSIT. `bind_virtual_agent` and `unbind_virtual_agent` gate on
-        // assert_owner (predecessor), not on a 1-yocto full-access proof, and
-        // near-sdk REJECTS a deposit to a non-payable method before the body
-        // runs: "Method X doesn't accept deposit". These lines attached one
-        // anyway and killed 9 of 10 tests in this file.
+        .deposit(NearToken::from_yoctonear(1))
         .max_gas()
         .transact()
         .await?
@@ -370,6 +366,7 @@ async fn unbinding_closes_the_path_while_the_key_remains_installed() -> Result<(
     e.owner
         .call(e.vault.id(), "unbind_virtual_agent")
         .args_json(json!({ "public_key": pk.to_string() }))
+        .deposit(NearToken::from_yoctonear(1))
         .max_gas()
         .transact()
         .await?
