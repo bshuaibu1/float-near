@@ -163,21 +163,22 @@ const cfg = {
   // Onboarding only. Both have safe defaults and neither is needed by any
   // tool that touches an existing vault.
   factory: process.env.NEAR_VAULT_FACTORY,
-  // `usefloat.xyz`, NOT `app.usefloat.xyz`.
+  // The APEX, where the create page actually lives — one hop instead of two.
   //
-  // `app.` serves the Next.js dashboard; the create page is the static
-  // `web/index.html` that `scripts/deploy-skill-host.sh` puts on the APEX
-  // (`DOMAIN=usefloat.xyz`). This default pointed at `app.`, so every user
-  // following the MCP's own URL got the dashboard: HTTP 200, wrong page, no
-  // create flow, and `./vault.wasm` a 404 beside it. A 200 says a server is
-  // up, not that it is the right server.
+  // `app.` ALSO WORKS AND IS NOT A BUG. It serves the Next.js dashboard, but
+  // nginx bounces anything carrying `?factory=` to the apex signing page, and
+  // `buildCreatePlan` sets `factory` on every link unconditionally. That rule
+  // exists because the published @floatonnear/mcp 0.5.0 hardcodes `app.`, and
+  // breaking it would break vault creation for every existing install.
+  // Verified 2026-11-10: `app.usefloat.xyz/?factory=…` → 200 at
+  // `usefloat.xyz`, "Create your Float vault".
   //
-  // `docs/DESIGN-browser-signing-flow.md` still describes an
-  // `app.usefloat.xyz/create` layout that was planned and never built. The
-  // deploy script is the one telling the truth.
+  // So this is a small simplification, NOT a repair — an earlier version of
+  // this comment claimed users were landing on the dashboard, which came from
+  // probing the bare URL that nothing emits.
   //
-  // Guarded by `scripts/check-create-page.mjs`, which follows this exact value
-  // over the network and fails unless the create page is really there.
+  // Guarded by `scripts/check-create-page.mjs`, which fetches the real link
+  // shape, follows redirects, and checks the wasm at the landing origin.
   appUrl: process.env.NEAR_VAULT_APP_URL ?? "https://usefloat.xyz",
   // The fleet keyring. Same default and same file the adapter reads — two
   // readers disagreeing about where credentials live is how an agent ends up
