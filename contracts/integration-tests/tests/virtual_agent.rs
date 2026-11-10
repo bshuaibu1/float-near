@@ -135,6 +135,7 @@ async fn bind_va(owner: &Account, vault: &Contract, node_id: u32, pk: &str) -> R
         .call(vault.id(), "bind_virtual_agent")
         .args_json(json!({ "node_id": node_id, "public_key": pk }))
         .max_gas()
+        .deposit(NearToken::from_yoctonear(1))
         .transact()
         .await?
         .into_result()?;
