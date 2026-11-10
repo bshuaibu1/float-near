@@ -235,6 +235,22 @@ so drift fails two suites.
    **Versions bumped and NOT YET PUBLISHED (needs Bashir's 2FA): `@floatonnear/mcp` 0.6.1 -> 0.6.2,
    `@floatonnear/create-float` 0.6.0 -> 0.6.1** (the latter finally ships the `float-topup` bin).
    The 0.6.2 bump also resolves the collision where npm 0.6.1 and local 0.6.1 were different code.
+
+   **INTERVIEW UX FIXED 2026-11-10 (three changes, from reviewing the flow running).**
+   (a) **The owner question moves to position 1** — it was never asked, and without it
+   `vault_create` returns `vault: null` and `confirm.args: null`, silently disabling the
+   `vault_await_create` verification and putting the human back to reading an id aloud.
+   (b) **Caps are proposed, not interrogated.** Rule now in `SKILL.md`: *ask about what is
+   expensive to change, propose what is cheap.* Network and agent-binding are baked into one
+   signature; caps are one signed `vault_plan_set_caps` away, so four blocking modals was a web
+   form rendered in chat.
+   (c) **Page defaults `2.04`/`0.51` -> `25`/`10`.** The old pair were `float.test015.near`'s
+   stored caps, undocumented, leaked into every new user's default. **The real rule, which bit
+   twice in one sitting: no cap can deliver a round payment EQUAL to itself** — cross-chain is
+   EXACT_OUTPUT so charge = amount x (1+fee), and 0.51 refuses 0.50 exactly as 5 refuses 5.00.
+   My first fix was 5 and had the identical defect. Pinned by three tests in
+   `create.pins.test.ts` that read the defaults OUT OF the page; verified to red on both `0.51`
+   and `5`.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
