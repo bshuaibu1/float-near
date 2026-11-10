@@ -194,7 +194,7 @@ export interface CreatePlanInput {
    * per day?" and "how much per payment?".
    *
    * WHY THESE EXIST. The signing page has read `?daily=`, `?pertx=`, `?token=`
-   * and `?decimals=` since it was written, defaulting to 2.04/0.51 USDC on
+   * and `?decimals=` since it was written, defaulting to 25/10 USDC on
    * mainnet. This builder sent four params and never those, so an agent could
    * not ask the user their budget and hand back a ready-to-sign link — which
    * is the entire point of the flow. The page was finished; this side was not,
@@ -253,7 +253,7 @@ export function validateCaps(i: {
     if (v === undefined) continue;
     if (!numeric.test(v)) {
       problems.push(
-        `${name} must be a plain decimal in HUMAN units, e.g. "100" or "2.04", got "${v}"`,
+        `${name} must be a plain decimal in HUMAN units, e.g. "100" or "25", got "${v}"`,
       );
       continue;
     }

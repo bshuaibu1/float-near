@@ -291,7 +291,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.6.2" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.6.3" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -573,13 +573,13 @@ server.tool(
       .string()
       .optional()
       .describe(
-        "ASK THE USER. The root budget per UTC day, in HUMAN units of the token, e.g. \"100\" or \"2.04\" — not base units. Defaults on the page to 2.04 (mainnet) / 100 (testnet). This is the number the vault enforces on chain, so it is worth asking rather than defaulting.",
+        "The root budget per UTC day, in HUMAN units of the token, e.g. \"25\" or \"100\" — not base units. PROPOSE a figure rather than interrogating the user; caps are changeable later with a signed vault_plan_set_caps. Page default when omitted: 25 (mainnet) / 100 (testnet).",
       ),
     perTx: z
       .string()
       .optional()
       .describe(
-        "ASK THE USER. Maximum per single payment, HUMAN units. Must be <= daily or it can never bind. Page defaults: 0.51 (mainnet) / 10 (testnet).",
+        "Maximum per single payment, HUMAN units. Must be <= daily or it can never bind, and must EXCEED the largest payment intended — cross-chain is EXACT_OUTPUT, so the vault is charged more than the payee receives and a cap of 5 refuses a round 5.00. Page default when omitted: 10 (mainnet) / 10 (testnet).",
       ),
     token: z
       .string()

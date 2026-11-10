@@ -282,6 +282,22 @@ const steps = [
      * (the user silently gets a default instead of the cap they agreed to);
      * reading one nothing sends is reported unless it carries a written reason.
      */
+    /**
+     * A tool description is not documentation; it is the agent's context.
+     *
+     * The page defaults moved 2.04/0.51 -> 25/10 and the MCP's `daily`/`perTx`
+     * descriptions did not. Repo, plugin and live site were all correct — the
+     * one copy that actually reached a user was the stale one, so the agent
+     * went on offering "Page defaults: 2.04 / 0.51" as a recommended option
+     * for values the page no longer had.
+     */
+    name: "quoted defaults",
+    cmd: "node scripts/check-quoted-defaults.mjs",
+    cwd: ".",
+    mustMatch: /agree with the page/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "create url params",
     cmd: "node scripts/check-create-url-params.mjs",
     cwd: ".",

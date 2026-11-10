@@ -251,6 +251,17 @@ so drift fails two suites.
    My first fix was 5 and had the identical defect. Pinned by three tests in
    `create.pins.test.ts` that read the defaults OUT OF the page; verified to red on both `0.51`
    and `5`.
+
+   **WHY THE FIXED FLOW STILL SHOWED OLD VALUES (2026-11-10).** Three stale COPIES, none of which
+   the repo compared. (a) **MCP tool descriptions still said `2.04`/`0.51`** — and a tool schema is
+   injected into the agent's context, so it kept offering "Page defaults: 2.04 / 0.51" as a
+   recommended option hours after the page changed. Fixed; `scripts/check-quoted-defaults.mjs`
+   gates it. (b) **`apps/dashboard/public/skill.md` was LIVE and wrong** — Next.js serves `public/`
+   with no route, so `app.usefloat.xyz/skill.md` served an **October** skill (18,881 B) while the
+   apex served current (24,130 B). Two documents, same path, two hosts. Synced, and
+   `check-plugin.mjs` now compares it. (c) **`~/.claude/skills/float/SKILL.md`** is an installed
+   COPY, so editing the repo never touches it — re-copied by hand. All four copies now agree
+   (`b05515c2`). **mcp bumped 0.6.2 -> 0.6.3, needs publishing.** Gate now **32 checks**.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

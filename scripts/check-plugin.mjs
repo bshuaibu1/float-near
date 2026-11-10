@@ -82,6 +82,31 @@ if (rootSkill !== null && skill !== rootSkill) {
     `  cp SKILL.md plugin/skills/float/SKILL.md`,
   );
 }
+
+/**
+ * THE THIRD COPY, which was live and wrong.
+ *
+ * Next.js serves `public/` with no route, so `apps/dashboard/public/skill.md`
+ * is published at `app.usefloat.xyz/skill.md` without anything importing it.
+ * Measured 2026-11-10: the apex served the current skill (24,130 B) while
+ * `app.` served an October one (18,881 B) — two different documents at the
+ * same path on two hosts, and nothing in the repo compared them. Anyone
+ * installing from the `app.` URL got a skill months out of date.
+ *
+ * Checked here rather than in its own script because it is the same invariant
+ * the plugin copy has: one document, shipped several ways, every way the same
+ * bytes.
+ */
+const DASH_SKILL = resolve(ROOT, "apps", "dashboard", "public", "skill.md");
+if (rootSkill !== null && existsSync(DASH_SKILL)) {
+  if (readFileSync(DASH_SKILL, "utf8") !== rootSkill) {
+    fail(
+      `apps/dashboard/public/skill.md has drifted from the root SKILL.md.`,
+      `Next.js serves public/ with no route, so this IS app.usefloat.xyz/skill.md:`,
+      `  cp SKILL.md apps/dashboard/public/skill.md`,
+    );
+  }
+}
 if (!/^---\r?\n/.test(skill)) fail("the skill has no frontmatter block, so Claude Code will not load it");
 const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skill)?.[1] ?? "";
 if (!/^description:/m.test(fm)) {
