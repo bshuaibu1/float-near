@@ -308,6 +308,17 @@ so drift fails two suites.
      available for the asking. `groupKey` is now extracted from the page and executed against a real
      DOM. Both clauses mutation-checked: chunk `4`→`3` reds the grouping test while round-trip stays
      green **because the revert guard fires**; disabling the guard too reds all three.
+   - **"MASTER VAULT BUDGET" IS NOW SAID AT ONBOARDING (2026-11-10).** The greeting said "standard
+     limits of 25 USDC/day", ambiguous between the whole vault's ceiling and this agent's personal
+     allowance — and **both readings are true on day one**, which is why it survived. `daily`/`perTx`
+     become `root_limits` (`web/index.html:2027`) and a bound agent gets a child whose caps are
+     **cloned from root** (`agent_limits = root_limits.clone()`, `contracts/vault/src/lib.rs:322`).
+     They diverge at agent #2: the master stays shared, each agent still shows its own 25/day, and a
+     sibling draining the pool returns `PARENT_DAILY_BUDGET` while the refused agent's cap looks
+     free — **the headline differentiator, previously first met as a surprise.** The greeting now
+     names the master budget and says every agent shares it, and the page rows read **"shared daily
+     limit"**. This also ends one concept having two names: the dashboard has always said "MASTER
+     VAULT BUDGET / Shared by every agent". All four `SKILL.md` copies re-synced (`a6fee4a6`).
    - **Deploy trap worth keeping:** `SKIP_CERTBOT=1` looks like a safe way to avoid re-running
      certbot on a valid cert, but the script REWRITES the vhost and `certbot --nginx --redirect` is
      what re-injects the TLS block — skipping it would leave a live HTTPS site serving plain HTTP.

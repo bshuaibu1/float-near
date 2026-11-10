@@ -644,7 +644,7 @@
           <div class="section">
             <div class="row"><span>owner</span><span id="a-owner"></span></div>
             <div class="row"><span>from vault</span><span id="a-vault"></span></div>
-            <div class="row"><span>daily limit</span><span id="a-limit"></span></div>
+            <div class="row"><span>shared daily limit</span><span id="a-limit"></span></div>
             <div class="row"><span>per payment</span><span id="a-limit-tx"></span></div>
           </div>
 
@@ -739,7 +739,19 @@
             The size is still MEASURED for that waiting line. It is just not
             a row in a table of things you are being asked to check.
           -->
-          <div class="row"><span>daily limit</span><span id="p-daily"></span></div>
+          <!--
+            "SHARED", because the number is the ROOT's and every agent is
+            charged against it. `daily`/`perTx` become `root_limits`, and a
+            bound agent gets a child whose caps are cloned from root
+            (`agent_limits = root_limits.clone()`, contracts/vault/src/lib.rs:322).
+            So on day one "daily limit 25" is true of BOTH the vault and the
+            agent, and the two only diverge at agent #2 — when a sibling
+            draining the pool returns PARENT_DAILY_BUDGET while the refused
+            agent's own cap still looks free. One word now, instead of that
+            arriving as a surprise. Matches the dashboard's "MASTER VAULT
+            BUDGET / Shared by every agent".
+          -->
+          <div class="row"><span>shared daily limit</span><span id="p-daily"></span></div>
           <div class="row"><span>per payment</span><span id="p-pertx"></span></div>
           <div class="row hide" id="p-agent-row"><span>agent</span><span id="p-agent"></span></div>
           <div class="row total"><span>you send</span><span id="p-total"></span></div>
