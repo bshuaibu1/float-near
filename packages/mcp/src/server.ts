@@ -275,7 +275,7 @@ WORKFLOW
   2. Look before acting: vault_tree shows the budget shape, vault_budget what is left today.
   3. Pay with vault_pay. Check the result: a refusal is a recorded outcome, not an exception.
   4. Change policy with a vault_plan_* tool, then hand the payload to the user to sign.
-  5. Winding down is a CLI job, not a tool: npx @floatonnear/float-exit. It returns the tokens,
+  5. Winding down is a CLI job, not a tool: npx -p @floatonnear/create-float float-exit. It returns the tokens,
      the gas-key balances and the storage deposit. vault_teardown_report says what is recoverable.
 
 REFUSALS ARE ANSWERS. Report the reason code, do not retry blindly:
@@ -941,7 +941,7 @@ server.tool(
       return json({
         vault,
         agents: [],
-        note: "No gas keys on this vault, so no agent can transact. Add one with: npx @floatonnear/float-agent",
+        note: "No gas keys on this vault, so no agent can transact. Add one with: npx -p @floatonnear/create-float float-agent",
       });
     }
 
@@ -980,7 +980,7 @@ server.tool(
         gained: after - picked.paymentsLeft,
       },
       command:
-        `npx @floatonnear/float-topup --vault ${vault} --owner <YOUR-OWNER-ACCOUNT> ` +
+        `npx -p @floatonnear/create-float float-topup --vault ${vault} --owner <YOUR-OWNER-ACCOUNT> ` +
         `--agent ${picked.publicKey} ` +
         `${amountNear ? `--amount ${amountNear}` : `--payments ${payments ?? 50}`} ` +
         `--network ${cfg.network}`,
