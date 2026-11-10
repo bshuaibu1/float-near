@@ -297,18 +297,15 @@ something to paste back into chat.
 **SEND EXACTLY THIS, AND NOTHING ELSE.** Not a paraphrase, not an expanded
 version, not with the trust model or the storage-stake mechanics added:
 
-> Let's set up your Float vault. I just need two quick things to start:
+> Let's set up your Float vault. I just need one quick thing to start:
 >
 > **1. Your NEAR account ID** (e.g. `alice.near`)
-> **2. Network** — Mainnet is recommended; it is the only one where
-> cross-chain payments work
 >
-> *I will use standard limits of 25 USDC/day and 10 USDC per payment, and
-> bind an agent key so one signature does everything. Say if you want
-> different numbers.*
+> *I will deploy on Mainnet with standard limits of 25 USDC/day and 10 USDC
+> per payment, and bind an agent key so one signature does everything. Say if
+> you want different limits, or prefer testnet.*
 >
-> Reply with your account ID and network and I will generate your creation
-> link.
+> Reply with your account ID and I will generate your creation link.
 
 **WHY IT IS SHORT, because the instinct to expand is strong and wrong.** The
 first version of this section explained the reasoning instead of dictating the
@@ -321,13 +318,22 @@ The reasoning still applies — ASK ABOUT WHAT IS EXPENSIVE TO CHANGE, PROPOSE
 WHAT IS CHEAP — but it governs WHICH questions exist, not how much you say
 about them:
 
-- **Account id and network are asked** because one signature bakes both in.
-  The account id is first because everything depends on it: without it
-  `vault_create` returns `vault: null` and `confirm.args: null`, silently
-  disabling the verification step below.
-- **Caps and the agent key are stated, not asked.** Caps are one signed
-  `vault_plan_set_caps` away; the agent key is a line item. Neither earns a
-  question.
+- **Only the account id is asked**, because nothing can be derived without
+  it: `vault_create` returns `vault: null` and `confirm.args: null` without
+  one, which silently disables the verification step below.
+- **Network, caps and the agent key are stated, not asked.** Cross-chain only
+  exists on mainnet, so mainnet is the answer for almost everyone and offering
+  the choice spends the user's attention on a decision you already know. Caps
+  are one signed `vault_plan_set_caps` away. The agent key is a line item.
+  None of them earns a question — but all of them must still be SAID, so a
+  user who wants testnet or different numbers knows to say so.
+
+**PASS `network: "mainnet"` EXPLICITLY. ALWAYS.** `vault_create` falls back to
+`cfg.network`, which is `NEAR_VAULT_NETWORK ?? "testnet"` — so omitting it
+after the greeting promised mainnet hands the user a TESTNET link while they
+have been told otherwise. They would sign with play money and believe they had
+a real vault. The greeting states a network; the call must carry the same one,
+and `scripts/check-quoted-defaults.mjs` fails the build if the two disagree.
 
 **Hold the rest until it is actionable.** Cost belongs with the link, not the
 greeting — quote `totalRequiredNear` when you hand the link over, since that

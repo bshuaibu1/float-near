@@ -273,6 +273,16 @@ so drift fails two suites.
    `check-quoted-defaults.mjs` was upgraded from a retired-value blocklist to **validating any
    stated figure against the page** — a blocklist cannot catch someone inventing "50 USDC/day".
    Positive-controlled on both an invented daily and an invented per-tx.
+
+   **GREETING NOW ASKS ONE THING (2026-11-10).** The network question is gone — cross-chain only
+   exists on mainnet, so offering the choice spent attention on a decision already known. Mainnet
+   is STATED, not asked, and testnet stays reachable by saying so. **Removing a question made the
+   default load-bearing, and the default was wrong:** `vault_create` resolves an omitted `network`
+   to `NEAR_VAULT_NETWORK ?? "testnet"`, so a greeting promising Mainnet with the argument omitted
+   would hand over a TESTNET link — play money, no error, both paths succeed on different chains.
+   `SKILL.md` now mandates passing `network: "mainnet"` explicitly and
+   `check-quoted-defaults.mjs` fails if the stated network and the documented call disagree
+   (controlled both ways: argument absent, and argument contradicting).
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

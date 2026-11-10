@@ -125,6 +125,50 @@ for (const file of FILES) {
   });
 }
 
+/**
+ * A NETWORK THE GREETING PROMISES MUST BE PASSED EXPLICITLY.
+ *
+ * `vault_create` resolves an omitted `network` to `cfg.network`, which is
+ * `NEAR_VAULT_NETWORK ?? "testnet"`. The greeting now says "I will deploy on
+ * Mainnet" without asking — so if the documented call does not carry
+ * `network: "mainnet"`, the agent hands over a TESTNET link while the user has
+ * been told mainnet. They would sign with play money believing they had a real
+ * vault, and nothing would error: both paths succeed, on different chains.
+ *
+ * The greeting dropped the network QUESTION, which is good UX, and in doing so
+ * made the default load-bearing. Removing a question moves its answer into the
+ * code, and the code's answer was the opposite of the promise.
+ */
+{
+  const skill = readFileSync("SKILL.md", "utf8");
+  const promise = /I will deploy on (Mainnet|Testnet)/i.exec(skill);
+  if (promise) {
+    const want = promise[1].toLowerCase();
+    // The documented vault_create example must carry it.
+    const example = /vault_create\(\{[\s\S]{0,400}?\}\)/.exec(skill)?.[0] ?? "";
+    // NO REGEX FOR THE NEEDLE. Building one here as a string cost four
+    // backslash-level slips in one session: this check's first version
+    // compiled to /network:s*["']mainnet["']/ — `\s` flattened to a literal
+    // `s` — and so reported that a correct example was missing the argument.
+    // A gate that fires on correct code is worse than no gate, because the
+    // fix is to loosen it and the next real break walks through.
+    //
+    // Squashing whitespace and substring-matching has nothing to escape.
+    const squashed = example.split(" ").join("").split(LF).join("");
+    const passes =
+      squashed.includes(`network:"${want}"`) || squashed.includes(`network:'${want}'`);
+    if (!passes) {
+      console.error(`BROKEN: SKILL.md promises "${promise[1]}" but the documented`);
+      console.error(`  vault_create example does not pass network: "${want}".`);
+      console.error(
+        `  An omitted network resolves to NEAR_VAULT_NETWORK ?? "testnet", so the` + LF +
+          `  user would be handed a ${want === "mainnet" ? "testnet" : "mainnet"} link after being told ${promise[1]}.`,
+      );
+      bad++;
+    }
+  }
+}
+
 if (bad) {
   console.error(
     `\n  ${bad} stale default(s). An MCP tool description is injected into the\n` +
