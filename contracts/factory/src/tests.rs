@@ -337,6 +337,49 @@ fn a_label_cannot_take_another_users_derived_vault_id() {
     assert!(r.is_err(), "alice.near reached bob.near's derived id");
 }
 
+/// AND THE CASE BOTH OTHER GUARDS MISS: a label equal to the factory's TLD.
+///
+/// `alice.near` labelling itself `near` builds `alice-near-near`, which is
+/// precisely what `alice-near.near` derives with NO label. The charset rule
+/// waves it through — `near` is pure [a-z0-9] — and the rooting is satisfied
+/// because the prefix really is alice's own. Only the explicit TLD ban stops
+/// it, so deleting that ban turns this test red on its own.
+///
+/// This hole was LIVE until 2026-11-10, found by enumerating labelled-vs-
+/// derived collisions rather than by reading the validation.
+#[test]
+fn a_label_equal_to_the_factory_tld_cannot_rebuild_a_siblings_derived_id() {
+    let f = ready();
+
+    // The two strings really do collide. Asserted, not assumed: if the
+    // derivation ever changes, this is the line that should fail first and
+    // say why the ban exists.
+    assert_eq!(
+        format!("{}-{}", derive_prefix("alice.near"), "near"),
+        derive_prefix("alice-near.near"),
+        "the attack only matters because these are the same id",
+    );
+
+    testing_env!(fctx(alice(), NearToken::from_near(2)).build());
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f.begin(&Some("near".to_string()), required())
+    }));
+    assert!(r.is_err(), "alice.near rebuilt alice-near.near's derived vault id");
+}
+
+/// A LABEL THAT MERELY CONTAINS THE TLD IS FINE, and the ban must not creep.
+///
+/// `nearby` ends in no `-near` token, so it cannot collide with any derived
+/// prefix. Banning it would refuse a legitimate name for no benefit — the
+/// kind of over-broad guard that looks safer and only costs users.
+#[test]
+fn a_label_merely_containing_the_tld_is_still_allowed() {
+    let f = ready();
+    testing_env!(fctx(alice(), NearToken::from_near(2)).build());
+    let (_, vault) = f.begin(&Some("nearby".to_string()), required());
+    assert_eq!(vault.as_str(), format!("alice-near-nearby.{}", factory_id()));
+}
+
 /// AND WHEN THE CHARSET RULE CANNOT HELP, rooting still has to.
 ///
 /// A victim with a TOP-LEVEL id has no dot, so its derived prefix has no
