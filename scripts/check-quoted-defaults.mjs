@@ -21,6 +21,10 @@
  */
 import { readFileSync } from "node:fs";
 
+// A literal escape inside a generated file is one backslash level away from
+// becoming a real newline and a syntax error. verify-all.mjs does the same.
+const LF = String.fromCharCode(10);
+
 const PAGE = "web/index.html";
 const html = readFileSync(PAGE, "utf8");
 
@@ -37,12 +41,29 @@ const live = { daily: pageDefault("daily"), pertx: pageDefault("pertx") };
 /**
  * Figures that USED to be defaults and must never be presented as current.
  *
- * Listing the retired values rather than trying to parse every sentence that
- * mentions a number: a sentence explaining WHY 2.04 was wrong is correct and
- * must stay, so the rule is about the word "default" sitting next to the old
- * figure, not about the figure appearing at all.
+ * Kept alongside the positive check below, because the two catch different
+ * mistakes: this one catches a stale sentence nobody updated, the other
+ * catches a NEW figure someone invented. A blocklist alone requires remembering
+ * to extend it on every change, which is the maintenance burden that lets the
+ * next stale value through.
  */
 const RETIRED = ["2.04", "0.51"];
+
+/**
+ * Phrasings that STATE a current default, and which side they state.
+ *
+ * SKILL.md now dictates a greeting containing "25 USDC/day and 10 USDC per
+ * payment". That is a FOURTH copy of these numbers — after the page, the tool
+ * descriptions and the doc comments — and it is the copy a user reads. A
+ * blocklist of old values cannot police it: someone writing "50 USDC/day"
+ * invents a figure that is wrong without ever mentioning a retired one.
+ */
+const STATED = [
+  { re: /(\d+(?:\.\d+)?)\s*USDC\/day/g, side: "daily" },
+  { re: /(\d+(?:\.\d+)?)\s*USDC per payment/g, side: "pertx" },
+  { re: /(\d+(?:\.\d+)?)\s*USDC\/tx/g, side: "pertx" },
+  { re: /Page default when omitted:\s*(\d+(?:\.\d+)?)\s*\(mainnet\)/g, side: null },
+];
 
 const FILES = [
   "packages/mcp/src/server.ts",
@@ -58,17 +79,48 @@ for (const file of FILES) {
   } catch {
     continue;
   }
-  text.split("\n").forEach((line, i) => {
+  const lines = text.split(LF);
+
+  // 1. A RETIRED FIGURE PRESENTED AS CURRENT.
+  lines.forEach((line, i) => {
     for (const old of RETIRED) {
       if (!line.includes(old)) continue;
-      // Only flag it when the line PRESENTS it as current.
       if (!/default|Defaults|page default/i.test(line)) continue;
       // A line explaining that it is no longer the default is the fix, not the bug.
-      if (/was|were|used to|previously|retired|no longer|old\b/i.test(line)) continue;
+      if (/was|were|used to|previously|retired|no longer|old/i.test(line)) continue;
       console.error(`BROKEN: ${file}:${i + 1} presents ${old} as a default.`);
       console.error(`    ${line.trim().slice(0, 100)}`);
       console.error(`  The page actually defaults to daily=${live.daily}, pertx=${live.pertx}.`);
       bad++;
+    }
+  });
+
+  // 2. A STATED FIGURE THAT DISAGREES WITH THE PAGE.
+  lines.forEach((line, i) => {
+    // Explanatory prose about a value that is deliberately NOT the default.
+    if (/refuses|cannot deliver|costs|charged|was |were |used to|example|e\.g\./i.test(line)) return;
+    for (const { re, side } of STATED) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(line)) !== null) {
+        const stated = m[1];
+        // `side: null` means the phrasing does not say which cap it is, so
+        // accept either — it is still caught if it matches neither.
+        const ok =
+          side === "daily"
+            ? stated === live.daily
+            : side === "pertx"
+              ? stated === live.pertx
+              : stated === live.daily || stated === live.pertx;
+        if (ok) continue;
+        console.error(`BROKEN: ${file}:${i + 1} states a default of ${stated}.`);
+        console.error(`    ${line.trim().slice(0, 100)}`);
+        console.error(
+          `  The page uses daily=${live.daily}, pertx=${live.pertx}. A figure stated in` + LF +
+            `  SKILL.md is read by a USER, so a wrong one is a promise the product breaks.`,
+        );
+        bad++;
+      }
     }
   });
 }

@@ -294,38 +294,56 @@ is shown the public key and must confirm it before the wallet opens. Your
 private key is written to `.float/agent-keys.json` — never printed, and never
 something to paste back into chat.
 
-**ASK ABOUT WHAT IS EXPENSIVE TO CHANGE. PROPOSE WHAT IS CHEAP.** That rule
-decides the whole interview, and getting it wrong turns a conversation into a
-slow web form rendered in chat.
+**SEND EXACTLY THIS, AND NOTHING ELSE.** Not a paraphrase, not an expanded
+version, not with the trust model or the storage-stake mechanics added:
 
-Ask, because one signature bakes these in:
+> Let's set up your Float vault. I just need two quick things to start:
+>
+> **1. Your NEAR account ID** (e.g. `alice.near`)
+> **2. Network** — Mainnet is recommended; it is the only one where
+> cross-chain payments work
+>
+> *I will use standard limits of 25 USDC/day and 10 USDC per payment, and
+> bind an agent key so one signature does everything. Say if you want
+> different numbers.*
+>
+> Reply with your account ID and network and I will generate your creation
+> link.
 
-1. **Their NEAR account.** FIRST, before anything else. Without it
-   `vault_create` cannot derive the address, returns `vault: null`, and
-   `confirm.args: null` — which silently switches off the verification below
-   and puts you back to asking the human to read an account id to you. Every
-   later answer depends on this one.
-2. **Network.** Mainnet or testnet. It is in the address permanently, it
-   decides the token, and cross-chain only exists on mainnet.
-3. **Bind an agent key?** Same signature, writes a secret to
-   `.float/agent-keys.json`, and moves the deposit by 0.12 NEAR.
+**WHY IT IS SHORT, because the instinct to expand is strong and wrong.** The
+first version of this section explained the reasoning instead of dictating the
+output, and the agent produced nine paragraphs: the refundable-stake argument,
+the function-call-key trust model, why Float will never ask for a seed phrase,
+the exact gas reservation. Every sentence true, every sentence unprompted. A
+user who asked for a vault could not find the two questions in it.
 
-Do NOT interrogate them about caps. **Propose, in one line, and move on:**
+The reasoning still applies — ASK ABOUT WHAT IS EXPENSIVE TO CHANGE, PROPOSE
+WHAT IS CHEAP — but it governs WHICH questions exist, not how much you say
+about them:
 
-> I will set 25/day and 10 per payment in USDC. Both are changeable any time
-> with a signed `vault_plan_set_caps` — say if you want different.
+- **Account id and network are asked** because one signature bakes both in.
+  The account id is first because everything depends on it: without it
+  `vault_create` returns `vault: null` and `confirm.args: null`, silently
+  disabling the verification step below.
+- **Caps and the agent key are stated, not asked.** Caps are one signed
+  `vault_plan_set_caps` away; the agent key is a line item. Neither earns a
+  question.
 
-If they name a figure, **size the per-tx cap ABOVE the payments they intend,
-never equal to one.** Cross-chain quotes are EXACT_OUTPUT, so the vault is
-charged more than the payee receives — a cap of 5 refuses a round 5.00 (it
-costs 5.075), exactly as 0.51 refuses 0.50. A cap is a ceiling, not a payment
-size.
+**Hold the rest until it is actionable.** Cost belongs with the link, not the
+greeting — quote `totalRequiredNear` when you hand the link over, since that
+is the moment it means something. The trust model belongs in an answer to "is
+this safe?", not in front of someone who has not asked. If they want the
+detail they will ask, and the rest of this file is here for when they do.
 
-Caps are the one thing here that is cheap to change, so a modal for each is
-ceremony charging the user for a decision they can revise in ten seconds. If
-they do name figures, pass them: HUMAN units (`"100"`, `"25"`), never base
-units — the page scales by `decimals` itself. Pass `token` only when it is not
-the network default.
+**Never state a cap figure you have not read.** The numbers above are the
+page's live defaults; `scripts/check-quoted-defaults.mjs` fails the build if
+this text and `web/index.html` disagree. If the user names their own figures,
+size the per-tx cap ABOVE the payments they intend, never equal to one:
+cross-chain is EXACT_OUTPUT, so the vault is charged more than the payee
+receives and a cap of 5 refuses a round 5.00. A cap is a ceiling, not a
+payment size. Pass figures in HUMAN units (`"100"`, `"25"`) — the page scales
+by `decimals` itself — and pass `token` only when it is not the network
+default.
 
 ```
 vault_create({
