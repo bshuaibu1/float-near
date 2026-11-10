@@ -380,6 +380,39 @@ impl Factory {
                 if !ok {
                     env::panic_str("BAD_LABEL: a label must be 1-16 characters of a-z or 0-9");
                 }
+                // A LABEL MAY NOT BE THE FACTORY'S OWN TLD. This closes a real
+                // squatting hole, not an edge case.
+                //
+                // `alice.near` labelling itself `near` builds
+                // `alice-near-near`, which is EXACTLY what `alice-near.near`
+                // derives with no label. Whoever creates first holds the id,
+                // and since the dashboard finds a vault BY DERIVATION the
+                // victim is shown an attacker-owned vault at their own address.
+                //
+                // Found 2026-11-10 by enumerating labelled-vs-derived
+                // collisions over plausible mainnet owners while evaluating an
+                // unrelated naming change. It was already live; nothing had
+                // reached it.
+                //
+                // THIS IS THE WHOLE CLASS, not one instance. A dotted owner's
+                // derived prefix always ends `-{tld}`, because its trailing
+                // `.{tld}` becomes one; a labelled prefix always ends
+                // `-{label}`; a label cannot contain a hyphen. So the final
+                // hyphen-separated token is `tld` on one side and `label` on
+                // the other, and the two can coincide only when they are equal.
+                // Victims with a TOP-LEVEL id have no `-{tld}` tail and are
+                // covered by the rooting instead — see
+                // `a_label_matching_a_top_level_victims_prefix_is_still_redirected`.
+                //
+                // Compared against the FACTORY's suffix rather than a literal
+                // "near", so the testnet factory refuses `testnet` and neither
+                // network keeps the hole the other closed.
+                if Some(l.as_str()) == factory.as_str().rsplit('.').next() {
+                    env::panic_str(
+                        "BAD_LABEL: a label may not be the factory's own suffix - it would \
+                         rebuild another account's derived vault id",
+                    );
+                }
                 format!("{}-{}.{}", derive_prefix(owner.as_str()), l, factory)
                     .parse()
                     .ok()

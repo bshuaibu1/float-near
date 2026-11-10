@@ -193,6 +193,17 @@ so drift fails two suites.
    **Still true: no vault has ever been created by this factory**; `MAINNET_VAULT` is unset so the
    dashboard answers `503 NO_MAINNET_ADAPTER` for `.near` wallets; an unmanaged `node` on `:8788`
    is a leftover in no systemd unit.
+
+   **NEW 2026-11-10 — the mainnet factory has a live squatting hole, now fixed in source but NOT
+   on chain.** `alice.near` passing label `near` builds `alice-near-near`, exactly what
+   `alice-near.near` derives with no label; first creator holds the id and the dashboard, which
+   finds vaults BY DERIVATION, would show the victim an attacker-owned vault at their own address.
+   The charset rule waves `near` through and the rooting is satisfied, so neither existing guard
+   catches it. Fixed by banning a label equal to the factory's own TLD; mutation-tested (guard off
+   -> only that test reds, and a merely-TLD-containing label like `nearby` stays allowed).
+   **`usefloat.near` still runs the old build** — new factory is `164,596 B ec28be51`, chain has
+   `H4HTsyZW`. Nothing has reached the hole (no vault exists), but a factory redeploy is staged and
+   needs Bashir's full-access key.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
