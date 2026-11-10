@@ -127,6 +127,24 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
             "owner": owner.id(),
             "network": "sandbox",
             "strict_allocation": false, // overcommit is the subject under test
+            // ROOT LIMITS ARE PASSED AT INIT, and omitting them was what made
+            // this whole tier dead. `new` grew this required field when the
+            // factory learned to create a funded, bound vault in one
+            // signature; `setup` was never updated, so every test in every
+            // file failed at the first call with
+            //   missing field `root_limits` at line 1 column 101
+            // Nothing noticed because near-workspaces ships no Windows
+            // sandbox, so the tier had never been run at all — it rotted in
+            // place while looking like coverage.
+            "root_limits": [{
+                "token": ft.id(),
+                "daily_cap": CAP.to_string(),
+                "per_tx_cap": CAP.to_string(),
+            }],
+            // Explicit `null` rather than omitted: absent means INHERIT, and
+            // for the root there is nothing to inherit from. The tests that
+            // care set recipients per node themselves.
+            "root_recipients": serde_json::Value::Null,
         }))
         .transact()
         .await?
