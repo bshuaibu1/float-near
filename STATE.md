@@ -217,6 +217,15 @@ so drift fails two suites.
    `float-topup`**, so even the corrected command fails until it is republished. Also 2FA.
    (d) `apps/dashboard/public/skill.md` is a THIRD stale copy (Oct 26) that the site does not
    serve; harmless now, a silent regression if it ever becomes the fallback.
+
+   **OPEN GAP (identified 2026-11-10, not fixed, Bashir asked for it).** `vault_create` hands back a
+   URL and stops — its `note` ends at "approve the transaction in your own wallet" and never tells
+   the agent it can confirm the result itself. But the derived vault id is known BEFORE signing, so
+   the agent could poll for the account and read back `get_config.owner` to prove it is the user's.
+   The round-trip through the human ("paste me the vault ID") is therefore a **documentation gap, not
+   a technical limit**. The signature itself cannot move — the MCP holding a full-access key would
+   defeat the product, and that is already settled in `DECISIONS.md` ("CLI signs, MCP quotes"). Fix
+   is to the tool's output and instructions only, no new signing capability. **Not yet decided.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
