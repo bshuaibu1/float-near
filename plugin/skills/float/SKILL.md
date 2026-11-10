@@ -294,17 +294,50 @@ is shown the public key and must confirm it before the wallet opens. Your
 private key is written to `.float/agent-keys.json` — never printed, and never
 something to paste back into chat.
 
+**INTERVIEW THEM FIRST, then build the link.** `vault_create` takes the budget
+as arguments and bakes it into the URL, so the user approves the caps they
+actually chose instead of the page's defaults. Ask:
+
+- how much per day, and how much per single payment — in HUMAN units (`"100"`,
+  `"2.04"`), never base units; the page scales by `decimals` itself
+- which token, if it is not the network default (USDC on mainnet)
+
 ```
-vault_create({ owner: "alice.near" })
+vault_create({
+  owner: "alice.near", daily: "100", perTx: "10",
+  token: "usdc.fakes.testnet", decimals: 6,
+})
  -> vault:    alice-near.<factory>
     deposit:  3.30679 NEAR + 0.20000 gas reservation
-    url:      https://app.usefloat.xyz/?owner=alice.near&factory=...
+    url:      https://usefloat.xyz/?owner=alice.near&factory=...&daily=100&pertx=10
+    confirm:  { tool: "vault_await_create", vault: "alice-near.<factory>" }
 ```
 
-You do the work — deriving the address from the factory's own view, reading the
-real deposit, checking the name is not already taken — and the human does one
-thing: opens the link and approves it in their own wallet. Nothing that can
-hurt them touches disk.
+Omit a cap and the page's own default applies — don't substitute one yourself,
+or two places decide the same number.
+
+**Then verify it yourself. Do not ask them to paste the vault id back** — you
+already derived it. When they say they have signed, call `vault_await_create`
+with `confirm.args`. It polls for the account and reads `get_config.owner` back,
+because an account existing at the derived id is *not* proof it is theirs: the
+derivation is not injective, so a collision means whoever created first holds
+the address. Four outcomes, and only one of them is good:
+
+| status | what it means |
+|---|---|
+| `LIVE` | exists AND owned by them. Set `NEAR_VAULT_CONTRACT` and carry on. |
+| `NOT_YET` | not signed yet, or cancelled. Ask; call again. Never report success. |
+| `NOT_YOURS` | someone else owns that address. Do not configure anything against it. |
+| `UNVERIFIED` | it exists but could not be read. "I could not check" is not "it is yours". |
+
+A label changes the address (`<prefix>-<label>.<factory>`), so pass one only if
+they want a second vault — and `vault_create` reports the labelled id, not the
+bare one.
+
+You do the work — the interview, deriving the address from the factory's own
+view, reading the real deposit, checking the name is not already taken, and
+confirming the result — and the human does one thing: opens the link and
+approves it in their own wallet. Nothing that can hurt them touches disk.
 
 **Why this and not the CLI.** `create-float` needs a FULL-ACCESS key in
 `~/.near-credentials`, because a `DeployContract` action cannot be signed by a

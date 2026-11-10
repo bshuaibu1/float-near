@@ -189,6 +189,123 @@ export interface CreatePlanInput {
    * anything is signed.
    */
   agentPk?: string | null;
+  /**
+   * The root node's caps and token, in HUMAN units — the answers to "how much
+   * per day?" and "how much per payment?".
+   *
+   * WHY THESE EXIST. The signing page has read `?daily=`, `?pertx=`, `?token=`
+   * and `?decimals=` since it was written, defaulting to 2.04/0.51 USDC on
+   * mainnet. This builder sent four params and never those, so an agent could
+   * not ask the user their budget and hand back a ready-to-sign link — which
+   * is the entire point of the flow. The page was finished; this side was not,
+   * and nothing compared the two lists.
+   *
+   * HUMAN UNITS, NOT BASE UNITS. The page scales by `decimals` itself —
+   * `units()` pads the fraction to DECIMALS digits — so base units passed here
+   * would be scaled a second time and turn a 100 USDC cap into 100 million.
+   */
+  daily?: string;
+  perTx?: string;
+  token?: string;
+  decimals?: number;
+  /**
+   * A vault label, which is PART OF THE ADDRESS.
+   *
+   * `resolve_vault` builds `{prefix}-{label}.{factory}`, so a labelled create
+   * does NOT land on the id `vault_id_for` returned. The page already knows
+   * this and appends the suffix before showing an address; this builder has to
+   * agree with it, or the user is told one address and gets another.
+   */
+  label?: string;
+}
+
+/**
+ * Refuse a cap the page would silently round, or the contract would reject.
+ *
+ * EVERY ONE OF THESE IS A POST-SIGNATURE FAILURE IF IT GETS THROUGH. These
+ * values go into a transaction the user approves, so a bad one is not a
+ * validation error they can correct — it is a panic after the deposit moved,
+ * or worse, a cap that is quietly not the number they agreed to.
+ */
+export function validateCaps(i: {
+  daily?: string;
+  perTx?: string;
+  decimals?: number;
+  token?: string;
+  label?: string;
+  factory: string;
+}): string[] {
+  const problems: string[] = [];
+  const dp = i.decimals ?? 6;
+  const numeric = /^\d+(\.\d+)?$/;
+
+  if (
+    i.decimals !== undefined &&
+    (!Number.isInteger(i.decimals) || i.decimals < 0 || i.decimals > 24)
+  ) {
+    problems.push(`decimals must be an integer 0-24, got ${i.decimals}`);
+  }
+
+  for (const [name, v] of [
+    ["daily", i.daily],
+    ["perTx", i.perTx],
+  ] as const) {
+    if (v === undefined) continue;
+    if (!numeric.test(v)) {
+      problems.push(
+        `${name} must be a plain decimal in HUMAN units, e.g. "100" or "2.04", got "${v}"`,
+      );
+      continue;
+    }
+    if (Number(v) <= 0) {
+      problems.push(`${name} must be greater than 0 — a zero cap refuses every payment`);
+      continue;
+    }
+    // THE PAGE TRUNCATES; IT DOES NOT ROUND AND DOES NOT COMPLAIN. `units()`
+    // slices the fraction to `decimals` digits, so "2.0400001" against a
+    // 6-decimal token becomes 2.040000 and the user approves a cap that is not
+    // the one they were quoted. Never silently alter a number about money.
+    const frac = v.split(".")[1] ?? "";
+    if (frac.length > dp) {
+      problems.push(
+        `${name} "${v}" has ${frac.length} decimal places but the token has ${dp}. ` +
+          `The signing page truncates rather than rounding, so the cap would silently ` +
+          `become "${v.split(".")[0]}.${frac.slice(0, dp)}".`,
+      );
+    }
+  }
+
+  if (i.daily && i.perTx && numeric.test(i.daily) && numeric.test(i.perTx)) {
+    if (Number(i.perTx) > Number(i.daily)) {
+      problems.push(
+        `perTx (${i.perTx}) is larger than daily (${i.daily}), so the per-payment cap ` +
+          `can never bind — the daily cap refuses first. Probably swapped.`,
+      );
+    }
+  }
+
+  if (i.token !== undefined && !/^[a-z0-9._-]{2,64}$/.test(i.token)) {
+    problems.push(`token "${i.token}" is not a legal NEAR account id`);
+  }
+
+  if (i.label !== undefined) {
+    // The CONTRACT's rule, not a looser one, so a bad label is refused here
+    // rather than panicking BAD_LABEL after the user has paid.
+    if (!/^[a-z0-9]{1,16}$/.test(i.label)) {
+      problems.push(`label "${i.label}" must be 1-16 characters of a-z or 0-9`);
+    } else if (i.label === i.factory.split(".").pop()) {
+      // Added to the factory on 2026-11-10: a label equal to the factory's own
+      // suffix rebuilds another account's derived id. The page predates that
+      // guard and does not know about it, so this is the only layer that can
+      // catch it before a signature.
+      problems.push(
+        `label "${i.label}" is the factory's own suffix, which the factory refuses — ` +
+          `it would rebuild another account's derived vault id`,
+      );
+    }
+  }
+
+  return problems;
 }
 
 export interface CreatePlan {
@@ -206,6 +323,13 @@ export interface CreatePlan {
   url: string;
   warnings: string[];
   note: string;
+  /** What the agent should do after the user signs, instead of asking them. */
+  confirm: {
+    vault: string | null;
+    tool: string;
+    args: { vault: string | null; owner: string; network: string } | null;
+    instruction: string;
+  };
 }
 
 /** yoctoNEAR -> a NEAR string, without floating point. */
@@ -301,11 +425,38 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
         ]
       : [];
 
+  // REFUSE BEFORE BUILDING A LINK, not after. Returning a URL alongside a
+  // warning would still be a URL the agent hands over and the user signs.
+  const capProblems = validateCaps({
+    daily: i.daily,
+    perTx: i.perTx,
+    decimals: i.decimals,
+    token: i.token,
+    label: i.label,
+    factory: i.factory,
+  });
+  if (capProblems.length) {
+    throw new Error(
+      `Refusing to build a signing link:\n  - ${capProblems.join("\n  - ")}\n\n` +
+        `These become part of a transaction the user approves, so a bad value is ` +
+        `not a correctable error — it is a panic after the deposit moved, or a cap ` +
+        `that is not the number they agreed to.`,
+    );
+  }
+
   const url = new URL(i.appUrl);
   if (known) url.searchParams.set("owner", i.owner);
   if (i.agentPk) url.searchParams.set("agent_pk", i.agentPk);
   url.searchParams.set("factory", i.factory);
   url.searchParams.set("network", i.network);
+  // The interview answers. Names are the PAGE's (`pertx`, not `perTx`) —
+  // `scripts/check-create-url-params.mjs` compares the two lists so a rename
+  // on either side cannot drift silently again.
+  if (i.daily !== undefined) url.searchParams.set("daily", i.daily);
+  if (i.perTx !== undefined) url.searchParams.set("pertx", i.perTx);
+  if (i.token !== undefined) url.searchParams.set("token", i.token);
+  if (i.decimals !== undefined) url.searchParams.set("decimals", String(i.decimals));
+  if (i.label !== undefined) url.searchParams.set("label", i.label);
 
   const unknownOwnerWarnings = known
     ? []
@@ -316,9 +467,32 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
           `will say so rather than creating a second one.`,
       ];
 
+  // THE LABEL IS PART OF THE ADDRESS, so the id the factory's view returned is
+  // not where a labelled create lands. `web/index.html:1282` does exactly this
+  // and says why: showing the unlabelled id while signing for the labelled one
+  // tells the user the wrong address.
+  //
+  // Derived by surgery on the VIEW's answer rather than by reimplementing
+  // `derive_prefix` — this file states that the derivation is not duplicated
+  // here, and a second copy of it is how the two would disagree. `vault_id`
+  // builds `{prefix}.{factory}`, so stripping the known factory suffix leaves
+  // exactly the prefix. Asserted rather than assumed, because a `vaultId` that
+  // did not end in the factory would silently produce a nonsense address.
+  let vault = known ? i.vaultId : null;
+  if (vault && i.label !== undefined) {
+    const suffix = `.${i.factory}`;
+    if (!vault.endsWith(suffix)) {
+      throw new Error(
+        `vaultId "${vault}" does not end in ".${i.factory}", so the label suffix ` +
+          `cannot be placed. Refusing to guess an address next to a real deposit.`,
+      );
+    }
+    vault = `${vault.slice(0, -suffix.length)}-${i.label}${suffix}`;
+  }
+
   return {
     owner: known ? i.owner : null,
-    vault: known ? i.vaultId : null,
+    vault,
     factory: i.factory,
     network: i.network,
     depositYocto: deposit.toString(),
@@ -343,5 +517,44 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
       `This server never sees or holds a key. Open the URL and approve the ` +
       `transaction in your own wallet; the contract travels as an argument to ` +
       `one ordinary function call, and the factory deploys it for you.`,
+    /**
+     * WHAT THE AGENT DOES NEXT, so it stops asking the user to read an address
+     * back to it.
+     *
+     * The derived id is known BEFORE anything is signed, so "did it work?" is a
+     * question this server can answer by looking at the chain. It used to end
+     * at "approve it in your wallet", which left the human relaying an account
+     * id the agent already had — the clunkiest step in the flow and a pure
+     * documentation gap, not a technical limit.
+     *
+     * OWNERSHIP IS A SEPARATE CHECK FROM EXISTENCE, and that is the whole
+     * reason this names a method rather than saying "poll until it appears".
+     * `derive_prefix` is not injective, so an account AT the derived id is not
+     * proof the vault is the user's: `vault_await_create` reads `get_config`
+     * back and compares `owner`. Three outcomes, never two — mine, someone
+     * else's, or could-not-read.
+     */
+    confirm: known
+      ? {
+          vault,
+          tool: "vault_await_create",
+          args: { vault, owner: i.owner, network: i.network },
+          instruction:
+            `Do NOT ask the user to paste the vault id back — you already have it. ` +
+            `After they say they have signed, call \`vault_await_create\` with the ` +
+            `arguments above. It polls for the account and verifies \`get_config.owner\` ` +
+            `is ${i.owner}, because an account existing at a derived id is not proof it ` +
+            `belongs to them.`,
+        }
+      : {
+          vault: null,
+          tool: "vault_await_create",
+          args: null,
+          instruction:
+            `The address depends on which wallet connects, so it is not known yet. ` +
+            `Ask the user for their account id once they have signed, then call ` +
+            `\`vault_await_create\` with it — or call \`vault_create\` again with ` +
+            `\`owner\` set to get the address up front.`,
+        },
   };
 }

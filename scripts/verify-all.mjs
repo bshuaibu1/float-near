@@ -269,6 +269,26 @@ const steps = [
      * neither of which any test reads. Local-only: resolves against the
      * workspace's own bin maps, no registry.
      */
+    /**
+     * The create URL has two ends in two languages with no shared type.
+     *
+     * The page reads its config from the query string; the MCP builds it. They
+     * drifted for weeks with every test green: the page honoured 12 params and
+     * the MCP sent 4, so `daily`, `pertx`, `token`, `decimals` and `label` were
+     * accepted and never sent — which is why an agent could not ask a user
+     * their budget and hand back a ready-to-sign link.
+     *
+     * Asymmetric on purpose. Sending a param the page ignores is a HARD failure
+     * (the user silently gets a default instead of the cap they agreed to);
+     * reading one nothing sends is reported unless it carries a written reason.
+     */
+    name: "create url params",
+    cmd: "node scripts/check-create-url-params.mjs",
+    cwd: ".",
+    mustMatch: /all read by the page/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "npx commands",
     cmd: "node scripts/check-npx-commands.mjs",
     cwd: ".",
