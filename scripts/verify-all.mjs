@@ -222,6 +222,25 @@ const steps = [
   },
   {
     /**
+     * A method that demands a yoctoNEAR but is not #[payable] is UNREACHABLE:
+     * near-sdk's wrapper rejects a deposit before the body runs, and without
+     * one `assert_one_yocto` fails. There is no third kind of call.
+     *
+     * THE UNIT TIER CANNOT SEE IT — unit tests call the Rust fn directly and
+     * never cross the wrapper, so they pass identically either way. It has
+     * shipped twice now: the factory's kill switch, and `bind_virtual_agent`,
+     * which was dead in the deployed vault until the integration tier was
+     * made runnable and caught it. A source scan is the only tier that sees
+     * the attribute.
+     */
+    name: "payable pairing",
+    cmd: "node scripts/check-payable.mjs",
+    cwd: ".",
+    mustMatch: /none unreachable/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
+    /**
      * The plugin is how a user installs this without copying
      * `claude mcp add float-near -- npx -y @floatonnear/mcp` correctly: its
      * manifest declares the server, so installing the plugin starts it.

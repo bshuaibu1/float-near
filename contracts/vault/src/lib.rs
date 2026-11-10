@@ -1426,6 +1426,17 @@ impl Vault {
         id
     }
 
+    /// PAYABLE, AND THAT IS NOT DECORATION. `assert_owner` calls
+    /// `assert_one_yocto`, and near-sdk's generated wrapper REJECTS a deposit
+    /// on a non-payable method BEFORE the body runs. Without this attribute
+    /// the method is unreachable in both directions: with a deposit it is
+    /// refused "doesn't accept deposit", without one `assert_one_yocto` fails
+    /// "requires exactly 1 yoctoNEAR". There is no third call.
+    ///
+    /// The unit tier cannot see it — it calls the Rust fn directly and never
+    /// crosses the wrapper. The factory's kill switch shipped with this exact
+    /// bug once; `scripts/check-payable.mjs` now fails the gate on it.
+    #[payable]
     pub fn bind_virtual_agent(&mut self, node_id: NodeId, public_key: PublicKey) {
         self.assert_owner();
         // The node must exist. Unlike assert_bindable we do NOT reject a node

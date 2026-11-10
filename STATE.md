@@ -159,25 +159,27 @@ so drift fails two suites.
    agree).
    Grepped every file for `hackathon|submission|devpost|2026-11-14`: **zero matches** — the
    submission requirements are recorded nowhere in this repo. ← biggest gap, 6 days left.
-2. **The integration tier RUNS now — 25 passing, 9 failing, 1 ignored** (2026-11-10, on the
-   Linux VPS; Windows has no sandbox binary, which is why it had never run). It was entirely
-   DEAD and nobody could see it:
-   - `common/setup` omitted `root_limits`, a field `new()` grew when the factory learned the
-     one-signature flow. **Every test in every file** died on the first call. Fixed.
-   - `setup` also still called `add_node(.., "root", ..)`, which `new()` now does itself —
-     `INVALID_CONFIG: root already exists`. Fixed; root caps and payee travel in `new()`.
-   - `keys.rs` called `create_agent_account`, REMOVED in the virtual-agent change. It kept
-     compiling because near-workspaces takes the method name as a **string**, so it could only
-     ever fail at runtime. Rewritten onto `add_role`.
-   - **The bundled sandbox `neard` does not implement NEP-611 gas keys.** It ACCEPTS
-     `AddGasKey` and silently does nothing — measured: 3 receipts, 0 failures, no key on the
-     account. near-workspaces 0.23 agrees: its types map `GasKeyFunctionCall` to
-     `unimplemented!()` and PANIC if you read one. So the gas-key path cannot be covered here
-     at all; it is proven on mainnet instead (7/7). `keys.rs` is `#[ignore]`d with that reason.
-   - **Still failing: 9 of 10 in `self_submit.rs`**, on stale deposit expectations —
-     `bind_virtual_agent` is not `#[payable]` and rejects a deposit before the body runs, while
-     a neighbouring call requires exactly 1 yocto. Needs each call site read individually; a
-     context-matched bulk edit merely swapped one error for the other.
+2. ~~Sandbox/integration tier has never run.~~ **IT RUNS AND IS GREEN: 45 passed, 0 failed,
+   1 ignored** (2026-11-10, Linux VPS — Windows has no sandbox binary, which is why it had
+   never run). It was entirely DEAD, and being unrunnable is what hid a LIVE CONTRACT BUG:
+   - **`bind_virtual_agent` was UNREACHABLE in the deployed vault.** It calls `assert_owner`
+     -> `assert_one_yocto`, but was not `#[payable]`, and near-sdk's wrapper rejects a deposit
+     before the body runs. With a deposit: "doesn't accept deposit". Without: "requires
+     exactly 1 yoctoNEAR". **No third kind of call existed.** The unit tier cannot see it —
+     it calls the Rust fn directly and never crosses the wrapper. This is the SECOND time this
+     shipped (the factory kill switch was the first), so `scripts/check-payable.mjs` now fails
+     the gate on it: 63 methods scanned, mutation-verified.
+   - `common/setup` omitted `root_limits` (a field `new()` grew) and still added a root node
+     `new()` now creates — every test in every file died on its first call. Fixed.
+   - `keys.rs` called `create_agent_account`, removed months ago. It kept COMPILING because
+     near-workspaces takes the method name as a string. Rewritten onto `add_role`.
+   - The test key's 1 NEAR allowance sat just under a max_gas reservation of 1.000919, so
+     every self-submit died `NotEnoughAllowance` by 0.0009. Raised to 5.
+   - **Still ignored, and not a contract fault:** the bundled sandbox `neard` does not
+     implement NEP-611 gas keys — it ACCEPTS `AddGasKey` and silently does nothing (measured:
+     3 receipts, 0 failures, no key). near-workspaces 0.23 maps `GasKeyFunctionCall` to
+     `unimplemented!()` and panics on read. That path is proven on mainnet instead (7/7).
+   - Toolchain now on the VPS: Rust 1.99.1, `cargo-near` 0.23 (needs `libudev-dev`).
 3. **Mainnet is empty, and one account on it can never be closed.** Re-measured 2026-11-08:
    `float.test015.near` is **gone** (we closed it — that teardown is the proof the sequence
    works on mainnet). `test015.near` holds **3.425**. `r1.float.test015.near` holds **0.546779**

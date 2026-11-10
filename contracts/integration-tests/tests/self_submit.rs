@@ -60,8 +60,8 @@ async fn bind(e: &Env, node: u32, pk: &PublicKey) -> Result<()> {
     e.owner
         .call(e.vault.id(), "bind_virtual_agent")
         .args_json(json!({ "node_id": node, "public_key": pk.to_string() }))
-        .deposit(NearToken::from_yoctonear(1))
         .max_gas()
+        .deposit(NearToken::from_yoctonear(1))
         .transact()
         .await?
         .into_result()?;
@@ -83,7 +83,13 @@ async fn install_key_on_vault(e: &Env, pk: &PublicKey) -> Result<()> {
             AccessKey::function_call_access(
                 e.vault.id(),
                 &["request_payment"],
-                Some(NearToken::from_near(1)),
+                // 5, NOT 1. A max_gas call reserves prepaid_gas x the MAX gas
+                // price, and measured here that is 1.000919 — just over a
+                // 1 NEAR allowance, so every self-submit died
+                // NotEnoughAllowance by 0.0009. The allowance is a fixture
+                // bound, not product behaviour: the real per-agent cap is the
+                // gas key's own balance.
+                Some(NearToken::from_near(5)),
             ),
         )
         .transact()
@@ -148,6 +154,7 @@ async fn the_self_submit_key_cannot_reach_another_method() -> Result<()> {
         .call(e.vault.id(), "set_paused")
         .args_json(json!({ "paused": true }))
         .max_gas()
+        .deposit(NearToken::from_yoctonear(1))
         .transact()
         .await;
     assert!(
