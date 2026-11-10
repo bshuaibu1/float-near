@@ -38,7 +38,8 @@
  *                              exists on purpose — guessing it wrong would
  *                              send a real deposit somewhere unverified.
  *   NEAR_VAULT_APP_URL         only needed to CREATE, default
- *                              https://app.usefloat.xyz
+ *                              https://usefloat.xyz (the APEX — `app.` is the
+ *                              dashboard and has no create flow)
  *
  * A user with NO vault can therefore run this server with nothing configured,
  * call `vault_create`, and be onboarded — which is the point. Every other tool
@@ -162,7 +163,22 @@ const cfg = {
   // Onboarding only. Both have safe defaults and neither is needed by any
   // tool that touches an existing vault.
   factory: process.env.NEAR_VAULT_FACTORY,
-  appUrl: process.env.NEAR_VAULT_APP_URL ?? "https://app.usefloat.xyz",
+  // `usefloat.xyz`, NOT `app.usefloat.xyz`.
+  //
+  // `app.` serves the Next.js dashboard; the create page is the static
+  // `web/index.html` that `scripts/deploy-skill-host.sh` puts on the APEX
+  // (`DOMAIN=usefloat.xyz`). This default pointed at `app.`, so every user
+  // following the MCP's own URL got the dashboard: HTTP 200, wrong page, no
+  // create flow, and `./vault.wasm` a 404 beside it. A 200 says a server is
+  // up, not that it is the right server.
+  //
+  // `docs/DESIGN-browser-signing-flow.md` still describes an
+  // `app.usefloat.xyz/create` layout that was planned and never built. The
+  // deploy script is the one telling the truth.
+  //
+  // Guarded by `scripts/check-create-page.mjs`, which follows this exact value
+  // over the network and fails unless the create page is really there.
+  appUrl: process.env.NEAR_VAULT_APP_URL ?? "https://usefloat.xyz",
   // The fleet keyring. Same default and same file the adapter reads — two
   // readers disagreeing about where credentials live is how an agent ends up
   // "configured" and unreachable.
