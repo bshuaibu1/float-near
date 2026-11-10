@@ -262,6 +262,17 @@ so drift fails two suites.
    `check-plugin.mjs` now compares it. (c) **`~/.claude/skills/float/SKILL.md`** is an installed
    COPY, so editing the repo never touches it — re-copied by hand. All four copies now agree
    (`b05515c2`). **mcp bumped 0.6.2 -> 0.6.3, needs publishing.** Gate now **32 checks**.
+
+   **ONBOARDING GREETING IS NOW DICTATED, NOT DESCRIBED (2026-11-10).** The interview logic was
+   right and the output was nine paragraphs — refundable stake, trust model, gas reservation, all
+   true, all unprompted — and a user asking for a vault could not find the two questions in it.
+   `SKILL.md` now carries the exact text to send (two numbered questions + one italic note), with
+   "SEND EXACTLY THIS, AND NOTHING ELSE". Cost moves to where it is actionable: quote
+   `totalRequiredNear` WITH the link, not before. **Describing the reasoning was not enough; the
+   output had to be specified.** The greeting is also a FOURTH copy of the cap figures, so
+   `check-quoted-defaults.mjs` was upgraded from a retired-value blocklist to **validating any
+   stated figure against the page** — a blocklist cannot catch someone inventing "50 USDC/day".
+   Positive-controlled on both an invented daily and an invented per-tx.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
