@@ -218,7 +218,16 @@ so drift fails two suites.
    (d) `apps/dashboard/public/skill.md` is a THIRD stale copy (Oct 26) that the site does not
    serve; harmless now, a silent regression if it ever becomes the fallback.
 
-   **OPEN GAP (identified 2026-11-10, not fixed, Bashir asked for it).** `vault_create` hands back a
+   **OPEN GAP — THE CREATE URL IS HALF-WIRED (2026-11-10).** `web/index.html` already honours
+   **12** query params: `action, agent_pk, daily, dashboard, decimals, factory, label, network,
+   owner, pertx, prefix, token` (line 639 defaults `daily` to 2.04 mainnet / 100 testnet).
+   `buildCreatePlan` sets **4**: `owner, agent_pk, factory, network`. So `daily`, `pertx`, `label`,
+   `token` and `decimals` are accepted by the page and never sent — which is precisely why the
+   agent cannot ask "how much per day?" in chat and hand over a ready-to-sign link. **The flow was
+   built; the MCP side was never connected.** Wiring it is a change to `create.ts`'s URL building
+   plus tool parameters, with NO new signing capability: the user still signs in their own wallet.
+   A gate check should assert the two sides agree, same pattern as `check-gas-math.mjs` — this
+   drifted silently because nothing compared them. Also still true: `vault_create` hands back a
    URL and stops — its `note` ends at "approve the transaction in your own wallet" and never tells
    the agent it can confirm the result itself. But the derived vault id is known BEFORE signing, so
    the agent could poll for the account and read back `get_config.owner` to prove it is the user's.
