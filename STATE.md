@@ -1,4 +1,4 @@
-<!-- STAMP commit=b1262a2 date=2026-11-09 -->
+<!-- STAMP commit=88e00c4 date=2026-11-10 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -283,6 +283,35 @@ so drift fails two suites.
    `SKILL.md` now mandates passing `network: "mainnet"` explicitly and
    `check-quoted-defaults.mjs` fails if the stated network and the documented call disagree
    (controlled both ways: argument absent, and argument contradicting).
+
+   **CRAFT PASS ON THE CREATE PAGE — SHIPPED AND LIVE 2026-11-10 (#125, `88e00c4`).** Deployed to
+   `154.12.117.17`; live HTML is **byte-identical to local, 104,548 B, sha `5d9a75dd`**, 14/14
+   post-deploy assertions, 3/3 services clean since restart, 0 `command not found` in a 63-line
+   deploy log (matcher positive-controlled). The page looked like a wireframe of itself — `#fff` on
+   `#fbfbfa`, hairline, no shadow — but the real finds came from reading the STATES, not the
+   stylesheet:
+   - **The agent key is grouped in fours.** 52 base58 chars under `word-break: break-all` orphaned
+     a single `c` onto line two; a swapped key hides exactly where the eye stops tracking. The
+     grouping **adds no characters** (margins + `<wbr>`), so select/Copy still yield the exact key —
+     `groupKey` asserts that with a round-trip probe on every call and leaves the node alone if it
+     ever fails.
+   - **`--faint` is deleted, not darkened.** `#a0a09a` at 12px is ~2.4:1, under AA — and `.note` is
+     the style carrying *"check this public key matches the one your agent showed you"*. The
+     sentence that stops a key swap was the quietest ink on the page.
+   - **Three things the page SAID that were untrue:** "Connect the wallet that will own it" showed
+     on the agent gate and plan (panels that only render once a wallet IS connected — `renderAction`
+     already had this fixed, with a comment stating the rule); the plan said "Nothing can spend from
+     this vault until you add an agent" directly beneath the row naming the agent being bound in
+     that same transaction; and `25 / day, 10 / tx` crammed two independent caps into one cell.
+   - **`web.gate.test.ts`'s header claim "no DOM library installed" was WRONG** — `happy-dom` has
+     been a root devDependency the whole time, so the rendered check it recorded as *owed* was
+     available for the asking. `groupKey` is now extracted from the page and executed against a real
+     DOM. Both clauses mutation-checked: chunk `4`→`3` reds the grouping test while round-trip stays
+     green **because the revert guard fires**; disabling the guard too reds all three.
+   - **Deploy trap worth keeping:** `SKIP_CERTBOT=1` looks like a safe way to avoid re-running
+     certbot on a valid cert, but the script REWRITES the vhost and `certbot --nginx --redirect` is
+     what re-injects the TLS block — skipping it would leave a live HTTPS site serving plain HTTP.
+     `VAULT`/`TOKEN` also default to EMPTY and must be carried off the live units, not re-derived.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
