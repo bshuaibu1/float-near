@@ -255,6 +255,27 @@ const steps = [
      * remote box, in a file nobody re-reads, and whatever a future comment
      * happens to quote is what runs there.
      */
+    /**
+     * Every documented `npx` command must resolve to a bin we ship.
+     *
+     * `float-exit` is a BIN of `@floatonnear/create-float`, not a package, so
+     * `npx @floatonnear/float-exit` 404s — and that was the ONLY documented way
+     * to recover a vault's ~3.09 NEAR deposit, printed in SKILL.md and in the
+     * MCP instructions sent to every connected client. The skill sells the
+     * deposit as refundable; the refund path dead-ended at a registry 404.
+     *
+     * A bin is not a package, and nothing knew the difference because the
+     * string was prose in markdown and a template literal in a tool response —
+     * neither of which any test reads. Local-only: resolves against the
+     * workspace's own bin maps, no registry.
+     */
+    name: "npx commands",
+    cmd: "node scripts/check-npx-commands.mjs",
+    cwd: ".",
+    mustMatch: /all resolve to a shipped bin/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "heredoc expansion",
     cmd: "node scripts/check-heredoc-expansion.mjs",
     cwd: ".",

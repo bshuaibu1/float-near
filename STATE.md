@@ -203,6 +203,20 @@ so drift fails two suites.
    -> only that test reds, and a merely-TLD-containing label like `nearby` stays allowed).
    **`usefloat.near` still runs the old build** — new factory is `164,596 B ec28be51` (`GtsFXF993GPYooShKAMWQF4YDJLur2Kk1cVwYpnxckSP`), chain has `H4HTsyZW`, re-read 2026-11-10. Dry run is staged for Bashir — `$env:FACTORY="usefloat.near"; node scripts/deploy-factory-mainnet.mjs` (PowerShell form; the bash `VAR=x cmd` prefix sets nothing on his shell), then the same with `$env:CONFIRM_MAINNET="1"`. No borsh migration: the guard added no struct fields. **The redeploy costs 0.01071, not 1.64596** — `free()` is already net of the deployed code's stake, so the old precondition charged for it twice and printed a FATAL telling Bashir to send ~1.5 NEAR from the account holding the vault deposit. Fixed in #115; dry run is green and `usefloat.near`'s 0.16034 covers it. Nothing has reached the hole (no vault exists), but a factory redeploy is staged and
    needs Bashir's full-access key.
+
+   **PUBLISHED-ARTIFACT DEFECTS, found 2026-11-10 (reported by another agent, verified here).**
+   (a) **The documented refund path 404'd.** `npx @floatonnear/float-exit` — the ONLY documented
+   way to recover a vault's ~3.09 NEAR, printed in `SKILL.md` and in the MCP instructions sent to
+   every client — is a **bin of `@floatonnear/create-float`, not a package**. Fixed to
+   `npx -p @floatonnear/create-float float-exit`; same for `float-topup` and `float-agent`.
+   `scripts/check-npx-commands.mjs` is now in the gate (**30 checks**).
+   (b) **npm `@floatonnear/mcp@0.6.1` != local 0.6.1** — the published `dist/server.js` has **zero**
+   `vault_gas`, local has it registered. Same version, different code, so nobody can tell which
+   they run. **Needs a version bump + republish (Bashir's 2FA).**
+   (c) **`create-float@0.6.0` ships bins `create-float, float-exit, float-agent` — no
+   `float-topup`**, so even the corrected command fails until it is republished. Also 2FA.
+   (d) `apps/dashboard/public/skill.md` is a THIRD stale copy (Oct 26) that the site does not
+   serve; harmless now, a silent regression if it ever becomes the fallback.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

@@ -159,7 +159,7 @@ the vault — wallets silently sign as the connected account instead and report
 success. So:
 
 ```
-npx @floatonnear/float-exit --vault <vault> --owner <you> --dry-run
+npx -p @floatonnear/create-float float-exit --vault <vault> --owner <you> --dry-run
 ```
 
 `--dry-run` quotes the refund and writes nothing. Drop it to execute.
@@ -181,7 +181,7 @@ vault_gas { "agent": "marketing", "payments": 100 }   -> what 100 more costs
 vault_gas { "agent": "marketing", "amountNear": "0.05" }  -> what 0.05 buys
 ```
 
-It returns the exact `npx @floatonnear/float-topup` command. Topping up is
+It returns the exact `npx -p @floatonnear/create-float float-topup` command. Topping up is
 signed by the vault, so like closing, it is a CLI job.
 
 ## When a payment is refused
