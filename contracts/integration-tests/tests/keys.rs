@@ -68,10 +68,9 @@ async fn gas_key_permission(e: &Env, public_key: &str) -> anyhow::Result<serde_j
     let body = json!({
         "jsonrpc": "2.0", "id": "keys-test", "method": "query",
         "params": {
-            "request_type": "view_access_key",
+            "request_type": "view_access_key_list",
             "finality": "final",
             "account_id": e.vault.id(),
-            "public_key": public_key,
         }
     });
     let url = format!("http://{}", e.worker.rpc_addr().trim_start_matches("http://"));
@@ -82,12 +81,21 @@ async fn gas_key_permission(e: &Env, public_key: &str) -> anyhow::Result<serde_j
         .await?
         .json()
         .await?;
-    let perm = out
+    let keys = out
         .get("result")
-        .and_then(|r| r.get("permission"))
+        .and_then(|r| r.get("keys"))
+        .and_then(|k| k.as_array())
+        .ok_or_else(|| anyhow::anyhow!("no keys in RPC reply: {out}"))?;
+    let hit = keys
+        .iter()
+        .find(|k| k.get("public_key").and_then(|v| v.as_str()) == Some(public_key))
+        .ok_or_else(|| {
+            anyhow::anyhow!("add_role did not install {public_key}. Keys present: {keys:#?}")
+        })?;
+    hit.get("access_key")
+        .and_then(|a| a.get("permission"))
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no permission in RPC reply: {out}"))?;
-    Ok(perm)
+        .ok_or_else(|| anyhow::anyhow!("key has no permission field: {hit}"))
 }
 
 /// Assert a key is pinned to `request_payment` on this vault, and nothing else.
