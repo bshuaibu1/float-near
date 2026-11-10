@@ -141,10 +141,9 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
                 "daily_cap": CAP.to_string(),
                 "per_tx_cap": CAP.to_string(),
             }],
-            // Explicit `null` rather than omitted: absent means INHERIT, and
-            // for the root there is nothing to inherit from. The tests that
-            // care set recipients per node themselves.
-            "root_recipients": serde_json::Value::Null,
+            // The payee, set HERE rather than by a later add_node, because
+            // `new` now creates the root node itself.
+            "root_recipients": [payee.id()],
         }))
         .transact()
         .await?
@@ -185,8 +184,9 @@ pub async fn setup(agents: usize, mint: u128) -> Result<Env> {
         }])
     };
 
-    add_node(&owner, &vault, None, "root", lim(CAP, CAP), Some(vec![payee.id().to_string()]))
-        .await?;
+    // NO `add_node` FOR ROOT. `new` creates it, so adding one is refused
+    // INVALID_CONFIG: root already exists. This line used to be how root got
+    // its caps and payee; both now travel in `new` above.
     add_node(&owner, &vault, Some(ROOT), "team", lim(CAP, CAP), None).await?;
 
     let mut accounts = Vec::with_capacity(agents);
