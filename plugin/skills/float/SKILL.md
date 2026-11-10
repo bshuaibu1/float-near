@@ -301,9 +301,10 @@ version, not with the trust model or the storage-stake mechanics added:
 >
 > **1. Your NEAR account ID** (e.g. `alice.near`)
 >
-> *I will deploy on Mainnet with standard limits of 25 USDC/day and 10 USDC
-> per payment, and bind an agent key so one signature does everything. Say if
-> you want different limits, or prefer testnet.*
+> *I will deploy on Mainnet and bind an agent key, so one signature does
+> everything. Your master vault budget — the ceiling every agent shares — will
+> be 25 USDC/day, max 10 USDC per payment. Say if you want different numbers,
+> or prefer testnet.*
 >
 > Reply with your account ID and I will generate your creation link.
 
@@ -318,6 +319,20 @@ The reasoning still applies — ASK ABOUT WHAT IS EXPENSIVE TO CHANGE, PROPOSE
 WHAT IS CHEAP — but it governs WHICH questions exist, not how much you say
 about them:
 
+- **"Master vault budget" and "every agent shares" are LOAD-BEARING, not
+  padding.** The greeting used to say "standard limits of 25 USDC/day", which
+  is ambiguous between the whole vault's ceiling and this agent's personal
+  allowance — and on day one BOTH readings are true, which is why nobody
+  caught it. `daily`/`perTx` become `root_limits`, and the bound agent gets a
+  child node whose caps are *cloned from root* (`agent_limits =
+  root_limits.clone()`, `contracts/vault/src/lib.rs:322`). The readings
+  diverge at agent #2: the master stays 25/day shared, each agent still shows
+  its own 25/day, and a sibling draining the pool returns
+  `PARENT_DAILY_BUDGET` while the refused agent's own cap looks free. That is
+  the product's headline differentiator, and the old wording set the user up
+  to meet it as a surprise. It also now matches the dashboard, which has
+  always called this "MASTER VAULT BUDGET / Shared by every agent" — one
+  concept had two names across two surfaces.
 - **Only the account id is asked**, because nothing can be derived without
   it: `vault_create` returns `vault: null` and `confirm.args: null` without
   one, which silently disables the verification step below.
