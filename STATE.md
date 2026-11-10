@@ -181,16 +181,18 @@ so drift fails two suites.
      3 receipts, 0 failures, no key). near-workspaces 0.23 maps `GasKeyFunctionCall` to
      `unimplemented!()` and panics on read. That path is proven on mainnet instead (7/7).
    - Toolchain now on the VPS: Rust 1.99.1, `cargo-near` 0.23 (needs `libudev-dev`).
-3. ~~The web host serves a stale `vault.wasm`.~~ **FIXED 2026-11-10.** `scripts/deploy-skill-host.sh`
-   ran on `154.12.117.17` as `float`, moving the checkout `d90eb8e` → `c2bdd63`; the host now serves
-   **298,839 B `dc7a3fb6`** and `scripts/check-create-page.mjs` is **green**. All 14 post-deploy
-   assertions passed, including two that confirm `app.` is working as designed. **Found during the
-   deploy:** the unquoted `<<UNIT` heredocs executed their own comments — `'ss -ltnp'` in prose RAN
-   and its socket listing was written into the live `float-near-dash.service`. ExecStart survived so
-   nothing failed. Fixed, plus `check-heredoc-expansion.mjs` in the gate (**29 checks**). The unit
-   file still holds the junk until the next deploy. **Still true: no vault has ever been created by
-   this factory**, and `MAINNET_VAULT` is unset so the dashboard answers `503 NO_MAINNET_ADAPTER`
-   for `.near` wallets. An unmanaged `node` on `:8788` is a leftover, in no systemd unit.
+3. ~~The web host serves a stale `vault.wasm`.~~ **FIXED AND VERIFIED 2026-11-10.** Host serves
+   **298,839 B `dc7a3fb6`**, `scripts/check-create-page.mjs` **green**, 14/14 post-deploy
+   assertions, all 3 services active, **0 root-owned files**. Checkout `d90eb8e` → `a050d18`.
+   Two bugs found by doing it: (a) the unquoted `<<UNIT` heredocs **executed their own comments** —
+   `'ss -ltnp'` ran and its socket listing was written into the live `float-near-dash.service`;
+   fixed, and `check-heredoc-expansion.mjs` is in the gate (**29 checks**). (b) **the script
+   `git reset --hard`s the tree it is running from**, so the run that applied fix (a) was still
+   executing the OLD file and reported pre-fix line numbers; the unit stayed dirty until a third
+   run from `/tmp`. **Deploy from a copy outside `$ROOT`** whenever the script itself changed.
+   **Still true: no vault has ever been created by this factory**; `MAINNET_VAULT` is unset so the
+   dashboard answers `503 NO_MAINNET_ADAPTER` for `.near` wallets; an unmanaged `node` on `:8788`
+   is a leftover in no systemd unit.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
