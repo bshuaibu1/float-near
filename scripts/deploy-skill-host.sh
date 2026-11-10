@@ -474,6 +474,16 @@ UNIT
 
 
   say "writing systemd unit $DASH_SERVICE"
+  # <<UNIT IS UNQUOTED ON PURPOSE — the body needs $DASH_SERVICE, $ROOT, $PORT.
+  # The cost is that EVERYTHING else expands too, including backticks in
+  # comments. On 2026-11-10 three markdown-quoted comments here and in the
+  # nginx block ran as commands at deploy time: '-H 127.0.0.1', 'next start'
+  # and 'factory' failed harmlessly, but 'ss -ltnp' SUCCEEDED and its socket
+  # listing — ports and PIDs — was written into the live unit file. ExecStart
+  # survived, so nothing broke and nothing complained.
+  #
+  # Use 'single quotes' in comments inside these heredocs, never backticks.
+  # scripts/check-heredoc-expansion.mjs fails the gate on a relapse.
   sudo tee "/etc/systemd/system/$DASH_SERVICE.service" >/dev/null <<UNIT
 [Unit]
 Description=Float dashboard (multi-tenant reads, no API token)
@@ -498,10 +508,10 @@ Environment=NEXT_PUBLIC_SIGNING_PAGE_URL=https://$DOMAIN/
 # mutating request without authenticating the caller, so setting it here
 # would let anyone on the internet POST /api/float/v1/pay.
 #
-# `-H 127.0.0.1` ON THE COMMAND LINE, because `next start` IGNORES the
+# '-H 127.0.0.1' ON THE COMMAND LINE, because 'next start' IGNORES the
 # HOSTNAME environment variable and defaults to 0.0.0.0. This unit used to set
 # Environment=HOSTNAME=127.0.0.1 and the dashboard bound every interface
-# anyway — confirmed by `ss -ltnp` showing `*:3000` and by the deploy's own
+# anyway — confirmed by 'ss -ltnp' showing '*:3000' and by the deploy's own
 # negative assertion getting HTTP 200 from the PUBLIC ip. A config that looks
 # right and is silently ignored is worse than one that errors.
 ExecStart=$(command -v npm) run start -- -H 127.0.0.1 -p $DASH_PORT
@@ -598,7 +608,7 @@ server {
 
     location / {
         # SIGNING LINKS STILL REACH THE SIGNING PAGE. Every link the MCP builds
-        # carries `factory`, unconditionally (create.ts), and nothing the
+        # carries 'factory', unconditionally (create.ts), and nothing the
         # dashboard links to does. So this routes by the one parameter that
         # tells them apart, instead of taking the name away from installs that
         # already exist. \$request_uri keeps the whole query — dropping it
