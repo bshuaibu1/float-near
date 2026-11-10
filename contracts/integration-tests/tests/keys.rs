@@ -165,6 +165,13 @@ async fn provisioned_agent_key_can_only_call_request_payment_on_this_vault()
         .transact()
         .await?;
     assert!(out.is_success(), "provisioning failed: {out:#?}");
+    // SUCCESS ON THE OUTER TX IS NOT SUCCESS OF THE PROMISE IT SCHEDULED.
+    // add_role installs the gas key via a Promise whose Drop constructs it, so
+    // a receipt can fail while the call reports success.
+    for r in out.receipt_failures() {
+        panic!("add_role scheduled a receipt that FAILED: {r:#?}");
+    }
+    println!("  receipts: {} ok, {} failed", out.receipt_outcomes().len(), out.receipt_failures().len());
 
     // THE KEY LIVES ON THE VAULT, not on a sub-account. That is the whole
     // point of the virtual-agent change: there is no account to strand.
