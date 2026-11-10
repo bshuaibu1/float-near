@@ -294,27 +294,60 @@ is shown the public key and must confirm it before the wallet opens. Your
 private key is written to `.float/agent-keys.json` — never printed, and never
 something to paste back into chat.
 
-**INTERVIEW THEM FIRST, then build the link.** `vault_create` takes the budget
-as arguments and bakes it into the URL, so the user approves the caps they
-actually chose instead of the page's defaults. Ask:
+**ASK ABOUT WHAT IS EXPENSIVE TO CHANGE. PROPOSE WHAT IS CHEAP.** That rule
+decides the whole interview, and getting it wrong turns a conversation into a
+slow web form rendered in chat.
 
-- how much per day, and how much per single payment — in HUMAN units (`"100"`,
-  `"2.04"`), never base units; the page scales by `decimals` itself
-- which token, if it is not the network default (USDC on mainnet)
+Ask, because one signature bakes these in:
+
+1. **Their NEAR account.** FIRST, before anything else. Without it
+   `vault_create` cannot derive the address, returns `vault: null`, and
+   `confirm.args: null` — which silently switches off the verification below
+   and puts you back to asking the human to read an account id to you. Every
+   later answer depends on this one.
+2. **Network.** Mainnet or testnet. It is in the address permanently, it
+   decides the token, and cross-chain only exists on mainnet.
+3. **Bind an agent key?** Same signature, writes a secret to
+   `.float/agent-keys.json`, and moves the deposit by 0.12 NEAR.
+
+Do NOT interrogate them about caps. **Propose, in one line, and move on:**
+
+> I will set 25/day and 10 per payment in USDC. Both are changeable any time
+> with a signed `vault_plan_set_caps` — say if you want different.
+
+If they name a figure, **size the per-tx cap ABOVE the payments they intend,
+never equal to one.** Cross-chain quotes are EXACT_OUTPUT, so the vault is
+charged more than the payee receives — a cap of 5 refuses a round 5.00 (it
+costs 5.075), exactly as 0.51 refuses 0.50. A cap is a ceiling, not a payment
+size.
+
+Caps are the one thing here that is cheap to change, so a modal for each is
+ceremony charging the user for a decision they can revise in ten seconds. If
+they do name figures, pass them: HUMAN units (`"100"`, `"25"`), never base
+units — the page scales by `decimals` itself. Pass `token` only when it is not
+the network default.
 
 ```
 vault_create({
-  owner: "alice.near", daily: "100", perTx: "10",
-  token: "usdc.fakes.testnet", decimals: 6,
+  owner: "alice.near",        // asked FIRST — everything else depends on it
+  network: "mainnet",
+  bindAgent: true,
+  daily: "25", perTx: "10",   // proposed, not interrogated
 })
  -> vault:    alice-near.<factory>
-    deposit:  3.30679 NEAR + 0.20000 gas reservation
-    url:      https://usefloat.xyz/?owner=alice.near&factory=...&daily=100&pertx=10
+    deposit:  <totalRequiredNear> — QUOTE THIS FIELD, never a figure you recall
+    url:      https://usefloat.xyz/?owner=alice.near&factory=...&daily=25&pertx=10
     confirm:  { tool: "vault_await_create", vault: "alice-near.<factory>" }
 ```
 
-Omit a cap and the page's own default applies — don't substitute one yourself,
-or two places decide the same number.
+**Never quote a deposit from memory.** It moves with the contract's byte size
+and with whether an agent is bound, and it has been wrong twice from a
+remembered number. Read `totalRequiredNear` out of the response — a wallet
+checks the balance against the whole amount, gas reservation included, and
+refuses below it.
+
+Omit a cap and the page's own default applies (25/10 mainnet, 100/10 testnet) —
+don't substitute one yourself, or two places decide the same number.
 
 **Then verify it yourself. Do not ask them to paste the vault id back** — you
 already derived it. When they say they have signed, call `vault_await_create`

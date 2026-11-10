@@ -195,3 +195,74 @@ describe("CREATE_GAS_TGAS", () => {
     expect(attached / 10n ** 12n).toBe(CREATE_GAS_TGAS);
   });
 });
+
+/**
+ * THE PAGE'S DEFAULT CAPS MUST BE ABLE TO SEND A ROUND PAYMENT.
+ *
+ * Cross-chain quotes are EXACT_OUTPUT: the payee receives `amount` and the
+ * vault is charged MORE — measured 1.5% at 0.50 USDC, 3.5% at 0.10, because a
+ * solver's fixed cost dominates at small sizes. So a per-tx cap EQUAL to a
+ * round amount refuses that amount.
+ *
+ * This bit twice in one sitting. The shipped default was 0.51, which reads as
+ * "sized for a 0.50 payment" and is not — 0.50 costs 0.5075. Replacing it with
+ * 5 reproduced the identical defect at a different scale, because 5.00 costs
+ * 5.075. Both looked obviously fine while being obviously wrong, which is the
+ * definition of a thing that needs a test rather than a comment.
+ *
+ * Reads the DEFAULTS OUT OF THE PAGE instead of restating them. A copy here
+ * would pass while the shipped page stayed broken.
+ */
+describe("the page's default caps can actually deliver a round payment", () => {
+  const html = readFileSync(PAGE, "utf8");
+  /**
+   * NO REGEX. The first version of this built one from a template literal and
+   * lost a backslash level on the way in, so it compiled to
+   * `q.get("pertx")s*??s*(...)` and threw "Nothing to repeat". It failed
+   * loudly, which is the only reason it was caught — a subtler escaping slip
+   * could have matched the wrong number and pinned a value nobody chose,
+   * which is precisely the failure this whole block exists to prevent.
+   *
+   * Splitting on fixed strings has no escaping to get wrong.
+   */
+  const def = (name: string) => {
+    const marker = `q.get("${name}") ?? (NETWORK === "mainnet" ? "`;
+    const at = html.indexOf(marker);
+    if (at === -1) throw new Error(`could not find the mainnet '${name}' default in web/index.html`);
+    const rest = html.slice(at + marker.length);
+    const raw = rest.slice(0, rest.indexOf('"'));
+    const n = Number(raw);
+    if (!Number.isFinite(n)) throw new Error(`'${name}' default parsed as "${raw}", not a number`);
+    return n;
+  };
+
+  /** Worst measured solver overhead, at the small end where it is highest. */
+  const FEE = 0.035;
+
+  it("lets a round 5.00 USDC cross-chain payment through the per-tx cap", () => {
+    const perTx = def("pertx");
+    // Not `>=`. Equal means the fee pushes it over and the payment is refused.
+    expect(
+      perTx,
+      `per-tx default ${perTx} cannot deliver a round 5.00: it is charged ${(5 * (1 + FEE)).toFixed(3)}`,
+    ).toBeGreaterThan(5 * (1 + FEE));
+  });
+
+  it("is not sized to look like a payment amount", () => {
+    // 0.51 was the tell: a cap a hair above a round number reads as "chosen for
+    // that payment" and is the one value guaranteed to refuse it.
+    const perTx = def("pertx");
+    for (const round of [0.1, 0.5, 1, 2, 5, 10, 20, 25, 50, 100]) {
+      const charged = round * (1 + FEE);
+      expect(
+        perTx > round && perTx < charged,
+        `per-tx default ${perTx} sits between a round ${round} and its true cost ` +
+          `${charged.toFixed(3)} — it looks sized for that payment and would refuse it`,
+      ).toBe(false);
+    }
+  });
+
+  it("allows more than one max-size payment per day", () => {
+    expect(def("daily")).toBeGreaterThanOrEqual(def("pertx") * 2);
+  });
+});

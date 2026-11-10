@@ -636,8 +636,48 @@
         ? "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
         : "usdc.fakes.testnet");
       const DECIMALS = Number(q.get("decimals") ?? 6);
-      const DAILY = q.get("daily") ?? (NETWORK === "mainnet" ? "2.04" : "100");
-      const PERTX = q.get("pertx") ?? (NETWORK === "mainnet" ? "0.51" : "10");
+      /**
+       * Caps when the link does not carry them, in HUMAN units.
+       *
+       * THESE ARE DELIBERATE, which the previous pair were not. Mainnet was
+       * 2.04 / 0.51 with no comment: those are float.test015.near's stored
+       * caps — one demo vault's numbers, which became every new user's
+       * default by leakage. Nobody chose them for this purpose and nothing
+       * recorded that they had not been.
+       *
+       * The tell was the UI apologising for its own recommendation. A 0.51
+       * per-tx cap cannot deliver a round 0.50 cross-chain: quotes are
+       * EXACT_OUTPUT, so the vault is charged MORE than the payee receives —
+       * measured 1.5% at 0.50 USDC and 3.5% at 0.10, because a solver's fixed
+       * cost dominates at small sizes. 0.51 against a ~0.5075 true cost is
+       * 0.2% of headroom, so the default's own help text had to warn against
+       * using the default.
+       *
+       * THE GENERAL RULE, which 0.51 violated and a first attempt at fixing
+       * it violated again: NO CAP CAN DELIVER A ROUND PAYMENT EQUAL TO
+       * ITSELF. Charge = amount x (1 + fee), so a cap of 5 refuses a round
+       * 5.00 (5.075) exactly as 0.51 refuses 0.50 at the margin. A cap is a
+       * ceiling to size ABOVE the payments you intend, not a payment size.
+       *
+       * 25 / 10 instead. Round 0.50, 1.00 and 5.00 all clear the per-tx cap
+       * with multiples of headroom, and 10 is far enough from any of them
+       * that nobody will read it as "sized for a 10.00 payment" the way 0.51
+       * read as "sized for 0.50". 25 a day allows several real payments.
+       * Small enough that an unattended default cannot do much harm — and it
+       * can do none at all until the vault is funded AND an agent is bound,
+       * both separate deliberate acts.
+       *
+       * These apply ONLY to a bare link. An agent that ran the interview
+       * sends ?daily= and ?pertx=, and scripts/check-create-url-params.mjs
+       * keeps that wiring honest. A default is what someone gets when nobody
+       * asked them, so it has to be defensible on its own rather than a
+       * leftover from whoever tested last.
+       *
+       * Testnet stays 100 / 10: the money is fake and the point is to try
+       * things without meeting a cap.
+       */
+      const DAILY = q.get("daily") ?? (NETWORK === "mainnet" ? "25" : "100");
+      const PERTX = q.get("pertx") ?? (NETWORK === "mainnet" ? "10" : "10");
       const PREFIX = q.get("prefix") ?? "float";
 
       /**
