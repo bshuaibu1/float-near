@@ -60,7 +60,6 @@ async fn bind(e: &Env, node: u32, pk: &PublicKey) -> Result<()> {
     e.owner
         .call(e.vault.id(), "bind_virtual_agent")
         .args_json(json!({ "node_id": node, "public_key": pk.to_string() }))
-        .deposit(NearToken::from_yoctonear(1))
         .max_gas()
         .transact()
         .await?
@@ -148,6 +147,7 @@ async fn the_self_submit_key_cannot_reach_another_method() -> Result<()> {
         .call(e.vault.id(), "set_paused")
         .args_json(json!({ "paused": true }))
         .max_gas()
+        .deposit(NearToken::from_yoctonear(1))
         .transact()
         .await;
     assert!(
