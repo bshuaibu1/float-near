@@ -27,6 +27,19 @@
 //! off-chain and asserts its shape, which is the claim the README actually
 //! makes.
 //!
+//! IGNORED, AND THE REASON IS NOT A BUG IN THE CONTRACT. The sandbox `neard`
+//! that near-workspaces 0.23 bundles does not implement NEP-611 gas keys. It
+//! ACCEPTS the `AddGasKey` action and silently does nothing: measured here as
+//! 3 receipts, 0 failures, and no key on the account afterwards. The same gap
+//! shows in the library's own types, which map `GasKeyFunctionCall` to
+//! `unimplemented!()` (types/mod.rs:552) and panic if you try to read one.
+//!
+//! So this cannot run until the bundled node supports gas keys. The path IS
+//! proven on real chains — mainnet 7/7, 2026-10-31 — and `self_submit.rs`
+//! covers the behavioural half by installing a key by hand. What stays
+//! uncovered is whether the CONTRACT grants the right permission, which is
+//! exactly what this file was written to check.
+//!
 //! Prerequisite: scripts/build-wasm.sh (Linux/WSL).
 
 mod common;
@@ -133,6 +146,7 @@ fn assert_restricted_to_request_payment(perm: &serde_json::Value, vault: &str) {
 }
 
 #[tokio::test]
+#[ignore = "the bundled sandbox neard ignores NEP-611 AddGasKey: 3 receipts, 0 failures, no key installed"]
 async fn provisioned_agent_key_can_only_call_request_payment_on_this_vault()
 -> anyhow::Result<()> {
     // One node, no bound account: `add_role` creates and binds it.
