@@ -484,6 +484,27 @@ so drift fails two suites.
    error passed the gate and failed the DEPLOY. Gate now builds the dashboard — **34 checks**.
    **Danger Zone removed from the UI** (see DECISIONS.md). Deployed and verified live: `vault-info`,
    `dashboard` and `agent-keys` all return the mainnet vault for `?owner=test015.near`.
+
+   **REFUSAL PROVEN ON MAINNET, and it exposed a UI lie (2026-11-11).** `vault_pay` of 15 USDC
+   against a 10 per-payment cap returned `status: BLOCKED, reason_code: PARENT_PER_TX_LIMIT`;
+   balances unchanged, `get_request` -> `null`. **The refusal will never appear as a count**: the
+   contract does not store a blocked request — it emits an event and returns the reason, so an agent
+   cannot inflate the vault's storage bill by spamming refusals. Counting them needs
+   `scripts/scan-blocked.mjs` over the event log. The adapter has always sent
+   `blockedCoverageNote` saying refusals are "UNKNOWN rather than absent"; **Activity rendered it,
+   the Overview did not** — and printed `0 blocked` in DANGER red, the colour of a measurement, on
+   the page people land on. Fixed and deployed: muted "refusals not scanned". The data layer was
+   honest and the most-seen view was not.
+
+   **OPEN, Bashir's call — memo visibility on a public vault view.** `/v1/agent-keys` is SAFE: only
+   public keys and `methodNames`, from `viewAccessKeys`, which anyone can read from any RPC. But
+   memos ("landing page draft", "copywriting") are business intelligence, and while **nothing on the
+   dashboard is more public than the chain already is**, the dashboard changes the EFFORT from
+   "query NEAR RPC" to "type a name" — a real privacy change even for already-public data. Three
+   options put to him: leave it (consistent with a public ledger); hide memos behind proof of
+   ownership (reintroduces the authentication the design deliberately avoided); or keep reads open
+   and drop memos from the public view, keeping amounts and status. **Not yet decided — no
+   DECISIONS.md row until it is.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
