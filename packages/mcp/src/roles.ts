@@ -37,14 +37,47 @@ function loadable(path: string): Array<Record<string, unknown>> {
   );
 }
 
+/**
+ * Keyring entries belonging to THIS vault.
+ *
+ * A credential's `agentId` IS the vault account it was issued for. Nothing
+ * filtered on it, so every function here operated on the whole file — every
+ * vault the user has ever created, on either network.
+ *
+ * Measured 2026-11-10 against a mainnet vault: `vault_roles` listed
+ * `rudeisland4178-testnet.fac.floatv4.testnet` and
+ * `work12-testnet-fleet.fac.floatv4.testnet` as that vault's agents. Both are
+ * TESTNET accounts from earlier experiments, and neither has any relationship
+ * to the configured mainnet vault.
+ *
+ * `vault_roles` listing them is a display bug. `selectRole` was worse: asked
+ * for role "root" it would hand `vault_pay` the testnet fleet key to sign a
+ * MAINNET payment. That fails at the chain — the key is not on the vault — but
+ * the tool chose a credential from a different network and the error arrives
+ * with no hint of why.
+ *
+ * `vault` empty means nothing is configured, so there is nothing to scope to
+ * and every entry is returned. That is the `vault_create` case, where the
+ * server legitimately runs with no vault at all.
+ */
+function forVault(
+  cfg: { agentKeysPath?: string; vault?: string },
+): Record<string, unknown>[] {
+  const entries = loadable(cfg.agentKeysPath ?? ".float/agent-keys.json");
+  if (!cfg.vault) return entries;
+  return entries.filter((e) => e.agentId === cfg.vault);
+}
+
 export class RoleSelectionError extends Error {}
 
 export function selectRole(
-  cfg: { agentKeysPath?: string },
+  cfg: { agentKeysPath?: string; vault?: string },
   role: string,
 ): { agentId: string; agentKey: string } {
   const path = cfg.agentKeysPath ?? ".float/agent-keys.json";
-  const entries = loadable(path);
+  // SCOPED. A role name is not unique across vaults — "root" exists in every
+  // one — so an unscoped lookup picks whichever was written first.
+  const entries = forVault(cfg);
   const known = entries
     .map((e) => (typeof e.role === "string" ? e.role : null))
     .filter(Boolean) as string[];
@@ -64,8 +97,8 @@ export function selectRole(
 }
 
 /** Every role that could actually sign, for listing back to a caller. */
-export function listRoles(cfg: { agentKeysPath?: string }): RoleCredential[] {
-  return loadable(cfg.agentKeysPath ?? ".float/agent-keys.json")
+export function listRoles(cfg: { agentKeysPath?: string; vault?: string }): RoleCredential[] {
+  return forVault(cfg)
     .filter((e) => typeof e.role === "string")
     .map((e) => ({
       agentId: e.agentId as string,
@@ -93,12 +126,12 @@ export function listRoles(cfg: { agentKeysPath?: string }): RoleCredential[] {
  * Returns `role: null` for those rather than inventing a name, because the
  * name is genuinely absent and the fix is `vault_add_role`, not a guess.
  */
-export function listAgents(cfg: { agentKeysPath?: string }): {
+export function listAgents(cfg: { agentKeysPath?: string; vault?: string }): {
   agentId: string;
   role: string | null;
   nodeId?: number;
 }[] {
-  return loadable(cfg.agentKeysPath ?? ".float/agent-keys.json").map((e) => ({
+  return forVault(cfg).map((e) => ({
     agentId: e.agentId as string,
     role: typeof e.role === "string" ? e.role : null,
     nodeId: typeof e.nodeId === "number" ? e.nodeId : undefined,

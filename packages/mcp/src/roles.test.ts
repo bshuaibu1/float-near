@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { listAgents, listRoles, selectRole } from "./roles.js";
+import { listAgents, listRoles, selectRole, RoleSelectionError } from "./roles.js";
 
 function ring(entries: unknown[]): { agentKeysPath: string } {
   const p = join(mkdtempSync(join(tmpdir(), "float-roles-")), "agent-keys.json");
@@ -140,5 +140,58 @@ describe("listAgents reports credentials that carry no role", () => {
     expect(
       listAgents({ agentKeysPath: write([{ agentId: "v.near", secret: "ed25519:x" }]) }),
     ).toHaveLength(1);
+  });
+});
+
+/**
+ * THE KEYRING IS SCOPED TO THE CONFIGURED VAULT.
+ *
+ * A credential's `agentId` is the vault it was issued for, and nothing
+ * filtered on it. Measured 2026-11-10 against a MAINNET vault: vault_roles
+ * listed two TESTNET vaults from earlier experiments as that vault's agents,
+ * and selectRole("root") would have handed vault_pay a testnet key to sign a
+ * mainnet payment.
+ */
+describe("keyring reads are scoped to the configured vault", () => {
+  const MINE = "test015-near.usefloat.near";
+  const THEIRS = "work12-testnet-fleet.fac.floatv4.testnet";
+  const keyring = () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-scope-"));
+    const p = join(dir, "agent-keys.json");
+    writeFileSync(
+      p,
+      JSON.stringify([
+        { agentId: THEIRS, secret: "ed25519:theirs", role: "root" },
+        { agentId: MINE, secret: "ed25519:mine", role: "root" },
+        { agentId: MINE, secret: "ed25519:unnamed" },
+      ]),
+    );
+    return p;
+  };
+
+  it("listAgents returns only this vault's credentials", () => {
+    const agents = listAgents({ agentKeysPath: keyring(), vault: MINE });
+    expect(agents).toHaveLength(2);
+    expect(agents.every((a) => a.agentId === MINE)).toBe(true);
+  });
+
+  it("selectRole picks THIS vault's 'root', not another vault's", () => {
+    // Both entries carry role "root". Unscoped, `find` returns the first —
+    // the testnet one — and vault_pay would sign a mainnet payment with it.
+    const got = selectRole({ agentKeysPath: keyring(), vault: MINE }, "root");
+    expect(got.agentId).toBe(MINE);
+    expect(got.agentKey).toBe("ed25519:mine");
+  });
+
+  it("refuses a role that exists only on ANOTHER vault", () => {
+    const p = keyring();
+    expect(() => selectRole({ agentKeysPath: p, vault: "other.near" }, "root")).toThrow(
+      RoleSelectionError,
+    );
+  });
+
+  it("returns everything when no vault is configured — the vault_create case", () => {
+    // The server legitimately runs with no NEAR_VAULT_CONTRACT while onboarding.
+    expect(listAgents({ agentKeysPath: keyring(), vault: "" })).toHaveLength(3);
   });
 });
