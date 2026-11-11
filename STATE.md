@@ -394,6 +394,19 @@ so drift fails two suites.
    bump (`^0.6.0` does not match 0.7.0 — a clean install would have pulled the published mcp over
    the sibling). **280 unit tests, 32 checks, live sweep 12 tools + 5 error paths. Needs
    publishing.**
+
+   **GAP AUDIT: 26 tools listed against the payload builders (2026-11-10).** Found by enumerating
+   the surface, not by hitting the bugs. (a) **`vault_plan_set_strict_allocation` DID NOT EXIST** —
+   `planSetStrictAllocation` was in `payloads.ts`, the dashboard exposed it, and no MCP tool did. So
+   `vault_config` described overcommit as a mode worth changing and offered no way to change it.
+   Added. (b) **`vault_plan_purge` demanded a raw Unix day number** (`beforeDay: 20768`) — unusable
+   as an INPUT, and an off-by-one silently purges a day more or less of records that are then gone.
+   Now takes `beforeDate: "YYYY-MM-DD"`, with no default: a purge cannot be undone and "today" would
+   remove everything settled. (c) **A no-amount `vault_plan_withdraw` empties the vault**, and the
+   summary read identically to a partial one. Now says "the ENTIRE balance" and warns the figure was
+   read from the chain. (d) **The live sweep covered 12 of 26 tools; now 20** — eight plan tools had
+   never been called by anything, and the first caller would have been a user. mcp 0.7.0 -> 0.7.1.
+   **284 unit tests, 32 checks, 20 tools + 5 error paths. Still unpublished — batching.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

@@ -105,6 +105,22 @@ const CASES = [
   },
   { tool: "vault_plan_freeze", args: { nodeId: 1, frozen: false }, expect: (r) => plan(r) },
   { tool: "vault_plan_set_cooldown", args: { nodeId: 1, cooldownSec: 0 }, expect: (r) => plan(r) },
+  // THE PLAN TOOLS NOTHING EXERCISED. Twelve of twenty-six tools had never
+  // been called by anything before this list; a payload builder that throws or
+  // returns a malformed receiver is indistinguishable from one that works
+  // until someone tries it, and the person trying it was the user.
+  {
+    tool: "vault_plan_set_strict_allocation",
+    args: { strict: false },
+    expect: (r) => plan(r),
+  },
+  { tool: "vault_plan_add_node", args: { parent: 0, label: "smoke", limits: [{ token: TOKEN, dailyCap: "1", perTxCap: "1" }] }, expect: (r) => plan(r) },
+  { tool: "vault_plan_purge", args: { beforeDate: "2026-01-01" }, expect: (r) => plan(r) },
+  { tool: "vault_plan_set_approval_threshold", args: { nodeId: 1, amount: "5" }, expect: (r) => plan(r) },
+  { tool: "vault_plan_approve_payment", args: { requestId: "smoke" }, expect: (r) => plan(r) },
+  { tool: "vault_plan_reject_payment", args: { requestId: "smoke" }, expect: (r) => plan(r) },
+  { tool: "vault_plan_unbind_agent", args: { publicKey: "ed25519:11111111111111111111111111111111" }, expect: (r) => plan(r) },
+  { tool: "vault_plan_bind_agent", args: { nodeId: 1, publicKey: "ed25519:11111111111111111111111111111111" }, expect: (r) => plan(r) },
 ];
 
 /**
@@ -163,6 +179,7 @@ const SKIPPED = {
   vault_create: "builds a link; against an existing vault it correctly THROWS",
   vault_await_create: "polls for up to 90s; covered by its own path",
   vault_add_role: "writes a secret to disk and returns a payload to sign",
+  vault_plan_withdraw: "covered by unit tests; live it depends on a balance this vault does not have",
 };
 
 const proc = spawn(process.execPath, [SERVER], {
