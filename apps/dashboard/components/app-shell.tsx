@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { TopNav } from "@/components/top-nav";
 import { MobileTabBar } from "@/components/mobile-tab-bar";
 import { useWallet } from "@/components/wallet-provider";
-import { DANGER, DANGER_BG } from "@/lib/colors";
+import { WhoseVault } from "@/components/whose-vault";
 
 
 function AuthGate({ children }: { children: ReactNode }) {
@@ -21,42 +21,22 @@ function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (!authenticated) {
+    /**
+     * ASK WHO, instead of explaining that a connection failed.
+     *
+     * This screen used to say "Connect to the vault … use Connect in the top
+     * right to retry", which described a connection that does not exist:
+     * `login()` opens no wallet, because nothing here needs a signature. The
+     * real question was never "are you authenticated" but "whose vault are we
+     * looking at", and the dashboard had no way to ask it — so it fell back to
+     * the operator's configured vault and a visitor saw someone else's money.
+     *
+     * `WhoseVault` renders the error and the no-vault offer itself, so both
+     * are handled in one place rather than split across two screens.
+     */
     return (
-      <div
-        className="flex min-h-[100dvh] items-center justify-center px-4 bg-canvas"
-      >
-        <div className="w-full max-w-md text-center">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/nobgfloat.png"
-            alt="Float"
-            className="mx-auto h-24 w-24 object-contain"
-          />
-          <h1
-            className="mt-8 text-[30px] font-semibold leading-tight text-ink"
-          >
-            Connect to the vault
-          </h1>
-          <p
-            className="mx-auto mt-3 max-w-sm text-[14px] leading-6 text-muted"
-          >
-            This dashboard reads a NEAR vault contract. Use Connect in the top
-            right to retry — no signature is needed, and nothing here can move
-            funds.
-          </p>
-          {error ? (
-            <p
-              className="mx-auto mt-5 rounded-lg px-3 py-2 text-left text-[12px] leading-5"
-              style={{
-                border: "1px solid #F2D7D9",
-                background: DANGER_BG,
-                color: DANGER,
-              }}
-            >
-              {error}
-            </p>
-          ) : null}
-        </div>
+      <div className="flex min-h-[100dvh] items-center justify-center bg-canvas">
+        <WhoseVault />
       </div>
     );
   }
@@ -76,6 +56,25 @@ function AuthGate({ children }: { children: ReactNode }) {
  * If a genuinely public page appears later it comes back WITH that page.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const { ready, authenticated } = useWallet();
+
+  /**
+   * NO CHROME BEFORE WE KNOW WHOSE VAULT IT IS.
+   *
+   * TopNav and MobileTabBar used to render OUTSIDE the auth gate, so a visitor
+   * with no vault got a top bar, a bottom tab bar, and a "Connect" dropdown —
+   * around a screen asking them to identify themselves. Every one of those
+   * links leads to a page that shows the same prompt again, and the Connect
+   * menu opens nothing, because this dashboard has no wallet to connect: it
+   * signs nothing.
+   *
+   * That dropdown is what sent someone looking for a network switcher that
+   * does not exist. Navigation to places you cannot go yet is not navigation.
+   */
+  if (ready && !authenticated) {
+    return <AuthGate>{children}</AuthGate>;
+  }
+
   return (
     <>
       <TopNav />

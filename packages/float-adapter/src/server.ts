@@ -31,7 +31,13 @@ import { resolveHost, corsHeaders, authorize, classifyError, fromCaller } from "
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { toBaseUnits, fromBaseUnits } from "@floatonnear/mcp/amounts";
-import { accountExists, newRequestId, viewAccessKeys, viewFunction } from "@floatonnear/mcp";
+import {
+  accountExists,
+  newRequestId,
+  rpcForNetwork,
+  viewAccessKeys,
+  viewFunction,
+} from "@floatonnear/mcp";
 import { isUnavailable } from "./unavailable.js";
 import { buildRoute, sendRequestPayment, type RouteArg } from "@floatonnear/mcp/sign";
 import { getQuote, signBinding, toBase64 } from "@floatonnear/mcp/quote";
@@ -140,9 +146,31 @@ const env = {
    * nobody chose.
    */
   factory: process.env.NEAR_VAULT_FACTORY ?? "",
-  // See DEFAULT_RPC_URL in @floatonnear/mcp: the old public testnet endpoint
-  // is deprecated and now returns -429 for every call.
-  rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com",
+  /**
+   * THE RPC FOLLOWS THE NETWORK. It did not, and the same bug was fixed in
+   * @floatonnear/mcp earlier today without anyone checking here.
+   *
+   * This was `NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com"` — the
+   * TESTNET endpoint, regardless of NEAR_VAULT_NETWORK. So an operator running
+   * `NEAR_VAULT_NETWORK=mainnet` and nothing else queried testnet about a
+   * mainnet vault and got:
+   *
+   *   account usefloat.near does not exist while viewing
+   *
+   * which names the account, not the chain, and reads as "your factory is
+   * gone". Measured 2026-11-11 by starting this adapter exactly as a new user
+   * would.
+   *
+   * THE DEPLOYED COPY WORKED ONLY BY ACCIDENT: deploy-skill-host.sh sets
+   * NEAR_VAULT_RPC_URL explicitly, so the box masked the bug while every
+   * hand-run instance hit it. A default that is only ever correct because
+   * something else overrides it is not a default, it is a trap with one
+   * authorised path around it.
+   */
+  rpcUrl: rpcForNetwork(process.env.NEAR_VAULT_NETWORK ?? "testnet", {
+    configuredNetwork: process.env.NEAR_VAULT_NETWORK ?? "testnet",
+    override: process.env.NEAR_VAULT_RPC_URL,
+  }),
   token: process.env.NEAR_VAULT_TOKEN ?? "",
   // Loopback unless explicitly overridden — exposure is opted into.
   host: resolveHost(process.env.HOST),
