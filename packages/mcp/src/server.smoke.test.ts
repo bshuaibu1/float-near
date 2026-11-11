@@ -142,6 +142,7 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_roles",
         "vault_gas",
         "vault_await_create",
+        "vault_plan_set_strict_allocation",
       ].sort(),
     );
   });

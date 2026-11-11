@@ -337,3 +337,43 @@ describe("planSetApprovalThreshold", () => {
     expect(p.receiverId).toBe(VAULT);
   });
 });
+
+/**
+ * A WITHDRAW THAT EMPTIES THE VAULT MUST SAY SO.
+ *
+ * `vault_plan_withdraw` treats an omitted `amount` as "all", read from the
+ * chain — correct and deliberate, since a teardown needs the balance to reach
+ * exactly zero and re-deriving it through a float leaves dust. But the
+ * summary a signer sees was identical either way: "Send 42 out of the vault"
+ * reads the same whether 42 is part of the balance or the whole of it, and
+ * those are different decisions. The second empties the vault, can fail
+ * in-flight payments, and is the step before deleting the account.
+ *
+ * The server adds the distinction, so this pins the shape it adds it to.
+ */
+describe("planWithdraw's summary and warnings", () => {
+  it("names the recipient and the amount in human units", () => {
+    const p = planWithdraw("v.near", "usdc.near", "42000000", "alice.near", 6);
+    expect(p.summary).toContain("alice.near");
+    expect(p.summary).toContain("42");
+  });
+
+  it("warns that the transfer cannot be pulled back", () => {
+    // The vault has no clawback. A wrong recipient is permanent, and that
+    // belongs in front of the signature rather than in a doc.
+    const p = planWithdraw("v.near", "usdc.near", "1", "alice.near", 6);
+    expect(p.warnings.join(" ")).toMatch(/cannot pull them back/i);
+  });
+
+  it("warns that in-flight payments reserved against the balance may fail", () => {
+    const p = planWithdraw("v.near", "usdc.near", "1", "alice.near", 6);
+    expect(p.warnings.join(" ")).toMatch(/in-flight/i);
+  });
+
+  it("leaves warnings as an ARRAY the server can prepend to", () => {
+    // The emptying notice is added by the server, which knows the balance was
+    // read rather than given. If this were a string that would silently
+    // concatenate instead.
+    expect(Array.isArray(planWithdraw("v.near", "usdc.near", "1", "a.near", 6).warnings)).toBe(true);
+  });
+});

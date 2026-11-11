@@ -68,6 +68,7 @@ import {
   planSetNodeCaps,
   planSetPaused,
   planSetRecipients,
+  planSetStrictAllocation,
   toCliCommand,
   type OwnerPayload,
   planSetApprovalThreshold,
@@ -334,7 +335,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.7.0" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.7.1" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -1277,6 +1278,32 @@ server.tool(
   async ({ requestId }) => renderPlan(planRejectPayment(requireVault(), requestId)),
 );
 
+/**
+ * THE TOOL THAT WAS MISSING, and the gap had teeth.
+ *
+ * `vault_config` reports `strict_allocation` and now explains, at length,
+ * that `overcommit` lets a sibling drain a shared pool and leave another
+ * agent refused `PARENT_DAILY_BUDGET` with its own cap apparently free. The
+ * payload builder `planSetStrictAllocation` has existed all along, and the
+ * DASHBOARD exposes it as an owner action — but no MCP tool did.
+ *
+ * So the server described a mode worth changing and offered no way to change
+ * it, through the one interface an agent can reach. Found by listing all 25
+ * tools against the payload builders rather than by anyone hitting it.
+ */
+server.tool(
+  "vault_plan_set_strict_allocation",
+  "Build an UNSIGNED payload switching the vault between STRICT and OVERCOMMIT allocation. Strict refuses any change that would let children's caps sum above their parent's, so each child's budget is genuinely its own. Overcommit allows it, and then a sibling spending first can exhaust the shared pool — the others are refused PARENT_DAILY_BUDGET while their own cap still reads available. Read the current mode with vault_config. Not signed by this server.",
+  {
+    strict: z
+      .boolean()
+      .describe(
+        "true = children may not be allocated more than their parent holds. false = they may, and siblings then compete for the pool.",
+      ),
+  },
+  async ({ strict }) => renderPlan(planSetStrictAllocation(requireVault(), strict)),
+);
+
 server.tool(
   "vault_plan_pause",
   "Build an UNSIGNED payload to pause or resume the whole vault. Pausing halts every agent payment. Not signed by this server.",
@@ -1286,12 +1313,58 @@ server.tool(
 
 server.tool(
   "vault_plan_purge",
-  "Build an UNSIGNED payload to delete settled payment records older than a UTC day. Spend totals are NOT refunded, but a deleted request id becomes reusable. Not signed by this server.",
+  "Build an UNSIGNED payload deleting SETTLED payment records older than a cutoff, to reclaim the vault's storage stake. Spend totals are NOT refunded — purging frees bytes, it does not restore budget. Give `beforeDate` as YYYY-MM-DD; `beforeDay` (a Unix day number) is accepted for exactness. Not signed by this server.",
   {
-    beforeDay: z.number().int().min(0),
-    limit: z.number().int().min(0).max(100).default(100),
+    /**
+     * A DATE, because the raw form asked a human for a Unix day number.
+     *
+     * `beforeDay: 20768` is what the contract indexes by and is unusable as an
+     * input: nobody knows today's number, and an off-by-one silently purges a
+     * day more or less than intended — of records that are then gone. The same
+     * figure was shown in `vault_budget` output and fixed there for the same
+     * reason; this is the input side of it.
+     *
+     * `beforeDay` survives for callers that genuinely have one, and because a
+     * test-clock vault's day is NOT derivable from the wall clock.
+     */
+    beforeDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "beforeDate must be YYYY-MM-DD")
+      .optional()
+      .describe("purge records from strictly BEFORE this UTC date, e.g. 2026-10-01"),
+    beforeDay: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("the raw Unix day number, if you have it. Overrides beforeDate."),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .optional()
+      .describe("how many records at most, default 100. Large purges may exceed the gas limit."),
   },
-  async ({ beforeDay, limit }) => renderPlan(planPurgeSettled(requireVault(), beforeDay, limit)),
+  async ({ beforeDate, beforeDay, limit }) => {
+    // EXACTLY ONE CUTOFF, and no default. A purge deletes records
+    // irreversibly; guessing "today" for a caller who forgot the argument
+    // would silently purge everything settled.
+    if (beforeDay === undefined && beforeDate === undefined) {
+      return text(
+        `Give a cutoff: beforeDate "YYYY-MM-DD" (records strictly before it are removed), ` +
+          `or beforeDay if you have the raw number. There is deliberately no default — ` +
+          `a purge cannot be undone, and "today" would remove every settled record.`,
+      );
+    }
+    let day = beforeDay;
+    if (day === undefined) {
+      const ms = Date.parse(`${beforeDate}T00:00:00Z`);
+      if (Number.isNaN(ms)) return text(`"${beforeDate}" is not a real date.`);
+      day = Math.floor(ms / 86_400_000);
+    }
+    return renderPlan(planPurgeSettled(requireVault(), day, limit ?? 100));
+  },
 );
 
 server.tool(
@@ -1319,6 +1392,11 @@ server.tool(
      * zero a delete needs.
      */
     let base: string;
+    // "Send 42 out of the vault" reads the same whether 42 is part of the
+    // balance or ALL of it, and those are different decisions: the second
+    // empties the vault, can fail in-flight payments, and is the step before a
+    // teardown. The signer sees a summary, not this code.
+    let emptying = false;
     if (amount === undefined) {
       const bal = await viewFunction<string>(cfg.rpcUrl, tok, "ft_balance_of", {
         account_id: vault,
@@ -1333,13 +1411,23 @@ server.tool(
         return text(`${vault} holds no ${tok}. Nothing to withdraw.`);
       }
       base = String(bal);
+      emptying = true;
     } else {
       // `toBaseUnits` returns a bigint; the payload carries base units as a
       // STRING, because that is what the contract's U128 arg expects.
       base = toBaseUnits(amount, cfg.decimals).toString();
     }
 
-    return renderPlan(planWithdraw(vault, tok, base, receiverId, cfg.decimals));
+    const plan = planWithdraw(vault, tok, base, receiverId, cfg.decimals);
+    if (emptying) {
+      plan.warnings = [
+        `This is the vault's ENTIRE ${tok} balance — it will hold zero afterwards. ` +
+          `You did not name an amount, so the figure above was read from the chain.`,
+        ...plan.warnings,
+      ];
+      plan.summary = `${plan.summary} (the ENTIRE balance)`;
+    }
+    return renderPlan(plan);
   },
 );
 
