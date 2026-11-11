@@ -19,7 +19,18 @@ const ROOTS = ["apps/dashboard", "packages/float-adapter/src", "packages/mcp/src
 // dev server uses (see apps/dashboard/next.config.ts); without it here the
 // scan reports a U+00A0 inside a minified polyfill chunk and the check stops
 // meaning anything.
-const SKIP = new Set(["node_modules", ".next", ".next-preview", "dist", ".turbo"]);
+// `.next-verify` is the gate's own build output (see verify-all.mjs). Like
+// every other build output it is not source -- and Next ships a minified
+// polyfill containing a non-breaking space, so without this the gate fails on
+// a file it generated itself.
+const SKIP = new Set([
+  "node_modules",
+  ".next",
+  ".next-preview",
+  ".next-verify",
+  "dist",
+  ".turbo",
+]);
 
 function walk(dir) {
   let out = [];
