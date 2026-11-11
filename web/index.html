@@ -857,7 +857,26 @@
           </div>
         </div>
 
-        <div id="error" class="hide"><div class="err" id="err-text"></div></div>
+        <!--
+          THE ERROR PANEL IS THE ONE SCREEN A WRONG WALLET LANDS ON, and it
+          was the only screen with no way off it. `#plan` has btn-disconnect
+          and `#action` has btn-action-switch; this had markup and nothing
+          else. So the owner-mismatch refusal — whose own text reads "Either
+          connect <owner>, or ask for a new link" — offered no way to do the
+          first thing it suggested. A user connected as the wrong account was
+          told to connect a different one by a page with no disconnect
+          control, which is a dead end dressed as an instruction.
+
+          Hidden by default and revealed by `show()` only when a wallet is
+          actually connected, because the same panel serves startup failures
+          and bad-link errors where there is no session to drop.
+        -->
+        <div id="error" class="hide">
+          <div class="err" id="err-text"></div>
+          <button id="btn-error-switch" class="linkbtn hide" style="margin-top: 14px">
+            Use a different wallet
+          </button>
+        </div>
       </div>
 
     </div>
@@ -878,6 +897,16 @@
       const show = (...ids) => {
         for (const s of ["loading", "connect", "agent", "action", "plan", "signing", "done", "error"]) $(s).classList.add("hide");
         for (const id of ids) $(id).classList.remove("hide");
+        // CENTRALISED, because there are three wrong-wallet refusals that end
+        // on this panel (the create-link owner mismatch, the owner-action
+        // owner mismatch, and the not-a-vault check) and a per-path reveal is
+        // how two of them would quietly lose the button. Same reasoning as
+        // btn-disconnect and btn-agent-switch sharing one handler.
+        //
+        // `account` is declared below this function but initialised before
+        // anything can call it: the earliest reachable show() is the one in
+        // fail(), reached only via the trap registered after that declaration.
+        $("btn-error-switch").classList.toggle("hide", !(ids.includes("error") && account));
       };
       const fail = (m) => {
         $("err-text").textContent = m;
@@ -1860,11 +1889,12 @@
         // updates the cached account and re-renders.
         await connector.disconnect();
       };
-      // BOTH escape hatches run the SAME handler. The gate sits in front of
+      // ALL escape hatches run the SAME handler. The gate sits in front of
       // the plan now, so the plan's button is unreachable from it — and a
       // second inline copy of signOut is how the two would drift apart.
       $("btn-disconnect").onclick = disconnect;
       $("btn-agent-switch").onclick = disconnect;
+      $("btn-error-switch").onclick = disconnect;
 
       /**
        * Review an owner action, then sign it.
