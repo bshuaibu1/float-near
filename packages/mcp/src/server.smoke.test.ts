@@ -143,6 +143,7 @@ describe("the MCP server starts and registers its tools", () => {
         "vault_gas",
         "vault_await_create",
         "vault_plan_set_strict_allocation",
+        "vault_history",
       ].sort(),
     );
   });
@@ -198,6 +199,14 @@ describe("the MCP server starts and registers its tools", () => {
        * back?" WITHOUT anyone exporting a key first — so it being a pure
        * read is the feature, not an implementation detail.
        */
+      /**
+       * The activity feed. View calls only, no key, nothing signed.
+       *
+       * Its caveat travels WITH the data rather than in a doc: a refused
+       * payment is never stored by the contract, so an empty feed means
+       * "nothing was paid", not "nothing was attempted".
+       */
+      "vault_history",
       "vault_teardown_report",
       /**
        * Polls for a newly created vault and VERIFIES THE OWNER. View calls

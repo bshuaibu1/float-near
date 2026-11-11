@@ -335,7 +335,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.7.1" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.8.0" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -520,8 +520,48 @@ server.tool(
     const tree = (await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {})) as TreeNode[];
     if (!Array.isArray(tree)) return json(tree);
     const meta = await metaFor(tree.flatMap((n) => n.limits?.map((l) => l.token) ?? []));
+
+    /**
+     * THE APPROVAL THRESHOLD WAS WRITE-ONLY.
+     *
+     * `vault_plan_set_approval_threshold` builds a payload to set one, and
+     * `get_effective_threshold` has always existed on the contract — but
+     * nothing read it back. So an owner could impose a rule and then had no
+     * way to see it, and an agent could not warn "this payment will be HELD"
+     * before making one. A policy you cannot read is a policy you cannot
+     * trust.
+     *
+     * EFFECTIVE, not the node's own: a threshold INHERITS down the tree, so
+     * the figure that actually governs a node may have been set on an
+     * ancestor. Reporting the local one would under-report the rule in force.
+     */
+    const thresholds = await Promise.all(
+      tree.map((n) =>
+        viewFunction<string | null>(cfg.rpcUrl, requireVault(), "get_effective_threshold", {
+          node_id: (n as { id: number }).id,
+        }).catch(() => null),
+      ),
+    );
+
     return json(
-      tree.map((n) => humaniseTreeNode(n, { token: cfg.token, decimals: cfg.decimals, meta })),
+      tree.map((n, i) => {
+        const node = humaniseTreeNode(n, { token: cfg.token, decimals: cfg.decimals, meta });
+        const raw = thresholds[i];
+        if (raw === null || raw === undefined) return node;
+        const tok = n.limits?.[0]?.token;
+        const d = (tok ? meta.get(tok)?.decimals : undefined) ?? cfg.decimals;
+        let human = String(raw);
+        try {
+          human = fromBaseUnits(BigInt(human), d);
+        } catch {
+          /* surface what the contract said */
+        }
+        return {
+          ...node,
+          approval_threshold: human,
+          approval_note: `Payments above ${human} from this node are HELD until the owner approves them.`,
+        };
+      }),
     );
   },
 );
@@ -582,6 +622,94 @@ server.tool(
       executed: fromBaseUnits(BigInt(b.executed!), d),
       pending: fromBaseUnits(BigInt(b.pending!), d),
       available: fromBaseUnits(BigInt(b.available!), d),
+    });
+  },
+);
+
+/**
+ * THE ACTIVITY FEED, which nothing exposed.
+ *
+ * `list_requests` has been on the contract all along. The MCP had only
+ * `vault_request(requestId)` — a lookup by an id you can obtain *only* from a
+ * `vault_pay` response — so a user asking "what has my agent been spending
+ * on?" had nothing but running totals. For the one question people ask most
+ * about an autonomous spender, the answer was a number with no history behind
+ * it.
+ *
+ * THE CAVEAT IS LOAD-BEARING AND THE CONTRACT SAYS SO ITSELF: a BLOCKED
+ * request is never stored. The hot path returns the refusal as a value and
+ * emits an event, deliberately, because storing rejected attempts would let
+ * an agent inflate the vault's storage bill at will. So this feed shows
+ * in-flight, settled and failed payments — and an agent that was refused
+ * every time looks identical to one that never tried.
+ *
+ * Reporting that silently would be the worst kind of wrong: "no payments" is
+ * exactly what a user wants to hear when the real answer is "twelve refusals
+ * you cannot see here". So the caveat ships WITH the data, every time, rather
+ * than in a doc nobody opens.
+ */
+server.tool(
+  "vault_history",
+  "The vault's payment activity, newest first: what was paid, to whom, when, and how each one ended. Use this for 'what has my agent been spending on?'. No key required. IMPORTANT: refused payments are NOT recorded here — the contract deliberately does not store them, so an agent that was blocked every time looks the same as one that never tried.",
+  {
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("how many to return, newest first. Default 20."),
+    fromIndex: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("skip this many of the newest, to page backwards through history."),
+  },
+  async ({ limit, fromIndex }) => {
+    const rows = (await viewFunction(cfg.rpcUrl, requireVault(), "list_requests", {
+      from_index: fromIndex ?? 0,
+      limit: limit ?? 20,
+    })) as Record<string, unknown>[] | null;
+
+    if (!Array.isArray(rows)) return json(rows);
+
+    const meta = await metaFor(rows.map((r) => String(r.token)));
+    const payments = rows.map((r) => {
+      const m = meta.get(String(r.token)) ?? null;
+      const d = m?.decimals ?? cfg.decimals;
+      let amount = String(r.amount);
+      try {
+        amount = fromBaseUnits(BigInt(amount), d);
+      } catch {
+        /* a figure the contract produced is a fact; surface it unchanged */
+      }
+      return {
+        request_id: r.request_id,
+        status: r.status,
+        reason: r.reason_code,
+        amount,
+        token: tokenLabel(String(r.token), m),
+        to: r.recipient,
+        node_id: r.node_id,
+        ...(r.memo ? { memo: r.memo } : {}),
+        // Nanoseconds are what the contract stores and not what anyone reads.
+        when: new Date(Number(BigInt(String(r.created_at_ns)) / 1_000_000n)).toISOString(),
+        charged_on_utc_day: r.reserved_day,
+      };
+    });
+
+    return json({
+      count: payments.length,
+      payments,
+      not_shown:
+        "REFUSED payments are not in this list. The contract does not store a blocked " +
+        "request — that would let an agent grow the vault's storage bill by spamming " +
+        "refusals — so it returns the reason to the caller and emits an event instead. " +
+        "An empty list therefore means 'nothing was paid', NOT 'nothing was attempted'.",
+      ...(payments.length === (limit ?? 20)
+        ? { more: `Possibly more: pass fromIndex=${(fromIndex ?? 0) + payments.length}.` }
+        : {}),
     });
   },
 );
@@ -678,8 +806,31 @@ server.tool(
       }
     }
 
+    /**
+     * AN OWNERSHIP TRANSFER IN FLIGHT WAS INVISIBLE.
+     *
+     * `get_pending_owner` exists and nothing read it. A two-step transfer is
+     * the safe design — the new owner must accept — but a half-finished one
+     * is exactly the state worth seeing, and `owner` alone shows the OLD
+     * owner with no hint that control is mid-handover.
+     */
+    const pendingOwner = await viewFunction<string | null>(
+      cfg.rpcUrl,
+      requireVault(),
+      "get_pending_owner",
+      {},
+    ).catch(() => null);
+
     return json({
       ...c,
+      ...(pendingOwner
+        ? {
+            pending_owner: pendingOwner,
+            ownership_note:
+              `A transfer to ${pendingOwner} is IN FLIGHT. ${c.owner} still controls this ` +
+              `vault until ${pendingOwner} accepts.`,
+          }
+        : {}),
       // A bare `clock_mode: "production"` invites the question it does not
       // answer. The test clock exists so integration tests can roll a UTC day
       // without waiting; seeing it on a real vault would be alarming.

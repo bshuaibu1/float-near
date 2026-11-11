@@ -86,6 +86,14 @@ const CASES = [
     expect: (r) => r === null || typeof r === "object",
   },
   { tool: "vault_teardown_report", args: {}, expect: (r) => r !== null },
+  // The caveat must ship with the data EVERY time, not only when the feed is
+  // empty — a user scrolling ten payments is exactly who assumes they are
+  // seeing everything.
+  {
+    tool: "vault_history",
+    args: { limit: 5 },
+    expect: (r) => Array.isArray(r.payments) && /REFUSED payments are not/.test(r.not_shown),
+  },
   // PLAN tools return an UNSIGNED payload. The assertion is that one comes
   // back with a receiver and a method — not that anything was signed.
   {
