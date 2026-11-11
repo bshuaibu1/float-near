@@ -467,6 +467,23 @@ so drift fails two suites.
    inherited from the adapter. Verified by reproducing the exact v1 state in a browser: it now
    prompts. Also fixed: `danger-zone` hardcoded `e.g. you.testnet` while already receiving
    `info.network`. **Confirmed in the DEPLOYED bundle, not just locally: `v1` in 0 files, `v2` in 4.**
+
+   **SEVENTEEN DASHBOARD FETCHES NEVER SAID WHOSE VAULT (fixed + deployed 2026-11-11).** Reported
+   twice with screenshots: a mainnet owner on `/?owner=test015.near`, in incognito, seeing the
+   TESTNET budget tree as their own. `/v1/dashboard` was passed an owner in **one of five** call
+   sites, so Overview resolved correctly and every other page did not. The proxy falls back to the
+   adapter's configured vault when no owner arrives — on production, the testnet demo. **The failure
+   is silent: HTTP 200, a real vault, nothing red.** Fixed by `apps/dashboard/lib/float-fetch.ts`,
+   now the only door, attaching the owner itself **including on POSTs** (`/v1/owner-plan` is a POST
+   and the proxy reads `searchParams`, not the body — a payload built against the wrong vault would
+   have been handed to a user to SIGN). `API_BASE_URL` was redeclared in nine files; now defined
+   once. `scripts/check-dashboard-owner.mjs` fails the build on a bare adapter fetch.
+   **Two of my verifications were incapable of catching it**: (a) I tested locally with
+   `FLOAT_ADAPTER_URL` and `FLOAT_ADAPTER_URL_MAINNET` pointing at the SAME mainnet adapter, so both
+   branches led to one place; (b) the gate ran `tsc`, not `next build`, so a `"use client"` ordering
+   error passed the gate and failed the DEPLOY. Gate now builds the dashboard — **34 checks**.
+   **Danger Zone removed from the UI** (see DECISIONS.md). Deployed and verified live: `vault-info`,
+   `dashboard` and `agent-keys` all return the mainnet vault for `?owner=test015.near`.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
