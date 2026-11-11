@@ -423,6 +423,21 @@ so drift fails two suites.
    was invisible** — `vault_config` now reports `pending_owner`. Verified against a vault with real
    payments, not just the empty case. **Live sweep 21 tools + 5 error paths; 284 unit tests; 32
    checks. Still unpublished — batching.**
+
+   **CRITICAL, LOGGED NOT YET FIXED — `vault_create({bindAgent:true})` orphans the agent secret.**
+   `generateAgentKey` defaults to `const dir = opts.dir ?? ".float"` — a RELATIVE path.
+   `vault_add_role` passes `dir: dirname(cfg.agentKeysPath)`; **`vault_create` passes no `dir` at
+   all**, so the secret is written to `.float/` relative to the MCP SERVER'S working directory,
+   which is wherever the client launched it — not `NEAR_VAULT_AGENT_KEYS`. Measured 2026-11-10:
+   `test015-near.usefloat.near`'s agent key landed in `Documents/New project/.float/agent-keys.json`
+   while the server read `near-vault/.float/`. **The key was never lost — it was written where
+   nothing reads, which is worse than failing**: `vault_create` reported success, the link worked,
+   the vault bound the key on chain, and the credential was silently orphaned. Bashir diagnosed it
+   from the symptom before I found the line. **Second, related gap:** `vault_pay` with no `role`
+   calls `requireAgentKey`, which reads ENV ONLY — so a keyring holding exactly one credential for
+   the configured vault still cannot pay. It should fall back to the sole credential. Recovered by
+   hand for now (entry copied, source untouched, backup at `.float/agent-keys.json.pre-recover.bak`).
+   **Fix both in the next batch.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
