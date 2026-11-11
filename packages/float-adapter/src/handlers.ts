@@ -677,15 +677,21 @@ export async function getDashboard(view: ViewFn, cfg: AdapterConfig) {
     /**
      * RECIPIENT AND MEMO TRAVEL SEPARATELY.
      *
-     * `venue` is `memo || recipient`, which collapses two different facts into
-     * one string: the Overview table showed "work12.testnet" for one payment
-     * and "first payment from a vault created in one signature" for the next,
-     * under a single column heading, with no way to tell which kind of thing
-     * you were looking at.
+     * `venue` USED to be `memo || recipient`, collapsing two different facts
+     * into one string: the Overview table showed "work12.testnet" for one
+     * payment and "first payment from a vault created in one signature" for
+     * the next, under a single heading, with no way to tell which you were
+     * looking at. `recipient` and `memo` were added beside it to separate them.
      *
-     * `venue` stays for now because /activity still reads it. These are added
-     * beside it so the table can show WHO was paid as a fact that is always
-     * present, and the note as a fact that usually is not.
+     * AS OF 2026-11-11 THE MEMO IS REDACTED on this public surface (see
+     * map.ts), so `venue` is simply the recipient and `memo` is always null.
+     * The dashboard is keyless and multi-tenant — anyone can type a vault name
+     * — and a memo is what a company paid FOR.
+     *
+     * It is NOT secret: the memo is on chain and one view call away. This
+     * removes it from the surface that turned "know how to query a NEAR RPC"
+     * into "type a name". The agent's own `vault_history` reads the chain
+     * directly and still sees everything.
      */
     recentActivity: recent.map((p) => ({
       id: p.id,
