@@ -407,6 +407,22 @@ so drift fails two suites.
    read from the chain. (d) **The live sweep covered 12 of 26 tools; now 20** — eight plan tools had
    never been called by anything, and the first caller would have been a user. mcp 0.7.0 -> 0.7.1.
    **284 unit tests, 32 checks, 20 tools + 5 error paths. Still unpublished — batching.**
+
+   **THREE READS THE CONTRACT HAD AND NOTHING EXPOSED — mcp 0.8.0 (2026-11-10).**
+   (a) **`vault_history` is new.** `list_requests` was always on the contract; the MCP had only
+   `vault_request(id)`, and an id is obtainable ONLY from a `vault_pay` response — so "what has my
+   agent been spending on?" had no answer but a running total. Renders amount, token symbol, payee,
+   memo and an ISO timestamp. **Its caveat ships WITH the data every time**, because the contract
+   deliberately does not store a REFUSED payment (that would let an agent inflate the storage bill
+   by spamming refusals) — so an empty feed means "nothing was paid", NOT "nothing was attempted",
+   and an agent blocked every time looks identical to one that never tried. Mutation-tested: drop
+   the caveat and the live sweep reds. (b) **The approval threshold was write-only** — you could
+   `vault_plan_set_approval_threshold` and never read one back, so an owner could not see their own
+   rule and an agent could not warn "this will be HELD". `vault_tree` now shows the **effective**
+   threshold (it inherits, so the local value under-reports). (c) **An in-flight ownership transfer
+   was invisible** — `vault_config` now reports `pending_owner`. Verified against a vault with real
+   payments, not just the empty case. **Live sweep 21 tools + 5 error paths; 284 unit tests; 32
+   checks. Still unpublished — batching.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
