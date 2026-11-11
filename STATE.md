@@ -1,4 +1,4 @@
-<!-- STAMP commit=f9b1811 date=2026-11-10 -->
+<!-- STAMP commit=1f6e28d date=2026-11-10 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -503,8 +503,7 @@ so drift fails two suites.
    "query NEAR RPC" to "type a name" — a real privacy change even for already-public data. Three
    options put to him: leave it (consistent with a public ledger); hide memos behind proof of
    ownership (reintroduces the authentication the design deliberately avoided); or keep reads open
-   and drop memos from the public view, keeping amounts and status. **Not yet decided — no
-   DECISIONS.md row until it is.**
+   and drop memos from the public view, keeping amounts and status. **DECIDED: option 3**, and shipped — see DECISIONS.md.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
