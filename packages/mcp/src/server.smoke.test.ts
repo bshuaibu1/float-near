@@ -523,3 +523,34 @@ describe("cfg.rpcUrl is derived from the network, not hardcoded", () => {
     expect(/rpcUrl:\s*rpcForNetwork\(/.test(src)).toBe(true);
   });
 });
+
+/**
+ * THE AGENT'S OWN HISTORY KEEPS THE MEMOS.
+ *
+ * The public dashboard redacts them (see float-adapter/src/map.ts): it is
+ * keyless and multi-tenant, so anyone typing a vault name could read what a
+ * company paid FOR. This server is different — it runs on the owner's own
+ * machine, with their own config, for their own agent.
+ *
+ * The split holds for a STRUCTURAL reason worth pinning rather than trusting:
+ * `vault_history` calls `list_requests` DIRECTLY against the chain and never
+ * passes through the adapter, so there is no path by which the adapter's
+ * redaction could reach it. If someone ever routes this tool through the
+ * adapter for convenience, the agent silently loses context and nothing else
+ * would notice.
+ */
+describe("vault_history reads the chain directly, so memos survive", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+  const tool = src.slice(src.indexOf('"vault_history"'), src.indexOf('"vault_request"'));
+
+  it("calls list_requests on the vault, not an adapter", () => {
+    expect(tool).toMatch(/viewFunction[\s\S]{0,120}"list_requests"/);
+    expect(tool).not.toMatch(/adapter|API_BASE_URL|localhost:8787/i);
+  });
+
+  it("maps the memo through to the caller", () => {
+    // Present AND conditional: a payment without one must not carry an empty
+    // `memo` key, which would read as "the memo was blank" rather than absent.
+    expect(tool).toMatch(/r\.memo \? \{ memo: r\.memo \} : \{\}/);
+  });
+});

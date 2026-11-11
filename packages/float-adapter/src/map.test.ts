@@ -198,12 +198,32 @@ describe("requestToPayment", () => {
     expect(p.createdAt).toBe(new Date(1_761_500_000_000).toISOString());
   });
 
-  it("uses the memo as the venue, since that is what the agent paid for", () => {
-    expect(requestToPayment(req({ memo: "openai.com/v1" }), {}, D).venue).toBe("openai.com/v1");
+  /**
+   * THE MEMO IS REDACTED ON THE PUBLIC SURFACE, as of 2026-11-11.
+   *
+   * This used to assert the opposite — `venue` was `memo || recipient` — and
+   * that was right while the dashboard served one configured vault. It is
+   * wrong now that the dashboard is keyless and multi-tenant: anyone can type
+   * a vault name, and a memo is what a company paid FOR.
+   *
+   * NOT A PRIVACY CLAIM. The memo is on chain and one view call away. This
+   * removes it from the surface that turned "know how to query a NEAR RPC"
+   * into "type a name".
+   */
+  it("REDACTS the memo rather than showing it as the venue", () => {
+    const p = requestToPayment(req({ memo: "openai.com/v1" }), {}, D);
+    expect(p.venue).toBe("bob.testnet");
+    expect(p.prompt).toBeNull();
   });
 
-  it("falls back to the recipient when there is no memo", () => {
-    expect(requestToPayment(req({ memo: "" }), {}, D).venue).toBe("bob.testnet");
+  it("looks identical whether a memo existed or not", () => {
+    // A consumer must not be able to tell WHICH vaults have interesting memos.
+    // A "redacted" marker on some rows and not others would advertise exactly
+    // the thing being withheld.
+    const withMemo = requestToPayment(req({ memo: "acquiring competitor" }), {}, D);
+    const without = requestToPayment(req({ memo: "" }), {}, D);
+    expect(withMemo.venue).toBe(without.venue);
+    expect(withMemo.prompt).toBe(without.prompt);
   });
 });
 

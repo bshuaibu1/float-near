@@ -316,9 +316,30 @@ export function requestToPayment(
     amount: fromBaseUnits(BigInt(r.amount), decimals),
     currency: "USDC",
     recipientAddress: r.recipient,
-    // What the agent paid FOR, which is what the memo carries. The recipient
-    // is already its own column, so echoing it adds nothing.
-    venue: r.memo || r.recipient,
+    /**
+     * THE MEMO IS REDACTED HERE, and only here.
+     *
+     * The dashboard is keyless and multi-tenant: anyone can type a vault name
+     * and read it. A memo is what the agent paid FOR — "landing page draft",
+     * "copywriting" — and that is a company's operations, legible to anyone
+     * who guesses an account id.
+     *
+     * BE EXACT ABOUT WHAT THIS DOES. The memo is ON CHAIN and public; this
+     * does not make it secret and must never be described as privacy. It
+     * removes it from the surface that turned "know how to query a NEAR RPC"
+     * into "type a name", which is a real reduction in casual exposure and
+     * nothing more. Anyone determined still has it in one view call.
+     *
+     * THE AGENT'S OWN TOOLING IS UNAFFECTED. `vault_history` in
+     * @floatonnear/mcp calls `list_requests` directly against the chain and
+     * never passes through this adapter, so an agent keeps full context on the
+     * machine its owner controls. The split is PUBLIC SURFACE vs LOCAL TOOL,
+     * not two different truths.
+     *
+     * Falls back to the recipient, which was already the behaviour for a
+     * payment with no memo — so a row still says who was paid.
+     */
+    venue: r.recipient,
     rail: railOf(r.route),
     // A Base payment is NOT "success". The contract proved it obtained a
     // signature; it cannot see whether the transaction landed, and nothing in
@@ -340,7 +361,11 @@ export function requestToPayment(
     // anything undelivered.
     txSignature: delivery?.baseTxHash ?? null,
     createdAt: nsToIso(r.created_at_ns),
-    prompt: r.memo || null,
+    // Redacted with `venue` above. Null rather than omitted, so a consumer
+    // that expects the field still type-checks and an absent memo and a
+    // withheld one look the same to it — the dashboard must not render a
+    // "redacted" badge that advertises which vaults have interesting ones.
+    prompt: null,
     resultUrl: null,
     // Carried for terminal failures too, so a failed row can say WHY.
     blockReason: r.status === "SETTLED" ? null : r.reason_code,
