@@ -377,6 +377,23 @@ so drift fails two suites.
    not block a plan: an unreachable chain is not evidence a node is missing.
    `check-mcp-live.mjs` now asserts all five error paths on CONTENT; positive-controlled by
    removing a guard. **mcp 0.6.5 -> 0.6.6, needs publishing.**
+
+   **UX BATCH, mcp 0.7.0 (2026-11-10) — made by LOOKING at every tool's output as a user.**
+   (a) **Tokens read as `USDC (1720…)`, not 64 hex characters.** New `token-meta.ts` resolves
+   `ft_metadata` once per token, cached for the process (failures cached too, or one bad id becomes
+   a storm). It keeps the id beside the symbol because **a symbol is not unique** — anyone can
+   deploy a "USDC". (b) **That also removed a correctness caveat**: `vault_tree` previously
+   humanised ONLY `NEAR_VAULT_TOKEN` and left every other token in base units, because guessing an
+   exponent prints a tidy figure wrong by orders of magnitude. The chain knows the real decimals,
+   so the guess was never needed. (c) **`vault_budget` says `date: 2026-11-11` and `resets: 00:00
+   UTC`** — `day: 20768` is the right ledger key and means nothing to a person; it stays alongside.
+   (d) **`vault_config` now explains the hierarchy**, which is the differentiator and was invisible:
+   root cap vs allocated-to-children, `mode: overcommit|strict`, and in plain words that a sibling
+   spending first yields `PARENT_DAILY_BUDGET` while your own cap still reads available — *"the
+   design working, not a fault"*. Also decodes `clock_mode`. The gate caught the caret trap on the
+   bump (`^0.6.0` does not match 0.7.0 — a clean install would have pulled the published mcp over
+   the sibling). **280 unit tests, 32 checks, live sweep 12 tools + 5 error paths. Needs
+   publishing.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
