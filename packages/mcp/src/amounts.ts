@@ -98,11 +98,33 @@ export interface TreeNode {
 
 export function humaniseTreeNode(
   node: TreeNode,
-  cfg: { token?: string; decimals: number },
+  cfg: {
+    token?: string;
+    decimals: number;
+    /**
+     * Per-token metadata, when it could be read from the chain.
+     *
+     * THIS REMOVES THE CAVEAT THE FIRST VERSION SHIPPED WITH. It could only
+     * humanise the one token whose decimals the operator had configured;
+     * every other kept base units, because scaling by a guessed exponent
+     * prints a figure wrong by orders of magnitude while looking tidy. The
+     * chain knows the real answer, so the guess was never necessary.
+     *
+     * A token still absent from this map keeps base units — "could not read
+     * the metadata" is not a licence to assume six.
+     */
+    meta?: Map<string, { symbol: string; decimals: number } | null>;
+  },
 ): TreeNode {
   if (!node || typeof node !== "object") return node;
-  const known = (token: string) => !!cfg.token && token === cfg.token;
-  const human = (v: string) => {
+  // Prefer what the CHAIN said; fall back to the configured token only.
+  const dp = (token: string): number | null => {
+    const m = cfg.meta?.get(token);
+    if (m) return m.decimals;
+    return cfg.token && token === cfg.token ? cfg.decimals : null;
+  };
+  const sym = (token: string) => cfg.meta?.get(token)?.symbol ?? null;
+  const human = (v: string, decimals: number) => {
     // EXPLICIT SHAPE CHECK, because `BigInt("")` is `0n` rather than a throw —
     // and `BigInt("  ")` is too. A try/catch alone therefore converted an
     // empty or whitespace cap into "0", which is not a parse failure the
@@ -110,7 +132,7 @@ export function humaniseTreeNode(
     // its own test, which is the only reason this is not shipping.
     if (typeof v !== "string" || !/^\d+$/.test(v)) return v;
     try {
-      return fromBaseUnits(BigInt(v), cfg.decimals);
+      return fromBaseUnits(BigInt(v), decimals);
     } catch {
       // Still guarded: fromBaseUnits rejects decimals outside its own range,
       // and a figure the contract produced is a fact worth surfacing
@@ -119,16 +141,26 @@ export function humaniseTreeNode(
     }
   };
 
-  const limits = node.limits?.map((l) =>
-    known(l.token)
-      ? { ...l, daily_cap: human(l.daily_cap), per_tx_cap: human(l.per_tx_cap), decimals: cfg.decimals }
-      : { ...l, decimals: null, units: "base" as const },
-  );
+  const limits = node.limits?.map((l) => {
+    const d = dp(l.token);
+    const symbol = sym(l.token);
+    if (d === null) return { ...l, decimals: null, units: "base" as const };
+    return {
+      ...l,
+      // The SYMBOL beside the id, never instead of it: anyone can deploy a
+      // token calling itself USDC, and a cap that names only a symbol cannot
+      // be checked against the one the user meant.
+      ...(symbol ? { token_symbol: symbol } : {}),
+      daily_cap: human(l.daily_cap, d),
+      per_tx_cap: human(l.per_tx_cap, d),
+      decimals: d,
+    };
+  });
 
-  const childCapSum = node.child_cap_sum?.map(
-    ([token, amount]) =>
-      (known(token) ? [token, human(amount)] : [token, amount]) as [string, string],
-  );
+  const childCapSum = node.child_cap_sum?.map(([token, amount]) => {
+    const d = dp(token);
+    return (d === null ? [token, amount] : [token, human(amount, d)]) as [string, string];
+  });
 
   return {
     ...node,

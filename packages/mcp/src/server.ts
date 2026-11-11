@@ -90,6 +90,7 @@ import { resolveKeySource } from "./key-file.js";
 import { dirname } from "node:path";
 
 import { listAgents, listRoles, selectRole } from "./roles.js";
+import { label as tokenLabel, tokenMeta, type TokenMeta } from "./token-meta.js";
 
 /**
  * A decimal NEAR string to yoctoNEAR, without floating point.
@@ -333,7 +334,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.6.6" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.7.0" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -487,16 +488,39 @@ server.tool(
   },
 );
 
+/**
+ * Resolve every token named in a tree, once, so output can say "USDC".
+ *
+ * Fetched in PARALLEL and deduplicated: a tree with five nodes sharing one
+ * token must make one call, not five. `tokenMeta` caches for the process
+ * lifetime, so the second `vault_tree` of a session makes none.
+ */
+async function metaFor(tokens: string[]): Promise<Map<string, TokenMeta | null>> {
+  const unique = [...new Set(tokens)];
+  const pairs = await Promise.all(
+    unique.map(
+      async (t) =>
+        [
+          t,
+          await tokenMeta(cfg.rpcUrl, t, (rpc, token) =>
+            viewFunction(rpc, token, "ft_metadata", {}),
+          ),
+        ] as const,
+    ),
+  );
+  return new Map(pairs);
+}
+
 server.tool(
   "vault_tree",
   "Read the whole budget tree: every node, its caps, parent, bound agent account, cooldown and freeze state. No key required.",
   {},
   async () => {
     const tree = (await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {})) as TreeNode[];
+    if (!Array.isArray(tree)) return json(tree);
+    const meta = await metaFor(tree.flatMap((n) => n.limits?.map((l) => l.token) ?? []));
     return json(
-      Array.isArray(tree)
-        ? tree.map((n) => humaniseTreeNode(n, { token: cfg.token, decimals: cfg.decimals }))
-        : tree,
+      tree.map((n) => humaniseTreeNode(n, { token: cfg.token, decimals: cfg.decimals, meta })),
     );
   },
 );
@@ -533,10 +557,26 @@ server.tool(
             : `It has no limits for any token, so it can pay nothing — set one with vault_plan_set_caps.`),
       );
     }
-    const d = cfg.decimals;
+    // The TOKEN's own decimals, not the configured guess. A vault may hold
+    // caps for several tokens and only one of them is NEAR_VAULT_TOKEN.
+    const tok = tokenFor(token);
+    const meta = (await metaFor([tok])).get(tok) ?? null;
+    const d = meta?.decimals ?? cfg.decimals;
     return json({
       node_id: nodeId,
+      token: tokenLabel(tok, meta),
+      /**
+       * `day: 20768` MEANS NOTHING TO A PERSON. It is days since the Unix
+       * epoch, which is the right key for a ledger and the wrong thing to
+       * show someone asking what they have left. The number stays — it is
+       * what the contract indexes by, and a support conversation needs it —
+       * but the date leads, and the reset is stated because "daily" does not
+       * say WHEN, and a budget that resets at midnight in a timezone you do
+       * not live in is a surprise worth pre-empting.
+       */
+      date: new Date(Number(b.day) * 86_400_000).toISOString().slice(0, 10),
       day: b.day,
+      resets: "00:00 UTC",
       daily_cap: fromBaseUnits(BigInt(b.daily_cap!), d),
       executed: fromBaseUnits(BigInt(b.executed!), d),
       pending: fromBaseUnits(BigInt(b.pending!), d),
@@ -574,7 +614,78 @@ server.tool(
   "vault_config",
   "Read vault config: owner, paused, strict-vs-overcommit allocation, node count, and clock mode. No key required.",
   {},
-  async () => json(await viewFunction(cfg.rpcUrl, requireVault(), "get_config", {})),
+  async () => {
+    const c = (await viewFunction(cfg.rpcUrl, requireVault(), "get_config", {})) as Record<
+      string,
+      unknown
+    >;
+    if (!c || typeof c !== "object") return json(c);
+
+    /**
+     * EXPLAIN THE HIERARCHY, because it is the whole product and nothing
+     * showed it.
+     *
+     * `vault_tree` prints `child_cap_sum` and leaves the reader to work out
+     * what it implies. The implication is the entire differentiator: budgets
+     * are hierarchical, a payment charges every ancestor, and so a SIBLING
+     * spending first can exhaust a shared pool while your own cap still reads
+     * "25 of 25 available". That is the moment `PARENT_DAILY_BUDGET` arrives
+     * and looks like a bug.
+     *
+     * `strict_allocation` is the switch that decides whether that can happen
+     * at all, and as a bare boolean it told nobody anything — a reader cannot
+     * tell whether `false` is the safe setting or the dangerous one.
+     *
+     * Computed from the TREE rather than restated from config, so the numbers
+     * are the ones actually in force.
+     */
+    const tree = (await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {}).catch(
+      () => null,
+    )) as TreeNode[] | null;
+    let allocation: Record<string, unknown> | undefined;
+    const root = Array.isArray(tree) ? tree.find((n) => (n as { id?: number }).id === 0) : null;
+    if (root) {
+      const lim = root.limits?.[0];
+      const sum = root.child_cap_sum?.[0];
+      if (lim && sum) {
+        const meta = (await metaFor([lim.token])).get(lim.token) ?? null;
+        const d = meta?.decimals ?? cfg.decimals;
+        const cap = BigInt(lim.daily_cap);
+        const allocated = BigInt(sum[1]);
+        const strict = c.strict_allocation === true;
+        allocation = {
+          token: tokenLabel(lim.token, meta),
+          root_daily_cap: fromBaseUnits(cap, d),
+          allocated_to_children: fromBaseUnits(allocated, d),
+          unallocated: fromBaseUnits(cap > allocated ? cap - allocated : 0n, d),
+          mode: strict ? "strict" : "overcommit",
+          meaning: strict
+            ? "Children's caps may not sum above the parent's, so each child's cap is " +
+              "genuinely its own and a sibling cannot take it."
+            : "Children's caps MAY sum above the parent's. A sibling that spends first can " +
+              "exhaust the shared pool, and the others are then refused PARENT_DAILY_BUDGET " +
+              "while their OWN cap still shows as available. That refusal is the design " +
+              "working, not a fault.",
+          ...(allocated >= cap && cap > 0n
+            ? {
+                note:
+                  "Children are allocated the ENTIRE root budget, so any second agent would " +
+                  "share this pool rather than add to it.",
+              }
+            : {}),
+        };
+      }
+    }
+
+    return json({
+      ...c,
+      // A bare `clock_mode: "production"` invites the question it does not
+      // answer. The test clock exists so integration tests can roll a UTC day
+      // without waiting; seeing it on a real vault would be alarming.
+      clock: c.clock_mode === "production" ? "real UTC time" : `TEST CLOCK (${c.clock_mode})`,
+      ...(allocation ? { allocation } : {}),
+    });
+  },
 );
 
 server.tool(
