@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Copy, ExternalLink, LogOut } from "lucide-react";
 import { useWallet, type WalletLoginMethod } from "@/components/wallet-provider";
 import { clearFloatOwnerSession, getFloatOwnerSession } from "@/lib/float-session";
+import { floatFetch } from "@/lib/float-fetch";
 import { CARD, DANGER, INK, LINE, MUTED, SUCCESS } from "@/lib/colors";
 import { shortAccount } from "@/lib/short-account";
 import { NAV_TABS, DOCS_URL } from "@/lib/nav-tabs";
@@ -95,7 +96,7 @@ export function TopNav() {
   // is not the place to report an adapter outage, and each page already does.
   useEffect(() => {
     let alive = true;
-    fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" })
+    floatFetch(`/v1/vault-info`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: VaultInfo | null) => {
         if (alive && d?.vaultId) setVault(d);

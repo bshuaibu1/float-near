@@ -1,3 +1,4 @@
+import { floatFetch } from "@/lib/float-fetch";
 "use client";
 
 /**
@@ -99,7 +100,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setNoVault(null);
     try {
       const q = asOwner ? `?owner=${encodeURIComponent(asOwner)}` : "";
-      const res = await fetch(`${API_BASE_URL}/v1/settings${q}`, { cache: "no-store" });
+      const res = await floatFetch(`/v1/settings${q}`, { cache: "no-store" });
       // The NO_VAULT shape is the adapter's, not SettingsResponse's: it carries
       // the owner it was asked about and the vault id that owner WOULD have.
       const body = (await res.json()) as SettingsResponse & {

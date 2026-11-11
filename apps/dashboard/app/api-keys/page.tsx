@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCheck, Copy, ExternalLink } from "lucide-react";
 import { CANVAS, CHIP, DANGER, DANGER_BG, LINE, MUTED, SUCCESS, SUCCESS_BG } from "@/lib/colors";
+import { floatFetch } from "@/lib/float-fetch";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 const border = { border: `1px solid ${LINE}` };
@@ -79,8 +80,8 @@ export default function AgentKeysPage() {
   const load = useCallback(async () => {
     try {
       const [keysRes, infoRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/v1/agent-keys`, { cache: "no-store" }),
-        fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" }),
+        floatFetch(`/v1/agent-keys`, { cache: "no-store" }),
+        floatFetch(`/v1/vault-info`, { cache: "no-store" }),
       ]);
       if (!keysRes.ok) throw new Error(`agent-keys returned HTTP ${keysRes.status}`);
       setRows((await keysRes.json()) as AgentKey[]);

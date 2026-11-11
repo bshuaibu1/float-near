@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { ownershipVerdict } from "@/lib/ownership";
+import { floatFetch } from "@/lib/float-fetch";
 import { CANVAS, CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
@@ -501,7 +502,7 @@ export default function Overview() {
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    fetch(`${API_BASE_URL}/v1/dashboard${getOwnerQuery(walletAddress)}`, {
+    floatFetch(`/v1/dashboard${getOwnerQuery(walletAddress)}`, {
       cache: "no-store",
       headers: getOwnerAuthHeaders(),
     })

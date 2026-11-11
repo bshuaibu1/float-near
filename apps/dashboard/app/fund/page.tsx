@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useVisiblePolling } from "@/lib/use-chain-watch";
+import { floatFetch } from "@/lib/float-fetch";
 import { QRCodeSVG } from "qrcode.react";
 import { Check, Copy, ExternalLink } from "lucide-react";
 import { CARD, CHIP, INK, LINE, MUTED } from "@/lib/colors";
@@ -41,8 +42,8 @@ export default function FundPage() {
   const load = useCallback(async () => {
     try {
       const [infoRes, dashRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" }),
-        fetch(`${API_BASE_URL}/v1/dashboard`, { cache: "no-store" }),
+        floatFetch(`/v1/vault-info`, { cache: "no-store" }),
+        floatFetch(`/v1/dashboard`, { cache: "no-store" }),
       ]);
       if (!infoRes.ok) throw new Error(`vault-info returned HTTP ${infoRes.status}`);
       setInfo((await infoRes.json()) as VaultInfo);

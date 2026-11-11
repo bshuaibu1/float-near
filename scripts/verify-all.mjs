@@ -291,6 +291,23 @@ const steps = [
      * went on offering "Page defaults: 2.04 / 0.51" as a recommended option
      * for values the page no longer had.
      */
+    /**
+     * Every dashboard call to the adapter must say WHO is asking.
+     *
+     * A fetch without `?owner=` does not fail — the proxy falls back to the
+     * adapter's configured vault, which on the public deployment is the
+     * operator's TESTNET demo. The page renders a real vault belonging to
+     * someone else, returns 200, and nothing goes red. Seventeen call sites
+     * were in that state while the Overview looked correct, because it was
+     * the one that passed an owner.
+     */
+    name: "dashboard owner",
+    cmd: "node scripts/check-dashboard-owner.mjs",
+    cwd: ".",
+    mustMatch: /every adapter call goes through floatFetch/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "quoted defaults",
     cmd: "node scripts/check-quoted-defaults.mjs",
     cwd: ".",
