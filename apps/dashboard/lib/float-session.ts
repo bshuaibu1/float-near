@@ -1,6 +1,23 @@
 import { useEffect, useState } from "react";
 
-export const FLOAT_OWNER_SESSION_KEY = "float.owner.session.v1";
+/**
+ * `v2` BECAUSE EVERY v1 SESSION NAMES THE WRONG ACCOUNT.
+ *
+ * Until the dashboard asked whose vault, it connected to whatever vault the
+ * ADAPTER was configured with and saved that vault's owner here. On a public
+ * deployment that is the operator's testnet demo account — so every returning
+ * visitor silently auto-loaded a stranger's vault, on the wrong network, with
+ * no prompt and nothing to click.
+ *
+ * Measured 2026-11-11: a mainnet owner opened the dashboard and got the
+ * testnet vault's budget tree, fleet and balance rendered as their own.
+ *
+ * Bumping the key is the fix. A migration would have to guess whether a stored
+ * account was chosen by the user or inherited from the adapter, and those are
+ * indistinguishable in v1 — it recorded only the id. Dropping them costs one
+ * re-entry and cannot show anyone the wrong vault.
+ */
+export const FLOAT_OWNER_SESSION_KEY = "float.owner.session.v2";
 
 export type FloatOwnerSession = {
   ownerControlKey: string;

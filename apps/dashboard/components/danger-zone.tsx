@@ -143,7 +143,7 @@ export function DangerZone({
             <input
               value={receiver}
               onChange={(e) => setReceiver(e.target.value)}
-              placeholder="where to send it, e.g. you.testnet"
+              placeholder={`where to send it, e.g. you.${info.network === "mainnet" ? "near" : "testnet"}`}
               aria-label="Account to receive the withdrawn tokens"
               className="min-h-11 min-w-[14rem] flex-1 rounded-lg border border-line bg-card px-3 text-[13px] text-ink focus:outline-none focus:ring-2 focus:ring-ink/10"
             />

@@ -455,6 +455,18 @@ so drift fails two suites.
    queried testnet and answered "account usefloat.near does not exist". **The deployed copy masked
    it** because `deploy-skill-host.sh` sets the RPC explicitly; every hand-run instance failed.
    Fixed and mutation-tested. **Not yet deployed.**
+
+   **STALE SESSIONS WERE SHOWING THE TESTNET VAULT AS YOURS (fixed 2026-11-11).** Until the
+   dashboard asked whose vault, it auto-connected to whatever vault the ADAPTER was configured with
+   and SAVED that owner to `localStorage` under `float.owner.session.v1`. On the public deployment
+   that is the operator's testnet demo account — so every returning visitor silently auto-loaded a
+   stranger's vault, on the wrong network, with no prompt. Reported with a screenshot: a mainnet
+   owner seeing the testnet budget tree (100 USDC master, `marketing` agent, 42.25 balance) rendered
+   as their own. **Key bumped to `v2`, which drops every stale session** — a migration cannot work,
+   because v1 recorded only the account id and so cannot distinguish one the USER chose from one
+   inherited from the adapter. Verified by reproducing the exact v1 state in a browser: it now
+   prompts. Also fixed: `danger-zone` hardcoded `e.g. you.testnet` while already receiving
+   `info.network`.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
