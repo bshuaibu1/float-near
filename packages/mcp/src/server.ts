@@ -16,7 +16,11 @@
  *
  * Configure with:
  *   NEAR_VAULT_CONTRACT        required by every tool EXCEPT vault_create
- *   NEAR_VAULT_RPC_URL         default https://test.rpc.fastnear.com
+ *   NEAR_VAULT_RPC_URL         OPTIONAL. Defaults to the RPC for
+ *                              NEAR_VAULT_NETWORK — free.rpc.fastnear.com on
+ *                              mainnet, test.rpc.fastnear.com on testnet. It
+ *                              used to default to the testnet URL regardless,
+ *                              so every mainnet install read the wrong chain.
  *   NEAR_VAULT_TOKEN           default token for pay/budget calls
  *   NEAR_VAULT_TOKEN_DECIMALS  default 6
  *   NEAR_VAULT_AGENT_ID        only needed to PAY. Taken from the key file's
@@ -85,7 +89,7 @@ import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
 import { resolveKeySource } from "./key-file.js";
 import { dirname } from "node:path";
 
-import { listRoles, selectRole } from "./roles.js";
+import { listAgents, listRoles, selectRole } from "./roles.js";
 
 /**
  * A decimal NEAR string to yoctoNEAR, without floating point.
@@ -147,9 +151,47 @@ for (const err of [agentKeySource.error, quoteSignerSource.error]) {
   if (err) console.error(`float: ${err}`);
 }
 
+/**
+ * The network, resolved BEFORE `cfg` so the RPC can follow it.
+ *
+ * It used to be read inside the object literal, which meant `rpcUrl` could not
+ * see it and fell back to a constant. See below.
+ */
+const NETWORK = process.env.NEAR_VAULT_NETWORK ?? "testnet";
+
 const cfg = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
-  rpcUrl: process.env.NEAR_VAULT_RPC_URL ?? DEFAULT_RPC_URL,
+  /**
+   * THE RPC FOLLOWS THE NETWORK. It did not, and that broke every mainnet
+   * install.
+   *
+   * This was `process.env.NEAR_VAULT_RPC_URL ?? DEFAULT_RPC_URL`, and
+   * `DEFAULT_RPC_URL` is the TESTNET endpoint. So a user who set
+   * `NEAR_VAULT_NETWORK=mainnet` — the documented way to be on mainnet — and
+   * did not also happen to set `NEAR_VAULT_RPC_URL` had all fourteen tools
+   * that use `cfg.rpcUrl` querying TESTNET for a mainnet vault. Reads answered
+   * "account does not exist" about an account holding 3.35 NEAR, and
+   * `vault_pay` would have submitted a real payment to the wrong chain.
+   *
+   * Measured 2026-11-10 on test015-near.usefloat.near: `vault_config` and
+   * `vault_tree` reported the vault missing while `vault_await_create` read
+   * its config fine — the two tools differ only in that `vault_create` and
+   * `vault_await_create` call `rpcForNetwork()` and everything else took this
+   * constant.
+   *
+   * THAT ASYMMETRY ALSO DEFEATED THE DIAGNOSIS. The testnet theory was correct
+   * and was "refuted" by testing it with `vault_await_create`, the one tool
+   * immune to the bug — so the right answer was discarded on the strength of a
+   * check that could not fail. Pick the probe that exercises the broken path,
+   * not the convenient one.
+   *
+   * `rpcForNetwork` honours `NEAR_VAULT_RPC_URL` only when it applies to the
+   * network in play, which is the behaviour `vault_create` already relied on.
+   */
+  rpcUrl: rpcForNetwork(NETWORK, {
+    configuredNetwork: NETWORK,
+    override: process.env.NEAR_VAULT_RPC_URL,
+  }),
   token: process.env.NEAR_VAULT_TOKEN ?? "",
   decimals: Number(process.env.NEAR_VAULT_TOKEN_DECIMALS ?? "6"),
   // The credentials file carries the account as well as the key, so one path
@@ -159,7 +201,7 @@ const cfg = {
   agentKey: agentKeySource.secret,
   agentKeyError: agentKeySource.error,
   agentKeyAccountId: agentKeySource.accountId,
-  network: process.env.NEAR_VAULT_NETWORK ?? "testnet",
+  network: NETWORK,
   // Onboarding only. Both have safe defaults and neither is needed by any
   // tool that touches an existing vault.
   factory: process.env.NEAR_VAULT_FACTORY,
@@ -291,7 +333,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.6.3" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.6.4" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -584,7 +626,24 @@ server.tool(
   {},
   async () =>
     json(
-      listRoles(cfg).map((r) => ({ role: r.role, nodeId: r.nodeId, agentId: r.agentId })),
+      // `listAgents`, NOT `listRoles`. The latter filters to entries carrying a
+      // role, which is correct for SELECTION and wrong for REPORTING: a
+      // creation-time agent from `bindAgent` has no role, so a working vault
+      // with a funded gas key reported `[]` — indistinguishable from having no
+      // agent at all, and the obvious next move is then the wrong one.
+      listAgents(cfg).map((r) => ({
+        role: r.role,
+        nodeId: r.nodeId,
+        agentId: r.agentId,
+        ...(r.role === null
+          ? {
+              note:
+                "No role name — created by vault_create({bindAgent:true}), which does not " +
+                "name one. It can still sign; vault_pay selects it by nodeId or as the only " +
+                "credential. Give it a name with vault_add_role if you want several agents.",
+            }
+          : {}),
+      })),
     ),
 );
 
