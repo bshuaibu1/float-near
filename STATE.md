@@ -466,7 +466,7 @@ so drift fails two suites.
    because v1 recorded only the account id and so cannot distinguish one the USER chose from one
    inherited from the adapter. Verified by reproducing the exact v1 state in a browser: it now
    prompts. Also fixed: `danger-zone` hardcoded `e.g. you.testnet` while already receiving
-   `info.network`.
+   `info.network`. **Confirmed in the DEPLOYED bundle, not just locally: `v1` in 0 files, `v2` in 4.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
