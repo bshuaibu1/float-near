@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { encodeArgs, decodeViewResult, requireAgentKey, newRequestId } from "./rpc.js";
+import {
+  encodeArgs,
+  decodeViewResult,
+  requireAgentKey,
+  newRequestId,
+  rpcForNetwork,
+  RPC_BY_NETWORK,
+  DEFAULT_RPC_URL,
+} from "./rpc.js";
 
 describe("encodeArgs", () => {
   it("base64-encodes the JSON body", () => {
@@ -194,5 +202,42 @@ describe("newRequestId", () => {
   it("does not repeat", () => {
     const seen = new Set(Array.from({ length: 500 }, () => newRequestId()));
     expect(seen.size).toBe(500);
+  });
+});
+
+/**
+ * THE RPC MUST FOLLOW THE NETWORK.
+ *
+ * `cfg.rpcUrl` was `NEAR_VAULT_RPC_URL ?? DEFAULT_RPC_URL`, and
+ * `DEFAULT_RPC_URL` is the TESTNET endpoint. Setting `NEAR_VAULT_NETWORK=mainnet`
+ * — the documented way to be on mainnet — left all fourteen tools that use
+ * `cfg.rpcUrl` querying testnet for a mainnet vault. Measured 2026-11-10: reads
+ * reported "account does not exist" about an account holding 3.35 NEAR, and the
+ * pay path would have submitted to the wrong chain.
+ *
+ * Tested through `rpcForNetwork` with the exact argument shape the server now
+ * passes, rather than against a copy of the strings.
+ */
+describe("the resolved RPC follows the configured network", () => {
+  const resolve = (network: string, override?: string) =>
+    rpcForNetwork(network, { configuredNetwork: network, override });
+
+  it("uses the MAINNET endpoint when the network is mainnet and nothing is overridden", () => {
+    expect(resolve("mainnet")).toBe(RPC_BY_NETWORK.mainnet);
+    // The specific regression: it must NOT be the testnet default.
+    expect(resolve("mainnet")).not.toBe(DEFAULT_RPC_URL);
+  });
+
+  it("uses the testnet endpoint on testnet", () => {
+    expect(resolve("testnet")).toBe(RPC_BY_NETWORK.testnet);
+  });
+
+  it("still honours an explicit override", () => {
+    // Operators point at their own node; that must keep working.
+    expect(resolve("mainnet", "https://my.node.example")).toBe("https://my.node.example");
+  });
+
+  it("the two endpoints are genuinely different, or the test above proves nothing", () => {
+    expect(RPC_BY_NETWORK.mainnet).not.toBe(RPC_BY_NETWORK.testnet);
   });
 });

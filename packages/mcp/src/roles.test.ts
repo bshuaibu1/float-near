@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { listRoles, selectRole } from "./roles.js";
+import { listAgents, listRoles, selectRole } from "./roles.js";
 
 function ring(entries: unknown[]): { agentKeysPath: string } {
   const p = join(mkdtempSync(join(tmpdir(), "float-roles-")), "agent-keys.json");
@@ -94,5 +94,51 @@ describe("listRoles", () => {
   it("omits entries that carry no role", () => {
     const out = listRoles(ring([...FLEET, { agentId: "v.fac.testnet", secret: "ed25519:anon" }]));
     expect(out).toHaveLength(2);
+  });
+});
+
+/**
+ * AN UNNAMED AGENT MUST STILL BE VISIBLE.
+ *
+ * `vault_create({bindAgent:true})` writes a keyring entry with no `role`, so
+ * `listRoles` — which filters on one — drops it. Reporting through that filter
+ * made a vault with a funded gas key and a live agent node answer `[]`, which
+ * reads as "no agents" and points the user at binding another.
+ */
+describe("listAgents reports credentials that carry no role", () => {
+  const write = (entries: unknown[]) => {
+    const dir = mkdtempSync(join(tmpdir(), "float-roles-"));
+    const p = join(dir, "agent-keys.json");
+    writeFileSync(p, JSON.stringify(entries, null, 2));
+    return p;
+  };
+
+  it("includes a bindAgent-style entry with role null", () => {
+    // Exactly what generateAgentKey({ vault }) produces: no `role` key at all,
+    // because JSON.stringify drops an undefined value.
+    const p = write([{ agentId: "v.usefloat.near", secret: "ed25519:x", publicKey: "ed25519:y" }]);
+    const agents = listAgents({ agentKeysPath: p });
+    expect(agents).toHaveLength(1);
+    expect(agents[0]!.role).toBeNull();
+    // And the old function still excludes it — that behaviour is correct for
+    // selection and must not change.
+    expect(listRoles({ agentKeysPath: p })).toHaveLength(0);
+  });
+
+  it("still reports a named role as named", () => {
+    const p = write([
+      { agentId: "v.usefloat.near", secret: "ed25519:x", role: "marketing", nodeId: 2 },
+    ]);
+    const agents = listAgents({ agentKeysPath: p });
+    expect(agents[0]!.role).toBe("marketing");
+    expect(agents[0]!.nodeId).toBe(2);
+  });
+
+  it("distinguishes an EMPTY keyring from an unnamed agent", () => {
+    // The whole point. Both used to render as [].
+    expect(listAgents({ agentKeysPath: write([]) })).toHaveLength(0);
+    expect(
+      listAgents({ agentKeysPath: write([{ agentId: "v.near", secret: "ed25519:x" }]) }),
+    ).toHaveLength(1);
   });
 });

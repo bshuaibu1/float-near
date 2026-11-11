@@ -74,3 +74,33 @@ export function listRoles(cfg: { agentKeysPath?: string }): RoleCredential[] {
       nodeId: typeof e.nodeId === "number" ? e.nodeId : undefined,
     }));
 }
+
+/**
+ * EVERY credential in the keyring, named or not.
+ *
+ * `listRoles` filters to entries carrying a `role`, which is right for
+ * SELECTION — you cannot pick by a name that does not exist. It is wrong for
+ * REPORTING, and `vault_roles` used it for reporting.
+ *
+ * `vault_create({ bindAgent: true })` calls `generateAgentKey({ vault })` with
+ * no role, so `JSON.stringify` drops the field and the entry is invisible to
+ * `listRoles`. Measured 2026-11-10: a vault with a funded, correctly-pinned
+ * gas key and a live agent node reported `vault_roles` -> `[]`, which reads as
+ * "you have no agents" rather than "you have one with no name". The user then
+ * cannot tell an empty keyring from a working unnamed agent, and the obvious
+ * next move — bind another — is the wrong one.
+ *
+ * Returns `role: null` for those rather than inventing a name, because the
+ * name is genuinely absent and the fix is `vault_add_role`, not a guess.
+ */
+export function listAgents(cfg: { agentKeysPath?: string }): {
+  agentId: string;
+  role: string | null;
+  nodeId?: number;
+}[] {
+  return loadable(cfg.agentKeysPath ?? ".float/agent-keys.json").map((e) => ({
+    agentId: e.agentId as string,
+    role: typeof e.role === "string" ? e.role : null,
+    nodeId: typeof e.nodeId === "number" ? e.nodeId : undefined,
+  }));
+}

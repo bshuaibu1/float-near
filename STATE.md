@@ -335,6 +335,20 @@ so drift fails two suites.
    "I already created it" straight to it and states that a `vault_create` throw is never a success.
    Verified against the live vault: derived `test015-near.usefloat.near`, read `get_config.owner`
    back = `test015.near`, LIVE.
+
+   **THE RPC DID NOT FOLLOW THE NETWORK — every mainnet install read the wrong chain (2026-11-10).**
+   `cfg.rpcUrl` was `NEAR_VAULT_RPC_URL ?? DEFAULT_RPC_URL`, and `DEFAULT_RPC_URL` is the TESTNET
+   endpoint. Setting `NEAR_VAULT_NETWORK=mainnet` — the documented way to be on mainnet — left all
+   **14** tools that use `cfg.rpcUrl` querying testnet, so `vault_config`/`vault_tree` answered
+   "account does not exist" about `test015-near.usefloat.near` (holding 3.35 NEAR), and `vault_pay`
+   would have submitted to the wrong chain. Only `vault_create`/`vault_await_create` worked, because
+   they alone call `rpcForNetwork()`. **That asymmetry also defeated the diagnosis:** the testnet
+   theory was correct and was "refuted" by testing it with `vault_await_create`, the one tool immune
+   to the bug. Fixed; mutation-tested at the WIRING level, because the `rpcForNetwork` unit test
+   stays green through the regression. **`vault_roles` returning `[]` was NOT a bug but was a lie
+   by omission** — `bindAgent` writes no `role`, `listRoles` filters on one, so a live funded agent
+   was invisible and "no agents" was indistinguishable from "one unnamed agent". New `listAgents`
+   reports it with `role: null`. **mcp 0.6.3 -> 0.6.4, needs publishing.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

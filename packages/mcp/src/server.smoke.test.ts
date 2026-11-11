@@ -480,3 +480,36 @@ describe("a key file given to the real server", () => {
     20_000,
   );
 });
+
+/**
+ * THE SERVER MUST ACTUALLY USE THE NETWORK-AWARE RESOLVER.
+ *
+ * `rpc.test.ts` proves `rpcForNetwork` returns the right endpoint. That test
+ * stays GREEN if someone reverts `cfg.rpcUrl` to the old constant, because it
+ * never looks at the wiring — and the wiring was the bug. Correctness of a
+ * helper and reachability of a helper are different claims.
+ *
+ * A source assertion rather than a boot-and-read, because the resolved value
+ * lives in a module-scope const inside a process that owns stdout for JSON-RPC.
+ * Crude, and it pins the one line that broke every mainnet install.
+ */
+describe("cfg.rpcUrl is derived from the network, not hardcoded", () => {
+  const src = readFileSync(
+    resolve(import.meta.dirname, "server.ts"),
+    "utf8",
+  );
+
+  it("does not fall back to a fixed DEFAULT_RPC_URL", () => {
+    // The exact regressed form. `DEFAULT_RPC_URL` is the TESTNET endpoint, so
+    // this line sent every mainnet read to the wrong chain and answered
+    // "account does not exist" about a funded vault.
+    expect(
+      /rpcUrl:\s*process\.env\.NEAR_VAULT_RPC_URL\s*\?\?\s*DEFAULT_RPC_URL/.test(src),
+      "cfg.rpcUrl is back to the hardcoded testnet default",
+    ).toBe(false);
+  });
+
+  it("resolves through rpcForNetwork", () => {
+    expect(/rpcUrl:\s*rpcForNetwork\(/.test(src)).toBe(true);
+  });
+});
