@@ -29,7 +29,11 @@ import {
   type ReactNode,
 } from "react";
 
-import { clearFloatOwnerSession, saveFloatOwnerSession } from "@/lib/float-session";
+import {
+  clearFloatOwnerSession,
+  getFloatOwnerSession,
+  saveFloatOwnerSession,
+} from "@/lib/float-session";
 
 export type WalletLoginMethod = "google" | "apple" | "wallet";
 
@@ -39,7 +43,9 @@ type WalletContextValue = {
   authenticated: boolean;
   connecting: boolean;
   error: string | null;
-  login: (method?: WalletLoginMethod) => Promise<void>;
+  /** The account that has no vault yet, with the id its vault WOULD have. */
+  noVault: { owner: string; vault: string | null } | null;
+  login: (methodOrOwner?: WalletLoginMethod | string) => Promise<void>;
   disconnect: () => void;
   clearError: () => void;
 };
@@ -69,15 +75,53 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Set when the account is real but has no vault yet — an offer, not a failure. */
+  const [noVault, setNoVault] = useState<{ owner: string; vault: string | null } | null>(null);
 
-  const connect = useCallback(async () => {
+  /**
+   * Connect AS SOMEONE. The account id is an identity, not a credential.
+   *
+   * This dashboard signs nothing: every read is a keyless view call, and every
+   * owner action leaves as a `signLink` the user approves in their own wallet.
+   * So multi-tenancy needs to know WHO is asking, and nothing more — no wallet
+   * library, no session token, no new trust surface. Naming an account grants
+   * no authority, because there is no authority here to grant.
+   *
+   * Passing `owner` makes the proxy resolve that account's vault through the
+   * factory (`/v1/resolve`), instead of serving whichever vault the adapter
+   * happens to be configured with. Without it, every visitor saw the operator's
+   * demo vault and had no way to reach their own — which is exactly the
+   * confusion that started this work.
+   */
+  const connect = useCallback(async (asOwner?: string) => {
     setConnecting(true);
     setError(null);
+    setNoVault(null);
     try {
-      // The vault's own `owner` field is the identity here — asking the chain
-      // who owns it beats trusting a value typed into the browser.
-      const res = await fetch(`${API_BASE_URL}/v1/settings`, { cache: "no-store" });
-      const body = (await res.json()) as SettingsResponse;
+      const q = asOwner ? `?owner=${encodeURIComponent(asOwner)}` : "";
+      const res = await fetch(`${API_BASE_URL}/v1/settings${q}`, { cache: "no-store" });
+      // The NO_VAULT shape is the adapter's, not SettingsResponse's: it carries
+      // the owner it was asked about and the vault id that owner WOULD have.
+      const body = (await res.json()) as SettingsResponse & {
+        error?: string;
+        owner?: string;
+        vault?: string;
+        exists?: boolean;
+      };
+
+      /**
+       * NO VAULT IS NOT AN ERROR. It is the most common state a first-time
+       * visitor is in, and treating it as a failure turns the one moment
+       * someone is motivated into a dead end. The adapter already tells us the
+       * id their vault WOULD have, so the honest answer is "you do not have one
+       * yet, here is where it would live" — and an offer to create it.
+       */
+      if (res.status === 404 && body?.error === "NO_VAULT") {
+        setOwner(null);
+        setNoVault({ owner: body.owner ?? asOwner ?? "", vault: body.vault ?? null });
+        return;
+      }
+
       if (!res.ok) throw new Error(body?.error ?? `adapter returned ${res.status}`);
       if (!body.ownerWallet) throw new Error("the vault reported no owner");
 
@@ -103,15 +147,45 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  /**
+   * WHO ARE WE LOOKING AT? In priority order, and the order is the point.
+   *
+   *   1. `?owner=` in the URL     — makes a vault LINKABLE. Paste it in chat,
+   *                                 put it in a demo script, send it to a judge.
+   *   2. the saved session        — so a return visit does not re-ask.
+   *   3. nothing                  — show the prompt.
+   *
+   * (3) IS DELIBERATE AND IS A BEHAVIOUR CHANGE. It used to fall through to
+   * whatever vault the adapter was configured with, so a stranger landed on the
+   * OPERATOR'S vault and reasonably believed it was theirs. On a public
+   * dashboard that is not a convenience, it is showing one user another user's
+   * money. Asking is better than guessing wrong.
+   */
   useEffect(() => {
-    void connect();
+    const fromUrl =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("owner")?.trim()
+        : null;
+    const saved = fromUrl ? null : getFloatOwnerSession()?.ownerWallet;
+    const who = fromUrl || saved;
+    if (who) {
+      void connect(who);
+    } else {
+      setReady(true);
+    }
   }, [connect]);
 
+  /**
+   * "Log in" is naming an account. There is nothing to authenticate.
+   *
+   * The legacy `WalletLoginMethod` argument is still accepted so the existing
+   * menu keeps compiling, but a STRING is the useful call now: the account id
+   * whose vault to show.
+   */
   const login = useCallback(
-    async (_method?: WalletLoginMethod) => {
-      // No popup to open: nothing this dashboard does requires a signature.
-      // Retrying the vault read is the whole of "logging in".
-      await connect();
+    async (methodOrOwner?: WalletLoginMethod | string) => {
+      const asOwner = typeof methodOrOwner === "string" ? methodOrOwner.trim() : undefined;
+      await connect(asOwner || undefined);
     },
     [connect],
   );
@@ -119,7 +193,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(() => {
     setOwner(null);
     setError(null);
+    setNoVault(null);
     clearFloatOwnerSession();
+    // Drop `?owner=` too, or a reload silently signs back in as the account
+    // the user just chose to leave.
+    if (typeof window !== "undefined" && window.location.search.includes("owner=")) {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("owner");
+      window.history.replaceState({}, "", u.toString());
+    }
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
@@ -131,11 +213,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       authenticated: Boolean(owner),
       connecting,
       error,
+      noVault,
       login,
       disconnect,
       clearError,
     }),
-    [owner, ready, connecting, error, login, disconnect, clearError],
+    [owner, ready, connecting, error, noVault, login, disconnect, clearError],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

@@ -438,6 +438,23 @@ so drift fails two suites.
    the configured vault still cannot pay. It should fall back to the sole credential. Recovered by
    hand for now (entry copied, source untouched, backup at `.float/agent-keys.json.pre-recover.bak`).
    **Fix both in the next batch.**
+
+   **THE DASHBOARD IS MULTI-TENANT (2026-11-11).** `?owner=` in the URL, or an account id typed into
+   a new "Whose vault?" screen, and the existing proxy resolves that account's vault through the
+   factory. **Verified in a browser against the real mainnet vault:** `/?owner=test015.near` showed
+   `test015-near.usefloat.near`, TOTAL SPENT $1.00, 1 transaction (1 approved / 0 blocked), 24 USDC
+   left of 25 — the payment made an hour earlier. No wallet, no key: reads are keyless and owner
+   actions already leave as sign links, so this needed **identity, not authentication**.
+   **Behaviour change:** with no owner it now ASKS, where it used to fall through to whichever vault
+   the adapter was configured with — a stranger landing on the operator's vault believing it was
+   theirs. Nav chrome is hidden until identified, because those links led only back to the same
+   prompt and the "Connect" dropdown opened nothing. No vault yet is an OFFER (the derived address
+   plus a create link), not an error.
+   **Found while testing it: the ADAPTER had the same RPC-follows-network bug as the MCP** —
+   `NEAR_VAULT_RPC_URL ?? "https://test.rpc.fastnear.com"`, so `NEAR_VAULT_NETWORK=mainnet` alone
+   queried testnet and answered "account usefloat.near does not exist". **The deployed copy masked
+   it** because `deploy-skill-host.sh` sets the RPC explicitly; every hand-run instance failed.
+   Fixed and mutation-tested. **Not yet deployed.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
