@@ -363,6 +363,20 @@ so drift fails two suites.
    `vault_budget`. Converted ONLY for `NEAR_VAULT_TOKEN`: caps are stored per token and the server
    knows one token's decimals, so an unknown token keeps base units and says `units: "base"` rather
    than being scaled by a guess. **mcp 0.6.4 -> 0.6.5, needs publishing.**
+
+   **ERROR PATHS ARE THE UX — four defects, found by probing them (2026-11-10).** The happy-path
+   sweep was 12/12 while all four were wrong, and a user meets the unhappy path far more often.
+   (a) **`vault_plan_*` built signable payloads for nodes that do not exist** — `set_caps({nodeId:
+   999})` on a two-node vault returned a complete unsigned transaction; you sign, pay gas, and the
+   CONTRACT rejects it. All four node-scoped plan tools now refuse first and list the real nodes.
+   (b) `vault_budget(999)` said "node 999 has no limit for that token", **asserting the node
+   exists** — now distinguishes "no such node" from "node exists, no limit for THAT token" and
+   names which tokens it does have. (c) `vault_request(bogus)` returned a bare `null`,
+   indistinguishable from a failed call — now explains, including that a settled request may have
+   been **purged**, so absence is not proof the payment never happened. (d) A failed tree READ must
+   not block a plan: an unreachable chain is not evidence a node is missing.
+   `check-mcp-live.mjs` now asserts all five error paths on CONTENT; positive-controlled by
+   removing a guard. **mcp 0.6.5 -> 0.6.6, needs publishing.**
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

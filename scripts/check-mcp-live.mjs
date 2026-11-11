@@ -31,6 +31,11 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 
+// A newline ESCAPE inside a generated file is one backslash level away from
+// becoming a real newline and a syntax error. This is the fifth time in this
+// repo; verify-all.mjs solved it the same way.
+const LF = String.fromCharCode(10);
+
 const SERVER = resolve("packages/mcp/dist/server.js");
 
 const VAULT = process.env.NEAR_VAULT_CONTRACT ?? "test015-near.usefloat.near";
@@ -100,6 +105,57 @@ const CASES = [
   },
   { tool: "vault_plan_freeze", args: { nodeId: 1, frozen: false }, expect: (r) => plan(r) },
   { tool: "vault_plan_set_cooldown", args: { nodeId: 1, cooldownSec: 0 }, expect: (r) => plan(r) },
+];
+
+/**
+ * THE ERROR PATHS, because for most of these the message IS the product.
+ *
+ * The happy-path sweep above went 12/12 while all four of these were wrong.
+ * A user meets the unhappy path far more often than the happy one — wrong
+ * node id, token they have not set a cap for, a request that was purged — and
+ * each of those answered with something misleading or ambiguous:
+ *
+ *   vault_budget(999)        "node 999 has no limit for that token" — asserted
+ *                            the node EXISTS, sending the user to set a cap on
+ *                            a node that is not there
+ *   vault_request(bogus)     a bare `null`, indistinguishable from a failure
+ *   vault_plan_set_caps(999) a complete signable payload for a nonexistent
+ *                            node, refused by the contract AFTER paying gas
+ *
+ * Asserted on CONTENT, not on failing. These must answer clearly, not throw —
+ * an exception is also a bad answer here.
+ */
+const ERROR_CASES = [
+  {
+    tool: "vault_budget",
+    args: { nodeId: 999 },
+    want: /has no node 999/i,
+    why: "must not imply node 999 exists",
+  },
+  {
+    tool: "vault_budget",
+    args: { nodeId: 1, token: "not-a-real-token.near" },
+    want: /exists but has no limit/i,
+    why: "node exists, token does not — a different fact",
+  },
+  {
+    tool: "vault_request",
+    args: { requestId: "definitely-not-a-real-request" },
+    want: /No request/i,
+    why: "a bare null is indistinguishable from a failed call",
+  },
+  {
+    tool: "vault_plan_set_caps",
+    args: { nodeId: 999, limits: [{ token: TOKEN, dailyCap: "1", perTxCap: "1" }] },
+    want: /AFTER you signed/i,
+    why: "must refuse rather than hand over a payload the contract will reject",
+  },
+  {
+    tool: "vault_plan_freeze",
+    args: { nodeId: 42, frozen: true },
+    want: /AFTER you signed/i,
+    why: "same guard, every node-scoped plan tool",
+  },
 ];
 
 const SKIPPED = {
@@ -200,6 +256,15 @@ for (const { tool, args, expect } of CASES) {
   console.log(`  ${verdict === "ok" ? "ok  " : "FAIL"}  ${tool.padEnd(28)} ${detail}`);
 }
 
+console.log(LF + "  --- error paths (the message IS the product) ---");
+for (const { tool, args, want, why } of ERROR_CASES) {
+  const msg = await call("tools/call", { name: tool, arguments: args });
+  const body = String(msg.result?.content?.[0]?.text ?? msg.error?.message ?? "");
+  const ok = want.test(body);
+  if (!ok) failed++;
+  console.log(`  ${ok ? "ok  " : "FAIL"}  ${tool.padEnd(28)} ${ok ? why : body.replace(/\s+/g, " ").slice(0, 80)}`);
+}
+
 console.log();
 for (const [tool, why] of Object.entries(SKIPPED)) {
   console.log(`  skip  ${tool.padEnd(28)} ${why}`);
@@ -208,7 +273,7 @@ for (const [tool, why] of Object.entries(SKIPPED)) {
 proc.kill();
 
 if (failed) {
-  console.error(`\n  ${failed} of ${CASES.length} tool(s) did not work against a real vault.`);
+  console.error(`\n  ${failed} check(s) failed across ${CASES.length} happy + ${ERROR_CASES.length} error paths.`);
   process.exit(1);
 }
-console.log(`\nlive MCP check: ${CASES.length} tools work against a real vault`);
+console.log(`\nlive MCP check: ${CASES.length} tools work, ${ERROR_CASES.length} error paths explain themselves`);
