@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toBaseUnits, fromBaseUnits } from "./amounts.js";
+import { toBaseUnits, fromBaseUnits, humaniseTreeNode } from "./amounts.js";
 
 // The contract speaks base units (USDC has 6 decimals); a human says "12.50".
 // Every mis-scaling bug in this class is silent and off by a factor of ten, so
@@ -96,5 +96,70 @@ describe("fromBaseUnits", () => {
 
   it("handles a 0-decimal token", () => {
     expect(fromBaseUnits(7n, 0)).toBe("7");
+  });
+});
+
+/**
+ * `vault_tree` MUST agree with `vault_budget` about what a cap is.
+ *
+ * `get_tree` returns base units. `get_node_budget` is converted. So the same
+ * 25 USDC cap read through two tools rendered as "25000000" and "25", and
+ * nothing said which was which — in a demo that reads as a bug even though
+ * both were correct, and "25000000" invites the conclusion that the cap is
+ * enormous.
+ */
+describe("humaniseTreeNode", () => {
+  const USDC = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+  const cfg = { token: USDC, decimals: 6 };
+  const node = (limits: unknown[], sums?: [string, string][]) =>
+    ({ id: 0, label: "root", limits, ...(sums ? { child_cap_sum: sums } : {}) }) as never;
+
+  it("converts the configured token's caps to human units", () => {
+    const out = humaniseTreeNode(
+      node([{ token: USDC, daily_cap: "25000000", per_tx_cap: "10000000" }]),
+      cfg,
+    );
+    expect(out.limits![0]!.daily_cap).toBe("25");
+    expect(out.limits![0]!.per_tx_cap).toBe("10");
+    // Echoed so the base figure stays derivable — nothing is lost.
+    expect((out.limits![0] as { decimals?: number }).decimals).toBe(6);
+  });
+
+  it("converts child_cap_sum too, or the allocation line disagrees with the caps", () => {
+    const out = humaniseTreeNode(node([], [[USDC, "25000000"]]), cfg);
+    expect(out.child_cap_sum![0]![1]).toBe("25");
+  });
+
+  /**
+   * THE SAFETY PROPERTY. Caps are stored per token and this server knows the
+   * decimals of exactly one. Scaling an unknown token by 6 would print a
+   * number wrong by orders of magnitude while looking tidy — strictly worse
+   * than the raw figure it replaced.
+   */
+  it("leaves an UNKNOWN token in base units and says so", () => {
+    const out = humaniseTreeNode(
+      node([{ token: "wrap.near", daily_cap: "25000000", per_tx_cap: "10000000" }]),
+      cfg,
+    );
+    expect(out.limits![0]!.daily_cap).toBe("25000000");
+    const l = out.limits![0] as { decimals?: number | null; units?: string };
+    expect(l.decimals).toBeNull();
+    expect(l.units).toBe("base");
+  });
+
+  it("converts nothing when no token is configured", () => {
+    const out = humaniseTreeNode(
+      node([{ token: USDC, daily_cap: "25000000", per_tx_cap: "10000000" }]),
+      { decimals: 6 },
+    );
+    expect(out.limits![0]!.daily_cap).toBe("25000000");
+  });
+
+  it("passes an unparseable value through rather than blanking it", () => {
+    // A figure the contract produced that will not parse is a fact worth
+    // surfacing, not an exception to swallow into an empty string.
+    const out = humaniseTreeNode(node([{ token: USDC, daily_cap: "", per_tx_cap: "10000000" }]), cfg);
+    expect(out.limits![0]!.daily_cap).toBe("");
+    expect(out.limits![0]!.per_tx_cap).toBe("10");
   });
 });

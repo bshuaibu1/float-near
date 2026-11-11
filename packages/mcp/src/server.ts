@@ -55,7 +55,7 @@ import { topUpFor, paymentsAfterTopUp } from "./gas-math.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { fromBaseUnits, toBaseUnits } from "./amounts.js";
+import { fromBaseUnits, humaniseTreeNode, toBaseUnits, type TreeNode } from "./amounts.js";
 import {
   DEFAULT_GAS_TGAS,
   planAddNode,
@@ -333,7 +333,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.6.4" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.6.5" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -491,7 +491,14 @@ server.tool(
   "vault_tree",
   "Read the whole budget tree: every node, its caps, parent, bound agent account, cooldown and freeze state. No key required.",
   {},
-  async () => json(await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {})),
+  async () => {
+    const tree = (await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {})) as TreeNode[];
+    return json(
+      Array.isArray(tree)
+        ? tree.map((n) => humaniseTreeNode(n, { token: cfg.token, decimals: cfg.decimals }))
+        : tree,
+    );
+  },
 );
 
 server.tool(

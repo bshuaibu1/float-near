@@ -63,3 +63,77 @@ export function fromBaseUnits(units: bigint, decimals: number): string {
   const frac = (units % scale).toString().padStart(decimals, "0").replace(/0+$/, "");
   return frac ? `${whole}.${frac}` : whole.toString();
 }
+
+/**
+ * The contract speaks BASE UNITS; a person reading a budget does not.
+ *
+ * `get_tree` returns `daily_cap: "25000000"` for a 25 USDC cap, while
+ * `vault_budget` — reading the same number through `get_node_budget` — returns
+ * `"25"`. Two tools, one vault, one figure, two formats, and nothing said
+ * which was which. In a demo that reads as a bug even when both are correct,
+ * and `"25000000"` next to a `per_tx_cap` of `"10000000"` invites someone to
+ * conclude the caps are enormous.
+ *
+ * CONVERTED ONLY WHERE THE DECIMALS ARE KNOWN. Caps are stored PER TOKEN and a
+ * vault may hold limits for several, but this server knows the decimals of
+ * exactly one — `NEAR_VAULT_TOKEN_DECIMALS`, which describes
+ * `NEAR_VAULT_TOKEN`. Scaling some other token by 6 would print a number that
+ * is wrong by orders of magnitude while looking tidy, which is strictly worse
+ * than the raw figure it replaced. So a token we cannot vouch for keeps its
+ * base units and says so, rather than being guessed at.
+ *
+ * `decimals` is echoed on every converted entry so the base figure stays
+ * derivable; nothing is lost, it is only no longer the default reading.
+ */
+export interface TreeLimit {
+  token: string;
+  daily_cap: string;
+  per_tx_cap: string;
+}
+export interface TreeNode {
+  limits?: TreeLimit[];
+  child_cap_sum?: [string, string][];
+  [k: string]: unknown;
+}
+
+export function humaniseTreeNode(
+  node: TreeNode,
+  cfg: { token?: string; decimals: number },
+): TreeNode {
+  if (!node || typeof node !== "object") return node;
+  const known = (token: string) => !!cfg.token && token === cfg.token;
+  const human = (v: string) => {
+    // EXPLICIT SHAPE CHECK, because `BigInt("")` is `0n` rather than a throw —
+    // and `BigInt("  ")` is too. A try/catch alone therefore converted an
+    // empty or whitespace cap into "0", which is not a parse failure the
+    // reader can see: "0" is a meaningful budget, and the wrong one. Caught by
+    // its own test, which is the only reason this is not shipping.
+    if (typeof v !== "string" || !/^\d+$/.test(v)) return v;
+    try {
+      return fromBaseUnits(BigInt(v), cfg.decimals);
+    } catch {
+      // Still guarded: fromBaseUnits rejects decimals outside its own range,
+      // and a figure the contract produced is a fact worth surfacing
+      // unchanged rather than an exception to swallow.
+      return v;
+    }
+  };
+
+  const limits = node.limits?.map((l) =>
+    known(l.token)
+      ? { ...l, daily_cap: human(l.daily_cap), per_tx_cap: human(l.per_tx_cap), decimals: cfg.decimals }
+      : { ...l, decimals: null, units: "base" as const },
+  );
+
+  const childCapSum = node.child_cap_sum?.map(
+    ([token, amount]) =>
+      (known(token) ? [token, human(amount)] : [token, amount]) as [string, string],
+  );
+
+  return {
+    ...node,
+    ...(limits ? { limits } : {}),
+    ...(childCapSum ? { child_cap_sum: childCapSum } : {}),
+  };
+}
+
