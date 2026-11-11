@@ -349,6 +349,18 @@ so drift fails two suites.
    by omission** — `bindAgent` writes no `role`, `listRoles` filters on one, so a live funded agent
    was invisible and "no agents" was indistinguishable from "one unnamed agent". New `listAgents`
    reports it with `role: null`. **mcp 0.6.3 -> 0.6.4, needs publishing.**
+
+   **LIVE MCP SWEEP ADDED, and it found a second real bug (2026-11-10).** `scripts/check-mcp-live.mjs`
+   spawns the server over stdio against the REAL mainnet vault and calls every read + plan tool:
+   **12/12 ok**, `vault_pay`/`vault_create`/`vault_await_create`/`vault_add_role` skipped with
+   reasons. Outside `verify-all` (needs internet + a live vault); run it before a demo.
+   **Found: the keyring was never scoped to the configured vault.** `vault_roles` on the mainnet
+   vault listed `rudeisland4178-testnet…` and `work12-testnet-fleet…` — TESTNET accounts from old
+   experiments — and `selectRole("root")` would have handed `vault_pay` a testnet key to sign a
+   MAINNET payment. Fixed: all keyring reads filter on `agentId === cfg.vault`; mutation-tested
+   (filter removed -> 3 tests red). **Known rough edge, not yet fixed:** `vault_tree` returns
+   `daily_cap: "25000000"` (base units) where `vault_budget` returns `"25"` (human) for the same
+   number.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
