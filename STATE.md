@@ -323,6 +323,18 @@ so drift fails two suites.
      certbot on a valid cert, but the script REWRITES the vhost and `certbot --nginx --redirect` is
      what re-injects the TLS block — skipping it would leave a live HTTPS site serving plain HTTP.
      `VAULT`/`TOKEN` also default to EMPTY and must be carried off the live units, not re-derived.
+
+   **ADOPTION PATH ADDED 2026-11-10 — `vault_create` was being used to VERIFY.** A user who had
+   already created a vault said so, and the agent had nowhere to go: the skill only documented
+   greet -> link -> sign -> `vault_await_create`, and that tool REQUIRED a vault id the user does
+   not know (it is derived, not chosen). So the agent called `vault_create`, which **threw**
+   "already exists and test015.near owns it" — a refusal — and reported it to the user as
+   "Confirmed ✅". Right answer, reached by reinterpreting an error, and indistinguishable from the
+   throw that says the vault belongs to SOMEBODY ELSE. **Fixed:** `vault_await_create`'s `vault`
+   arg is now optional and derived from `owner` via the factory's `vault_id_for`; `SKILL.md` routes
+   "I already created it" straight to it and states that a `vault_create` throw is never a success.
+   Verified against the live vault: derived `test015-near.usefloat.near`, read `get_config.owner`
+   back = `test015.near`, LIVE.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

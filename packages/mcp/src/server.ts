@@ -320,7 +320,12 @@ server.tool(
   "vault_await_create",
   "After the user signs the create link, confirm the vault is live and VERIFY IT IS THEIRS. Reads the chain, so it needs no key. Call this instead of asking the user to paste their vault id back — vault_create already told you the address.",
   {
-    vault: z.string().describe("the derived vault id, from vault_create's `confirm.vault`"),
+    vault: z
+      .string()
+      .optional()
+      .describe(
+        "the derived vault id, from vault_create's `confirm.vault`. OMIT IT if the user already created their vault and you never built the link — it is derived from `owner` via the factory's own vault_id_for view.",
+      ),
     owner: z.string().describe("who it must belong to — compared against the vault's own get_config.owner"),
     network: z.enum(["mainnet", "testnet"]).optional(),
     timeoutSeconds: z
@@ -337,11 +342,48 @@ server.tool(
       configuredNetwork: cfg.network,
       override: process.env.NEAR_VAULT_RPC_URL,
     });
+
+    // DERIVE IT WHEN THE CALLER HAS NO LINK TO QUOTE.
+    //
+    // A user who says "I already created it" never gave this server a plan to
+    // read `confirm.vault` out of, and does not know their vault id — it is
+    // derived, not chosen. Requiring it here left the agent with only one tool
+    // that knows the derivation: `vault_create`. Measured 2026-11-10, that is
+    // exactly what an agent did, and `vault_create` THREW — correctly —
+    // "already exists and test015.near owns it". The agent then reported that
+    // refusal to the user as "Confirmed ✅". It reached the right answer by
+    // reinterpreting an error, which is luck, not a workflow.
+    //
+    // So adoption gets a first-class path: `owner` alone is enough. The
+    // derivation comes from the factory's `vault_id_for` view, the same single
+    // source `buildCreatePlan` uses and deliberately does not reimplement.
+    let target = vault;
+    if (!target) {
+      const fac = cfg.factory ?? FACTORY_BY_NETWORK[net];
+      if (!fac) {
+        return text(
+          `No factory is configured for ${net}, so the vault id cannot be derived. ` +
+            `Pass \`vault\` directly, or set NEAR_VAULT_FACTORY.`,
+        );
+      }
+      const derived = await viewFunction<string | null>(rpc, fac, "vault_id_for", {
+        owner,
+      }).catch(() => null);
+      if (!derived) {
+        return text(
+          `${fac} could not derive a vault id for ${owner} on ${net}. Either the ` +
+            `owner id is wrong, or it has no legal derived id (an implicit account ` +
+            `has none — the derived name exceeds 64 characters).`,
+        );
+      }
+      target = derived;
+    }
+
     const deadline = Date.now() + (timeoutSeconds ?? 90) * 1000;
 
     let appeared = false;
     for (;;) {
-      if (await accountExists(rpc, vault).catch(() => false)) {
+      if (await accountExists(rpc, target).catch(() => false)) {
         appeared = true;
         break;
       }
@@ -352,37 +394,37 @@ server.tool(
     if (!appeared) {
       return json({
         status: "NOT_YET",
-        vault,
+        vault: target,
         instruction:
-          `${vault} does not exist yet. That is not a failure — the user may not have ` +
+          `${target} does not exist yet. That is not a failure — the user may not have ` +
           `signed, or may have cancelled. Ask whether they approved it, and call this ` +
           `again. Do NOT tell them the vault is created.`,
       });
     }
 
     // THE OWNER READ IS THE POINT. Getting here only proves an account exists.
-    const config = await viewFunction<{ owner?: string }>(rpc, vault, "get_config", {}).catch(
+    const config = await viewFunction<{ owner?: string }>(rpc, target, "get_config", {}).catch(
       () => null,
     );
 
     if (!config || typeof config.owner !== "string") {
       return json({
         status: "UNVERIFIED",
-        vault,
+        vault: target,
         instruction:
-          `${vault} exists but its get_config could not be read, so whether it is ${owner}'s ` +
+          `${target} exists but its get_config could not be read, so whether it is ${owner}'s ` +
           `is UNKNOWN — not assumed. It may not be a Float vault at all. Do not point an ` +
-          `agent at it until this is resolved: near view ${vault} get_config`,
+          `agent at it until this is resolved: near view ${target} get_config`,
       });
     }
 
     if (config.owner !== owner) {
       return json({
         status: "NOT_YOURS",
-        vault,
+        vault: target,
         actualOwner: config.owner,
         instruction:
-          `${vault} exists but is owned by ${config.owner}, NOT ${owner}. The vault id ` +
+          `${target} exists but is owned by ${config.owner}, NOT ${owner}. The vault id ` +
           `derivation is not injective, so a different account can hold this address — ` +
           `whoever created it first. Do NOT configure anything against it. Create one ` +
           `under a label instead, which lands on a different address.`,
@@ -391,11 +433,11 @@ server.tool(
 
     return json({
       status: "LIVE",
-      vault,
+      vault: target,
       owner: config.owner,
       config,
       nextSteps: [
-        `Set NEAR_VAULT_CONTRACT=${vault} so every other tool reads this vault.`,
+        `Set NEAR_VAULT_CONTRACT=${target} so every other tool reads this vault.`,
         `vault_tree shows the budget; vault_budget shows what is left today.`,
         `Nothing can spend from it until an agent is bound with a budget — vault_add_role.`,
       ],
