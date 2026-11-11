@@ -156,8 +156,22 @@ if (!tools) fail("the built MCP server did not answer tools/list, so the skill c
  * talking about the group, and matching that against a real tool would fail
  * forever on a sentence that is correct.
  */
+const CONTRACT_METHODS = {
+  vault_id_for:
+    "a FACTORY view, called by vault_create and vault_await_create to derive an address",
+};
+
 const named = [...new Set([...skill.matchAll(/\bvault_[a-z_]+\b/g)].map((m) => m[0]))]
   .filter((n) => !n.endsWith("_"))
+  // `vault_`-prefixed names that are CONTRACT methods, not MCP tools. The
+  // scan matches any vault_* token because that is this server's tool
+  // convention, but the skill legitimately names factory/vault views when
+  // explaining where a value comes from, and flagging those would push
+  // someone to delete an accurate sentence to appease a check. Each entry
+  // carries its reason, for the same purpose it serves in
+  // check-create-url-params.mjs: a bare name is indistinguishable from
+  // someone silencing a real failure.
+  .filter((n) => !(n in CONTRACT_METHODS))
   .sort();
 const missing = named.filter((n) => !tools.includes(n));
 if (missing.length) {

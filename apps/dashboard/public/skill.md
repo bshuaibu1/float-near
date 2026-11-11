@@ -294,6 +294,27 @@ is shown the public key and must confirm it before the wallet opens. Your
 private key is written to `.float/agent-keys.json` — never printed, and never
 something to paste back into chat.
 
+**FIRST, CHECK WHICH SITUATION YOU ARE IN.** There are two, and only one of
+them starts with the greeting:
+
+| they say | do |
+|---|---|
+| "I want a vault" / nothing exists yet | the greeting below |
+| **"I already created it"**, or a vault id appears | **`vault_await_create({ owner })` — nothing else** |
+
+**NEVER CALL `vault_create` TO FIND OUT WHETHER A VAULT EXISTS.** It is a
+creation tool. When the vault is already there it THROWS — "already exists and
+<owner> owns it" — and that is a refusal, not a confirmation. Measured
+2026-11-10: an agent with no adoption path called it anyway, got that error,
+and reported it to the user as "Confirmed ✅". It happened to be right, which
+is worse than being wrong, because nothing distinguished it from the case where
+the throw says the vault belongs to SOMEBODY ELSE.
+
+`vault_await_create` takes `owner` alone — it derives the address from the
+factory's own `vault_id_for` and reads `get_config.owner` back. That is the
+tool that answers "is it there, and is it mine", and it answers with four
+outcomes rather than a thrown string.
+
 **SEND EXACTLY THIS, AND NOTHING ELSE.** Not a paraphrase, not an expanded
 version, not with the trust model or the storage-stake mechanics added:
 
@@ -387,6 +408,11 @@ refuses below it.
 
 Omit a cap and the page's own default applies (25/10 mainnet, 100/10 testnet) —
 don't substitute one yourself, or two places decide the same number.
+
+**A THROW FROM `vault_create` IS NEVER A SUCCESS.** It refuses in three
+different ways and only one of them is benign: the vault is yours, the vault is
+someone ELSE's (the derivation is not injective, so this is real), or the owner
+could not be read at all. Relay which one. Do not compress them into a tick.
 
 **Then verify it yourself. Do not ask them to paste the vault id back** — you
 already derived it. When they say they have signed, call `vault_await_create`
