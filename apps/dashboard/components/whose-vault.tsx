@@ -24,10 +24,10 @@
 import { useState, type FormEvent } from "react";
 import { useWallet } from "./wallet-provider";
 
-const CARD = "#ffffff";
-const LINE = "#e6e6e3";
-const INK = "#1a1a18";
-const MUTED = "#6b6b66";
+// The shared tokens, not hand-picked hexes. A near-but-not-equal grey is how
+// a design drifts one component at a time, and `check-color-tokens.mjs` is in
+// the gate precisely because that already happened here once.
+import { CARD, DANGER, INK, LINE, MUTED } from "@/lib/colors";
 
 /** Where a user with no vault goes. Carries no owner — the page derives the
  *  address from whichever wallet they connect, which is the honest flow. */
@@ -100,7 +100,7 @@ export function WhoseVault() {
         </form>
 
         {localError ? (
-          <p className="mt-3 text-sm" style={{ color: "#b4442e" }}>
+          <p className="mt-3 text-sm" style={{ color: DANGER }}>
             {localError}
           </p>
         ) : null}
@@ -110,7 +110,7 @@ export function WhoseVault() {
         {noVault ? (
           <div
             className="mt-5 rounded-lg p-4 text-sm"
-            style={{ background: "#faf9f6", border: `1px solid ${LINE}`, color: INK }}
+            style={{ background: "var(--canvas, #FAFAF9)", border: `1px solid ${LINE}`, color: INK }}
           >
             <p className="font-medium">{noVault.owner} does not have a vault yet.</p>
             {noVault.vault ? (
@@ -140,7 +140,7 @@ export function WhoseVault() {
             "there is nothing there" are different facts and conflating them is
             how someone concludes their vault is gone. */}
         {error && !noVault ? (
-          <p className="mt-4 text-sm" style={{ color: "#b4442e" }}>
+          <p className="mt-4 text-sm" style={{ color: DANGER }}>
             {error}
           </p>
         ) : null}
