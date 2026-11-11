@@ -90,6 +90,23 @@ type ActivityItem = {
   blockMessage?: string | null;
   status: string;
 };
+/**
+ * Whether REFUSALS have been scanned for this vault.
+ *
+ * A blocked payment is never stored on chain — the contract emits an event and
+ * returns the reason, deliberately, so an agent cannot inflate the vault's
+ * storage bill by spamming refusals. Nothing can count them until the event log
+ * is read.
+ *
+ * So "0 blocked" means either "none happened" or "nobody looked", and those are
+ * OPPOSITE facts. The adapter has always computed the distinction and sent it as
+ * `blockedCoverageNote`; the Activity page renders it and this one did not —
+ * while being the landing page, and printing the 0 in red as though it were a
+ * measurement. Measured 2026-11-11: a 15 USDC payment was refused
+ * PARENT_PER_TX_LIMIT and the Overview went on showing "1 approved / 0 blocked".
+ */
+type BlockedCoverage = { scanned: boolean; short?: string; text?: string } | null;
+
 type TransactionStats = { total: number; approved: number; blocked: number; failed: number; other: number; };
 
 function formatTime(iso: string): string {
@@ -539,6 +556,16 @@ export default function Overview() {
   // Lifetime totals from per-agent fields (accurate all-time)
   const totalSpent     = agents.reduce((s, a) => s + parseFloat(a.lifetimeSpent || "0"), 0);
   const txStats        = data?.transactionStats;
+  /**
+   * `0 blocked` IS NOT A MEASUREMENT UNTIL SOMEONE HAS LOOKED.
+   *
+   * The adapter sends `blockedCoverageNote` precisely so this number can say
+   * which it is. Activity renders it; this page did not, and this is the page
+   * people land on.
+   */
+  const coverage = (data as { blockedCoverageNote?: BlockedCoverage } | null)
+    ?.blockedCoverageNote ?? null;
+  const refusalsUnknown = coverage ? coverage.scanned === false : false;
   const txCount        = txStats?.total ?? agents.reduce((s, a) => s + (a.lifetimePayments ?? 0), 0);
   const txApproved     = txStats?.approved ?? activity.filter(r => APPROVED.includes(r.status?.toLowerCase())).length;
   /**
@@ -807,7 +834,17 @@ export default function Overview() {
           </div>
           <p className="text-[12px] text-muted">
             {txCount > 0
-              ? <><span style={{ color:SUCCESS }}>{txApproved} approved</span> <span className="text-muted">/</span> <span style={{ color:DANGER }}>{txBlocked} blocked{txFailed > 0 ? ` / ${txFailed} failed` : ""}</span></>
+              ? <>
+                  <span style={{ color:SUCCESS }}>{txApproved} approved</span>{" "}
+                  <span className="text-muted">/</span>{" "}
+                  {/* NOT RED WHEN IT IS UNKNOWN. Red asserts a measurement, and
+                      an unscanned vault has not measured anything — the figure
+                      is "nobody looked", not "none happened". */}
+                  <span style={{ color: refusalsUnknown ? MUTED : DANGER }}>
+                    {refusalsUnknown ? "refusals not scanned" : `${txBlocked} blocked`}
+                    {txFailed > 0 ? ` / ${txFailed} failed` : ""}
+                  </span>
+                </>
               : "no activity yet"
             }
           </p>
