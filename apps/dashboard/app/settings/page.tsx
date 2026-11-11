@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { CARD, CHIP, DANGER, DANGER_BG, INK, LINE, SUCCESS, SUCCESS_BG } from "@/lib/colors";
+import { floatFetch } from "@/lib/float-fetch";
 import { ExternalLink } from "lucide-react";
 import { signLink, type OwnerPayload } from "@/lib/sign-link";
 import { useWallet } from "@/components/wallet-provider";
@@ -67,7 +68,7 @@ export default function Settings() {
 
   useEffect(() => {
     if (!walletAddress && !hasOwnerSession()) { return; }
-    fetch(`${API_BASE_URL}/v1/settings${getOwnerQuery(walletAddress)}`, {
+    floatFetch(`/v1/settings${getOwnerQuery(walletAddress)}`, {
       cache: "no-store",
       headers: getOwnerAuthHeaders(),
     })
@@ -78,7 +79,7 @@ export default function Settings() {
 
   // The signing link has to name the right network.
   useEffect(() => {
-    fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" })
+    floatFetch(`/v1/vault-info`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { network?: string } | null) => {
         if (d?.network) setNetwork(d.network);
@@ -103,7 +104,7 @@ export default function Settings() {
     setKilling(true);
     setKillError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/v1/owner-plan`, {
+      const res = await floatFetch(`/v1/owner-plan`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "pause", paused: true }),

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useMemo } from "react";
 import { CANVAS, CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
+import { floatFetch } from "@/lib/float-fetch";
 import { useWallet } from "@/components/wallet-provider";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
 import {
@@ -735,7 +736,7 @@ export default function Activity() {
     short?: string;
   } | null>(null);
   useEffect(() => {
-    fetch(`${API_BASE_URL}/v1/dashboard`, { cache: "no-store" })
+    floatFetch(`/v1/dashboard`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { blockedCoverageNote?: typeof coverage } | null) => {
         // A failed read leaves it null, which renders the "not scanned"
@@ -746,7 +747,7 @@ export default function Activity() {
       .catch(() => setCoverage(null));
   }, []);
   useEffect(() => {
-    fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" })
+    floatFetch(`/v1/vault-info`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { explorerBase?: string; vaultId?: string } | null) => {
         if (!d) return;
@@ -773,7 +774,7 @@ export default function Activity() {
     const params = new URLSearchParams(getOwnerQuery(ownerWallet).replace(/^\?/, ""));
     params.set("limit", String(FETCH_LIMIT));
     params.set("offset", String(offset));
-    fetch(`${API_BASE_URL}/v1/spend-history?${params}`, {
+    floatFetch(`/v1/spend-history?${params}`, {
       cache: "no-store",
       headers: getOwnerAuthHeaders(),
     })

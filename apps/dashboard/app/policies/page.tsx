@@ -13,6 +13,7 @@ import {
   showsCustomInput,
 } from "@/lib/cooldown";
 import { appliedStatus, type Expectation, type PolicySnapshot } from "@/lib/applied";
+import { floatFetch } from "@/lib/float-fetch";
 import { signLink } from "@/lib/sign-link";
 import { useChainWatch, useToast } from "@/lib/use-chain-watch";
 import { Toast, WatchStatus } from "@/components/toast";
@@ -153,8 +154,8 @@ export default function Policies() {
   const load = useCallback(async () => {
     try {
       const [dashRes, infoRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/v1/dashboard`, { cache: "no-store" }),
-        fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" }),
+        floatFetch(`/v1/dashboard`, { cache: "no-store" }),
+        floatFetch(`/v1/vault-info`, { cache: "no-store" }),
       ]);
       if (!dashRes.ok) throw new Error(`dashboard returned HTTP ${dashRes.status}`);
       const d = (await dashRes.json()) as { agents?: ApiAgent[] };
@@ -301,7 +302,7 @@ export default function Policies() {
 
   const postPlan = useCallback(
     async (action: string, extra: Record<string, unknown>) => {
-      const res = await fetch(`${API_BASE_URL}/v1/owner-plan`, {
+      const res = await floatFetch(`/v1/owner-plan`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

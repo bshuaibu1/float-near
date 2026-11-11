@@ -5,13 +5,13 @@ import Link from "next/link";
 import { Check, Copy, ExternalLink } from "lucide-react";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
 import { signLink, type OwnerPayload } from "@/lib/sign-link";
+import { floatFetch } from "@/lib/float-fetch";
 import { appliedStatus, type Expectation, type PolicySnapshot } from "@/lib/applied";
 import { useChainWatch, useToast } from "@/lib/use-chain-watch";
 import { Toast, WatchStatus } from "@/components/toast";
 import { DANGER, DANGER_BG, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/colors";
 import { InfoDot } from "@/components/ui/info-dot";
 import { agentHue, agentSeed } from "@/lib/agent-hue";
-import { DangerZone } from "@/components/danger-zone";
 import { BindAgent } from "@/components/bind-agent";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
@@ -125,8 +125,8 @@ export default function AgentsPage() {
   const load = useCallback(async () => {
     try {
       const [dashRes, infoRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/v1/dashboard`, { cache: "no-store" }),
-        fetch(`${API_BASE_URL}/v1/vault-info`, { cache: "no-store" }),
+        floatFetch(`/v1/dashboard`, { cache: "no-store" }),
+        floatFetch(`/v1/vault-info`, { cache: "no-store" }),
       ]);
       if (!dashRes.ok) throw new Error(`dashboard returned HTTP ${dashRes.status}`);
       const d = (await dashRes.json()) as { agents?: ApiAgent[] };
@@ -148,7 +148,7 @@ export default function AgentsPage() {
     async (a: ApiAgent) => {
       const frozen = a.status !== "killed";
       try {
-        const res = await fetch(`${API_BASE_URL}/v1/owner-plan`, {
+        const res = await floatFetch(`/v1/owner-plan`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ action: "freeze", nodeId: nodeIdOf(a, agents), frozen }),
@@ -186,7 +186,7 @@ export default function AgentsPage() {
   const buildTeardownStep = useCallback(
     async (body: Record<string, unknown>, label: string, from: string, to: string) => {
       try {
-        const res = await fetch(`${API_BASE_URL}/v1/owner-plan`, {
+        const res = await floatFetch(`/v1/owner-plan`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
@@ -531,7 +531,22 @@ export default function AgentsPage() {
           */}
           <BindAgent onPlan={buildTeardownStep} />
 
-          {info ? <DangerZone info={info} onPlan={buildTeardownStep} /> : null}
+          {/*
+            THE DANGER ZONE IS GONE FROM THE UI, deliberately.
+
+            Closing a vault is three steps and the last one needs a command a
+            wallet cannot produce — a signature whose signer_id is the VAULT.
+            So the panel could never finish the job it offered; it walked a
+            user to step three and handed them a terminal command. On a
+            dashboard whose whole claim is "nothing here can move funds", the
+            most prominent destructive control was one that could not complete.
+
+            Teardown is still fully supported where it actually works:
+              npx -p @floatonnear/create-float float-exit
+              vault_teardown_report   (what comes back, what strands)
+            Both are documented in SKILL.md. Nothing was removed from the
+            product -- only from the place it could not be finished.
+          */}
 
           <p className="mt-4 text-[11.5px] leading-5 text-muted">
             {info?.strictAllocation
