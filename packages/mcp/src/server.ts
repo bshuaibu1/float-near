@@ -333,7 +333,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.6.5" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.6.6" }, { instructions: INSTRUCTIONS });
 
 // ----------------------------------------------------------------- reads
 
@@ -515,7 +515,24 @@ server.tool(
       token: tokenFor(token),
       day: day ?? null,
     })) as Record<string, string> | null;
-    if (!b) return text(`node ${nodeId} has no limit for that token`);
+    if (!b) {
+      // "no limit for that token" ASSERTED THAT THE NODE EXISTS. Asked about
+      // node 999 of a two-node vault it said the same thing, which sends a
+      // user off to set a limit on a node that is not there. Two different
+      // facts had one message.
+      const missing = await assertNode(nodeId);
+      if (missing) return text(noNodeForRead(nodeId, missing.known));
+      const tree = (await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {}).catch(
+        () => null,
+      )) as { id: number; limits?: { token: string }[] }[] | null;
+      const here = tree?.find((n) => n.id === nodeId)?.limits?.map((l) => l.token) ?? [];
+      return text(
+        `Node ${nodeId} exists but has no limit for ${tokenFor(token)}. ` +
+          (here.length
+            ? `It has limits for: ${here.join(", ")}.`
+            : `It has no limits for any token, so it can pay nothing — set one with vault_plan_set_caps.`),
+      );
+    }
     const d = cfg.decimals;
     return json({
       node_id: nodeId,
@@ -532,8 +549,25 @@ server.tool(
   "vault_request",
   "Read one stored payment request: status, reason code, amount, the ancestor chain it charged, and the UTC day it was reserved against. No key required.",
   { requestId: z.string() },
-  async ({ requestId }) =>
-    json(await viewFunction(cfg.rpcUrl, requireVault(), "get_request", { request_id: requestId })),
+  async ({ requestId }) => {
+    const r = await viewFunction(cfg.rpcUrl, requireVault(), "get_request", {
+      request_id: requestId,
+    });
+    // A BARE `null` IS AMBIGUOUS and this tool returned one. To a reader it is
+    // indistinguishable from a failed call, and to an agent it is a value to
+    // guess about rather than a fact to relay. Requests are also PURGEABLE, so
+    // "not found" has two very different causes and the honest answer names
+    // both instead of implying the payment never happened.
+    if (r === null || r === undefined) {
+      return text(
+        `No request "${requestId}" on ${cfg.vault}. Either the id is wrong, or the ` +
+          `request was settled and later removed by purge_settled — purging is how a ` +
+          `vault reclaims storage, so an OLD successful payment can legitimately be gone. ` +
+          `vault_tree and vault_budget still reflect what it spent.`,
+      );
+    }
+    return json(r);
+  },
 );
 
 server.tool(
@@ -978,11 +1012,61 @@ server.tool(
     renderPlan(planAddNode(requireVault(), parent, label, limits, cooldownSec, recipients)),
 );
 
+/**
+ * Refuse to build a signable payload for a node that does not exist.
+ *
+ * PLAN TOOLS HANDED OUT PAYLOADS FOR ANY `nodeId`. Measured 2026-11-10:
+ * `vault_plan_set_caps({nodeId: 999})` against a two-node vault returned a
+ * cheerful summary — "Set node 999 caps to … 1/day" — and a complete unsigned
+ * transaction. The user approves it in their wallet, pays the gas, and the
+ * CONTRACT rejects it. The cost is small and the experience is not: the only
+ * signal anything was wrong arrives after a signature, from a layer the user
+ * cannot read.
+ *
+ * A plan tool's entire job is to produce something safe to sign. "Safe to
+ * sign" has to include "addresses something real".
+ *
+ * Costs one view call per plan. That is the right trade against a wasted
+ * signature, and these are human-speed operations — nobody plans in a loop.
+ *
+ * Returns the node ids that DO exist, because "999 does not exist" without
+ * them just prompts another guess.
+ */
+async function assertNode(nodeId: number): Promise<{ known: string } | null> {
+  const tree = (await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {}).catch(
+    () => null,
+  )) as { id: number; label?: string }[] | null;
+  // A failed READ must not block a plan: the chain being briefly unreachable
+  // is not evidence the node is missing, and refusing here would turn a blip
+  // into "your node does not exist".
+  if (!Array.isArray(tree)) return null;
+  if (tree.some((n) => n.id === nodeId)) return null;
+  // RETURNS THE FACTS, NOT A SENTENCE. The first version returned prose and
+  // the read path tried to reuse it by regex-stripping the signing clause,
+  // which left "no node 999, Nodes: ...". Composing at the call site costs two
+  // lines and cannot produce a mangled sentence.
+  return { known: tree.map((n) => `${n.id}${n.label ? ` (${n.label})` : ""}`).join(", ") };
+}
+
+/** For a PLAN: the cost of getting this wrong is a wasted signature. */
+const noNodeForPlan = (nodeId: number, known: string) =>
+  `This vault has no node ${nodeId}, so that payload would be refused by the ` +
+  `contract AFTER you signed and paid for it. Nodes: ${known}.`;
+
+/** For a READ: nothing is at stake, so just say what exists. */
+const noNodeForRead = (nodeId: number, known: string) =>
+  `This vault has no node ${nodeId}. Nodes: ${known}.`;
+
 server.tool(
   "vault_plan_set_caps",
   "Build an UNSIGNED payload to change a node's daily and per-payment caps. Not signed by this server.",
   { nodeId: z.number().int().min(0), limits: limitShape },
-  async ({ nodeId, limits }) => renderPlan(planSetNodeCaps(requireVault(), nodeId, limits)),
+  async ({ nodeId, limits }) => {
+    const bad = await assertNode(nodeId);
+    return bad
+      ? text(noNodeForPlan(nodeId, bad.known))
+      : renderPlan(planSetNodeCaps(requireVault(), nodeId, limits));
+  },
 );
 
 server.tool(
@@ -1007,7 +1091,12 @@ server.tool(
   "vault_plan_freeze",
   "Build an UNSIGNED payload to freeze or unfreeze a node. Freezing blocks the node AND its whole subtree. Not signed by this server.",
   { nodeId: z.number().int().min(0), frozen: z.boolean() },
-  async ({ nodeId, frozen }) => renderPlan(planFreezeNode(requireVault(), nodeId, frozen)),
+  async ({ nodeId, frozen }) => {
+    const bad = await assertNode(nodeId);
+    return bad
+      ? text(noNodeForPlan(nodeId, bad.known))
+      : renderPlan(planFreezeNode(requireVault(), nodeId, frozen));
+  },
 );
 
 server.tool(
@@ -1015,15 +1104,24 @@ server.tool(
   "Build an UNSIGNED payload to set a node's payee allowlist. This REPLACES the inherited list rather than adding to it; pass null to inherit. Not signed by this server.",
   { nodeId: z.number().int().min(0), recipients: z.array(z.string()).nullable() },
   async ({ nodeId, recipients }) =>
-    renderPlan(planSetRecipients(requireVault(), nodeId, recipients)),
+    (async () => {
+      const bad = await assertNode(nodeId);
+      return bad
+        ? text(noNodeForPlan(nodeId, bad.known))
+        : renderPlan(planSetRecipients(requireVault(), nodeId, recipients));
+    })(),
 );
 
 server.tool(
   "vault_plan_set_cooldown",
   "Build an UNSIGNED payload to set the minimum seconds between a node's payments. Not signed by this server.",
   { nodeId: z.number().int().min(0), cooldownSec: z.number().int().min(0) },
-  async ({ nodeId, cooldownSec }) =>
-    renderPlan(planSetCooldown(requireVault(), nodeId, cooldownSec)),
+  async ({ nodeId, cooldownSec }) => {
+    const bad = await assertNode(nodeId);
+    return bad
+      ? text(noNodeForPlan(nodeId, bad.known))
+      : renderPlan(planSetCooldown(requireVault(), nodeId, cooldownSec));
+  },
 );
 
 server.tool(
