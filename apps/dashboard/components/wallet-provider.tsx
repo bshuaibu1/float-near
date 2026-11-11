@@ -1,5 +1,6 @@
-import { floatFetch } from "@/lib/float-fetch";
 "use client";
+
+import { floatFetch } from "@/lib/float-fetch";
 
 /**
  * NEAR replacement for Float's Phantom/Solana wallet provider.

@@ -52,3 +52,6 @@ packages/create-float/SKILL.md
 # .claude/worktrees holds a FULL COPY of this repository - 1.2 GB measured -
 # so committing this directory would add the repo to itself.
 .claude/
+
+# the gate's own dashboard build output (scripts/verify-all.mjs)
+apps/dashboard/.next-verify/

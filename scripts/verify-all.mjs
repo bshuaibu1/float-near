@@ -46,6 +46,34 @@ const steps = [
     mustNotMatch: /error TS/,
   },
   {
+    /**
+     * THE DASHBOARD MUST ACTUALLY BUILD, not merely typecheck.
+     *
+     * `tsc` and `next build` disagree about what is an error, and the gap is
+     * not academic. Measured 2026-11-11: an import landed above the
+     * `"use client"` directive — invisible to tsc, which does not know the
+     * directive exists, and FATAL to the build:
+     *
+     *   The "use client" directive must be placed before other expressions.
+     *
+     * The gate was green, the typecheck was green, and the DEPLOY failed on
+     * the box. A gate that checks something adjacent to what production does
+     * reports on a program nobody runs.
+     *
+     * Costs ~40s, which the deploy pays anyway; paying it here means finding
+     * out before the VPS does.
+     *
+     * A SEPARATE DIST DIR so this cannot race the dev server's `.next` or the
+     * deploy's — a build gate that corrupts a running server is worse than no
+     * build gate.
+     */
+    name: "dashboard builds",
+    cmd: "npx next build",
+    cwd: "apps/dashboard",
+    env: { NEXT_DIST_DIR: ".next-verify" },
+    mustNotMatch: /Failed to compile|Build error/,
+  },
+  {
     name: "adapter typecheck",
     cmd: "npx tsc --noEmit -p tsconfig.json",
     cwd: "packages/float-adapter",
@@ -381,7 +409,14 @@ for (const s of steps) {
   let out = "";
   let code = 0;
   try {
-    out = execSync(s.cmd, { cwd: s.cwd, stdio: "pipe", encoding: "utf8" });
+    out = execSync(s.cmd, {
+      cwd: s.cwd,
+      stdio: "pipe",
+      encoding: "utf8",
+      // A step may need its own environment -- the dashboard build writes to a
+      // SEPARATE dist dir so it cannot race the dev server or the deploy.
+      env: s.env ? { ...process.env, ...s.env } : process.env,
+    });
   } catch (e) {
     code = e.status ?? 1;
     out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
