@@ -52,6 +52,8 @@ state changes, and re-stamp the commit line above.
   adapter **0.3.0**. Published npm is still mcp 0.6.5, which has none of the mainnet default or
   the plain-English refusals, so anyone following the README's `npx` today gets the old footgun.
   Dry-runs pass and the tarball was checked to contain the new UX.
+- GitHub description updated (the old one still advertised the retired Chain Signatures/Base
+  rail). Repo has no topics and no website link yet — `usefloat.xyz` is live.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
   create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
   public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
