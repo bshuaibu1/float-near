@@ -519,6 +519,17 @@ so drift fails two suites.
    **Also: `apps/dashboard/lib/proxy-gate.ts` was found to be 3,970 NUL bytes** — power-loss
    corruption during load shedding, metadata written and data not. Restored from git; a full scan
    found no other file affected.
+
+   **CLOSING A VAULT NOW POINTS AT THE FRIENDLY CLI (2026-11-11).** `vault_teardown_report` emitted
+   `NETWORK=… VAULT=… OWNER=… TOKEN=… CONFIRM_MAINNET=1 EXPECT_TOKENS=1 node
+   scripts/teardown-vault.mjs` — six env vars, a path only someone who cloned the repo has, no dry
+   run, and a permanent delete at the end. For the one action a user takes when already nervous,
+   that was the worst available interface. **`float-exit` already shipped for exactly this**:
+   `npx -p @floatonnear/create-float float-exit --owner X --vault Y --dry-run`, two flags, numbered
+   steps `[0]`–`[6]`, "would" phrasing for everything not yet done, and an explicit "This is
+   irreversible" before the delete. The report now emits the DRY RUN first and the destructive form
+   separately, so copying the first thing you see cannot delete a vault. **I spent a round fixing
+   the hard road's ergonomics before checking whether the easy one existed.** mcp 0.8.0 -> 0.8.1.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
