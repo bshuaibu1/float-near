@@ -1,4 +1,4 @@
-<!-- STAMP commit=5f53100 date=2026-11-12 -->
+<!-- STAMP commit=5052b20 date=2026-11-12 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -93,6 +93,12 @@ state changes, and re-stamp the commit line above.
   `https://registry.npmjs.org/<pkg>` directly, or `npm cache clean --force` first.
 - GitHub description updated (the old one still advertised the retired Chain Signatures/Base
   rail). Repo has no topics and no website link yet — `usefloat.xyz` is live.
+- **Cold-install feedback acted on 2026-11-12** (a first-time install against
+  `usefloat.xyz/skill.md`): the documented `claude mcp add float -- npx …` **fails on Windows
+  PowerShell** (swallows `--`, `claude` then rejects `-y`) — fixed to `"--"`, tested; the tool
+  count said ~23 against a real **27** and is now test-pinned; the ~29 KB file gets lossily
+  summarised by fetchers so the JSON config block is hoisted to the top; and the `float` name
+  collides with `@usefloat/mcp`.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
   create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
   public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
