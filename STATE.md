@@ -542,6 +542,20 @@ so drift fails two suites.
    and says so, because scaling by a guessed 6 prints a figure wrong by orders of magnitude while
    looking tidy. **Mirrored from the MCP's `token-meta.ts`, not imported** — siblings published
    independently, same reason `check-gas-math.mjs` exists. create-float 0.6.1 -> 0.6.2.
+
+   **`float-retire` SHIPPED — retiring one agent without burning its gas (2026-11-11).**
+   Unbinding leaves the agent's NEP-611 gas key funded; the obvious tidy-up is to delete the
+   orphaned key, and **`DeleteKey` on a funded gas key BURNS the balance and reports SUCCESS**
+   (measured 0.08322 NEAR). So the correct path was one nobody would find and the natural path
+   destroyed money. `float-retire --retire <role> --owner X --vault Y --dry-run` recovers the gas,
+   **re-reads the key to confirm it is empty**, and only then unbinds — stopping without revoking
+   anything if the withdrawal fails, because a working agent can be retried while an unbound key
+   holding stranded NEAR is money nobody revisits. Takes a ROLE, scoped to the vault (role names
+   are not unique across vaults). Verified against the live mainnet agent: node #1, 0.118916 NEAR,
+   dry run writes nothing; four refusal paths each name the fix. `vault_plan_unbind_agent`'s
+   description now points at it. **The lifecycle story is now: freeze (wallet, reversible) ->
+   retire (CLI, recovers gas, permanent) -> exit (CLI, closes the vault).**
+   create-float 0.6.2 -> 0.7.0 (new bin).
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
