@@ -9,7 +9,7 @@
     "float-exit": "bin/float-exit.mjs",
     "float-agent": "bin/float-agent.mjs",
     "float-topup": "bin/float-topup.mjs",
-    "float-retire": "./bin/float-retire.mjs"
+    "float-retire": "bin/float-retire.mjs"
   },
   "files": [
     "bin/",

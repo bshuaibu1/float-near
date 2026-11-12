@@ -43,6 +43,7 @@ import { mcpTargets, writeMcpConfigs } from "./mcp-config.mjs";
 import { handoffLinks, handoffLines } from "./handoff.mjs";
 import { vaultFunding } from "./funding.mjs";
 import { rotationPlan, applyRotation, repointedCredential } from "./rotate-key.mjs";
+import { agentAdvice } from "./agent-advice.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -1082,13 +1083,69 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
       );
     }
 
-    // ---- 9. What is still a manual step, stated plainly.
+    // ---- 9. CAN THIS VAULT ACTUALLY PAY? Asked of the chain, not assumed.
+    //
+    // THE WIZARD NEVER BINDS A PAYING AGENT. `--agents` refuses for any
+    // non-zero value (create_agent_account was removed from the contract), and
+    // the default tree is flat, so nothing here installs a spending key. The
+    // epilogue nonetheless ended with "What to try first: spend from an agent
+    // and watch the budget tree charge every level above it" — advice for an
+    // agent that does not exist.
+    //
+    // Worse, the BROWSER path binds one inside the creation transaction. So the
+    // two front doors disagree about whether a new vault can pay, and only the
+    // CLI one is silent about it. A user following this wizard to the end
+    // reaches a working vault, a configured MCP, and a `vault_pay` that cannot
+    // succeed, with nothing having said why.
+    //
+    // READ THE CHAIN rather than assuming "the wizard did not bind one, so
+    // there is none": a resumed run, or a user who ran `float-agent` first,
+    // already has a key, and telling them to add a second would be wrong. A
+    // bound agent is a NEP-611 gas key on the vault restricted to
+    // `request_payment`.
+    const gasKeyCount = await (async () => {
+      try {
+        const keys = (await provider.viewAccessKeyList({
+          accountId: vault,
+          blockQuery: { finality: "final" },
+        })).keys;
+        return keys.filter((k) => k.access_key?.permission?.GasKeyFunctionCall).length;
+      } catch {
+        // Unknown beats a confident wrong answer in either direction: claiming
+        // an agent exists hides the next step, and claiming none exists tells a
+        // working setup to add a redundant key. `null` prints the neutral form.
+        return null;
+      }
+    })();
+
+    // ONE IMPLEMENTATION, in ./agent-advice.mjs with tests beside it. This was
+    // inline and therefore unexecutable in a test, which is how the old advice
+    // ("spend from an agent") stayed wrong.
+    const advice = agentAdvice({ gasKeyCount, vault, owner, network: NETWORK });
+    const agentAdviceText =
+      advice.canPay === null
+        ? `  ${C.y("?")} ${advice.headline}
+    ${C.dim("Check with the vault_roles tool, or float-agent --dry-run.")}`
+        : advice.canPay
+          ? `  ${C.g("*")} ${advice.headline}`
+          : `  ${C.y("!")} ${C.b(advice.headline)} The wizard creates the vault and its
+    budget tree; binding a spending key is a separate step because it installs
+    a funded gas key the agent spends from. Run:
+
+      ${C.b(advice.command)}
+
+    ${C.dim("Add --dry-run first to see the cost (~0.12 NEAR) without signing.")}
+    ${C.dim("Or, from the agent: vault_add_role, which returns a payload you approve.")}`;
+
+    // ---- 10. What is still a manual step, stated plainly.
     console.log(`
 ${C.g("Done.")} ${vault} is live.
 
 ${C.b("Still to do:")}
 
 ${fundingNotice(tokenPlan, { token, vault, owner, network: NETWORK, decimals }).map((l) => `  ${l}`).join("\n")}
+
+${agentAdviceText}
 
   1. Restart your MCP client so it picks up the new server.
 
@@ -1111,7 +1168,7 @@ ${C.b("Then:")}
   ${C.dim("# the dashboard")}
   cd apps/dashboard && npm run dev
 
-${C.b("What to try first:")} ${tryFirst}
+${advice.canPay === false ? `${C.b("What to try first:")} bind an agent with the command above — then ${tryFirst}` : `${C.b("What to try first:")} ${tryFirst}`}
 ${quoteSignerSecret ? `
 ${C.b("Cross-chain is open.")} Pay an address on Base straight from this NEAR
 balance — a solver delivers and prices the gas in:

@@ -40,8 +40,21 @@ test("every REASON CODE named in SKILL.md is one the contract can emit", () => {
   // rather than by listing individual names, so a new env var does not fail a
   // test about contract behaviour.
   const isConfigName = (n) => /^(NEAR_VAULT_|FLOAT_|BLOCKED_)/.test(n);
+  /**
+   * `vault_await_create` STATUSES, which are not contract reason codes.
+   *
+   * They are real, correct, and worth documenting -- the whole point of that
+   * tool is distinguishing "live" from "exists but is not yours". But this
+   * test reads every backticked ALL-CAPS token and compares it against the
+   * contract's enum, so documenting them correctly failed a test about
+   * something else. Listed explicitly rather than widened by pattern, so a
+   * genuinely bogus code cannot hide behind a loose rule.
+   */
+  const AWAIT_CREATE_STATUS = new Set(["LIVE", "NOT_YET", "NOT_YOURS", "UNVERIFIED"]);
   const named = new Set(
-    [...read(SKILL).matchAll(/`([A-Z_]{4,})`/g)].map((m) => m[1]).filter((n) => !isConfigName(n)),
+    [...read(SKILL).matchAll(/`([A-Z_]{4,})`/g)]
+      .map((m) => m[1])
+      .filter((n) => !isConfigName(n) && !AWAIT_CREATE_STATUS.has(n)),
   );
   const real = new Set([...read(TYPES).matchAll(/"([A-Z_]{4,})"/g)].map((m) => m[1]));
   assert.ok(named.size >= 10, `expected the skill to document the codes; found ${named.size}`);
@@ -315,23 +328,43 @@ test("REAL DATA: usage() and SKILL.md do not disagree about the cost", () => {
   assert.ok(Number(codeStakeYocto(bytes)) / 1e24 > 2.5, "code stake derivation looks wrong");
 });
 
-test("SKILL.md says an agent must be asked for, or the vault cannot pay", () => {
-  // The documented one-liner omitted --agents, and the default creates none, so
-  // following our own docs produced a vault that answers
-  // "Paying requires NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY".
+test("SKILL.md tells the reader the CLI needs a SECOND command to be able to pay", () => {
+  // THIS TEST USED TO ENFORCE THE BUG. It demanded every line mentioning
+  // `npx ... create-float` also contain `--agents`, from the retired design
+  // where each agent got a sub-account. `--agents` now REFUSES for any
+  // non-zero value, so the test was requiring the docs to recommend a flag
+  // that errors -- and the docs complied, telling agents to run
+  // `--agents 1`. A test can hold a doc to an obsolete contract just as
+  // firmly as to a correct one.
+  //
+  // It also over-matched: three of the lines it policed were prose about
+  // preferring the MCP, a `float-exit` command and a `float-topup` mention,
+  // none of which are setup commands.
+  //
+  // What actually matters is unchanged: following the docs must not leave a
+  // vault that cannot spend. So assert the REMEDY is present and current.
   const skillText = read(SKILL);
-  // Not just "is --agents mentioned somewhere" — it IS, in a list of useful
-  // flags, and that passed while the bug was live. The COMMAND the agent is
-  // told to run is what matters.
-  const cmds = skillText
-    .split("\n")
-    .filter((l) => l.includes("npx") && l.includes("create-float"))
-    .map((l) => l.trim());
-  assert.ok(cmds.length >= 1, "SKILL.md has no create-float command to check");
-  const without = cmds.filter((c) => !c.includes("--agents") && !c.includes("--help"));
-  assert.deepEqual(
-    without,
-    [],
-    "a documented setup command omits --agents, so following the docs yields a vault that cannot spend",
+
+  assert.ok(
+    !/--agents\s+[1-9]/.test(skillText),
+    "SKILL.md recommends `--agents <n>`, which the wizard refuses -- it belonged to the " +
+      "retired sub-account design. The remedy is float-agent.",
+  );
+
+  // The create command and the bind command must BOTH be present, and the
+  // text must say the first one alone cannot pay.
+  assert.ok(
+    /npx @floatonnear\/create-float --owner/.test(skillText),
+    "SKILL.md no longer shows a vault-creation command",
+  );
+  assert.ok(
+    /float-agent --vault/.test(skillText),
+    "SKILL.md shows how to create a vault but not how to bind an agent, so following it " +
+      "yields a vault that cannot pay",
+  );
+  assert.ok(
+    /cannot pay/i.test(skillText),
+    "SKILL.md must SAY the fresh CLI vault cannot pay; showing a second command without " +
+      "saying why is how the step gets skipped",
   );
 });

@@ -915,7 +915,13 @@
 
       // ---- intent from the URL. No backend, so the link carries everything.
       const q = new URLSearchParams(location.search);
-      const NETWORK = q.get("network") === "mainnet" ? "mainnet" : "testnet";
+      // MAINNET WHEN UNSTATED, matching @floatonnear/mcp and the five CLIs.
+      // Every link the MCP builds sets `network` explicitly, so this default is
+      // reached only by a hand-written link — and there, silently choosing the
+      // chain the rest of the product does NOT default to is how a vault ends up
+      // on one network with its tooling reading another. `?network=testnet` is
+      // still honoured, and the plan screen always shows which chain it is.
+      const NETWORK = q.get("network") === "testnet" ? "testnet" : "mainnet";
       const TOKEN = q.get("token") ?? (NETWORK === "mainnet"
         ? "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
         : "usdc.fakes.testnet");

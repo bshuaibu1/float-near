@@ -265,12 +265,32 @@ tree, registers the vault on the token, optionally funds it, and writes the MCP
 config for every client it finds.
 
 ```bash
-npx @floatonnear/create-float --owner you.near --agents 1 --fund 1
+npx @floatonnear/create-float --owner you.near --fund 1
 ```
 
-**`--agents` is not optional in practice.** No agent is created without it, and a
-vault with no agent cannot pay — the MCP server will answer *"Paying requires
-NEAR_VAULT_AGENT_ID and a key, and neither is set."*
+**This creates a vault that cannot pay yet, and that is TWO commands, not one.**
+The wizard builds the vault and its budget tree; it does not bind a spending
+agent. Bind one next:
+
+```bash
+npx -p @floatonnear/create-float float-agent --vault float.you.near --owner you.near
+```
+
+That installs a NEP-611 gas key restricted to `request_payment` on that vault
+and funds it (~0.12 NEAR), so the agent pays its own gas. Until it runs,
+`vault_pay` answers *"Paying requires NEAR_VAULT_AGENT_ID and a key, and neither
+is set."*
+
+**Do NOT reach for `--agents`.** It refuses for any non-zero value. It belonged
+to a retired design that created a sub-account per agent, and those accounts
+could never be emptied — a function-call key cannot sign `DeleteAccount`, so
+10.7752 NEAR is stranded across 18 testnet agents and 0.54434 on mainnet.
+Virtual agents replaced it.
+
+The browser path (`vault_create`) differs here: it can bind an agent inside the
+creation transaction via `agent_pk`, so a vault made that way can pay
+immediately. The CLI cannot, because the key has to be installed by the vault
+itself.
 
 **Mainnet is the default**, and there is no testnet path worth taking: NEAR
 Intents has no testnet, so a testnet vault cannot make a cross-chain payment at
@@ -279,7 +299,7 @@ before it sends anything.
 
 Useful flags: `--dry-run` (plan and cost, sends nothing), `--yes`
 (non-interactive), `--fund 5` (move that many tokens into the vault),
-`--agents 2`, `--token <id>`, `--vault <id>`.
+`--token <id>`, `--vault <id>`.
 
 **Run `--dry-run` first and show the human the cost.** Every step spends real
 NEAR and several are irreversible.

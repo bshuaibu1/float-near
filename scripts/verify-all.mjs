@@ -351,6 +351,24 @@ const steps = [
      * day returned a clean "nothing found" which read exactly like a finding,
      * each because a backslash collapsed going through the shell.
      */
+    /**
+     * Every surface must default to the SAME network.
+     *
+     * The CLIs defaulted to mainnet while the MCP and adapter defaulted to
+     * testnet, and nothing said so. A vault created on one chain and read from
+     * another does not error — it reports the vault as MISSING, which reads as
+     * a broken product rather than a disagreement.
+     *
+     * Flipping the MCP broke zero of 290 tests, which is the real defect: the
+     * value was defensible, the absence of any check comparing them was not.
+     */
+    name: "network defaults agree",
+    cmd: "node scripts/check-network-defaults.mjs",
+    cwd: ".",
+    mustMatch: /all \d+ surfaces default to/,
+    mustNotMatch: /BROKEN|DIFFER/,
+  },
+  {
     name: "doc figures",
     cmd: "node scripts/check-doc-figures.mjs",
     cwd: ".",

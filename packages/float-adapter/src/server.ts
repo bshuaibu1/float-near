@@ -35,6 +35,7 @@ import {
   accountExists,
   newRequestId,
   rpcForNetwork,
+  RPC_BY_NETWORK,
   viewAccessKeys,
   viewFunction,
 } from "@floatonnear/mcp";
@@ -135,6 +136,29 @@ for (const err of [agentKeySource.error, quoteSignerSource.error]) {
   if (err) console.error(`key source: ${err} — reads are unaffected; paying will fail.`);
 }
 
+/**
+ * The network, resolved once and BEFORE `env` so `rpcUrl` can follow it.
+ *
+ * MAINNET IS THE DEFAULT, matching @floatonnear/mcp and the five CLIs. It was
+ * testnet here while every CLI defaulted to mainnet, so an operator who created
+ * a mainnet vault and started this adapter served a dashboard that queried
+ * testnet and reported the vault missing.
+ *
+ * An unrecognised value FAILS CLOSED for the same reason it does in the MCP:
+ * `rpcForNetwork` resolves anything it does not recognise to a testnet
+ * endpoint, so `NEAR_VAULT_NETWORK=Mainnet` would answer mainnet questions
+ * about the wrong chain rather than complaining.
+ */
+const NETWORK = process.env.NEAR_VAULT_NETWORK ?? "mainnet";
+if (!Object.hasOwn(RPC_BY_NETWORK, NETWORK)) {
+  console.error(
+    `float-adapter: NEAR_VAULT_NETWORK is "${NETWORK}", which is not a known network ` +
+      `(${Object.keys(RPC_BY_NETWORK).join(", ")}). Refusing to start rather than resolving ` +
+      `to a testnet endpoint and answering questions about the wrong chain.`,
+  );
+  process.exit(1);
+}
+
 const env = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
   /**
@@ -167,8 +191,8 @@ const env = {
    * something else overrides it is not a default, it is a trap with one
    * authorised path around it.
    */
-  rpcUrl: rpcForNetwork(process.env.NEAR_VAULT_NETWORK ?? "testnet", {
-    configuredNetwork: process.env.NEAR_VAULT_NETWORK ?? "testnet",
+  rpcUrl: rpcForNetwork(NETWORK, {
+    configuredNetwork: NETWORK,
     override: process.env.NEAR_VAULT_RPC_URL,
   }),
   token: process.env.NEAR_VAULT_TOKEN ?? "",

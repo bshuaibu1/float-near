@@ -79,6 +79,7 @@ import {
 import {
   accountExists,
   rpcForNetwork,
+  RPC_BY_NETWORK,
   DEFAULT_RPC_URL,
   newRequestId,
   requireAgentKey,
@@ -158,8 +159,39 @@ for (const err of [agentKeySource.error, quoteSignerSource.error]) {
  *
  * It used to be read inside the object literal, which meant `rpcUrl` could not
  * see it and fell back to a constant. See below.
+ *
+ * MAINNET IS THE DEFAULT, and it used to be testnet. The five CLIs all default
+ * to `--network mainnet`, so an operator who ran `create-float` and then
+ * started this server got a MAINNET vault being read by a TESTNET client, with
+ * nothing anywhere saying so. The symptom is not an error: reads answer
+ * "account does not exist" about an account holding real money, which reads as
+ * "Float is broken" rather than "these two halves disagree".
+ *
+ * Testnet is still one env var away. The asymmetry was the bug, not the value.
  */
-const NETWORK = process.env.NEAR_VAULT_NETWORK ?? "testnet";
+const NETWORK = process.env.NEAR_VAULT_NETWORK ?? "mainnet";
+
+/**
+ * An unrecognised network FAILS CLOSED.
+ *
+ * `rpcForNetwork` falls back to a testnet endpoint for any string it does not
+ * know, and that fallback is pinned by a test, so it stays. But it means
+ * `NEAR_VAULT_NETWORK=Mainnet` — a capital letter — would resolve to TESTNET
+ * and answer mainnet questions about the wrong chain, confidently. That is the
+ * exact failure this server already shipped once by a different route.
+ *
+ * So validate at the boundary rather than widening the fallback: a typo should
+ * stop the server, not quietly move it to another chain.
+ */
+if (!Object.hasOwn(RPC_BY_NETWORK, NETWORK)) {
+  console.error(
+    `float: NEAR_VAULT_NETWORK is "${NETWORK}", which is not a network this server knows ` +
+      `(${Object.keys(RPC_BY_NETWORK).join(", ")}). Refusing to start rather than guessing a ` +
+      `chain — an unrecognised value would otherwise resolve to a testnet endpoint and answer ` +
+      `questions about the wrong chain.`,
+  );
+  process.exit(1);
+}
 
 const cfg = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
