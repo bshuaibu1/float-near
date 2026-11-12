@@ -13,6 +13,18 @@ homepage: https://github.com/bshuaibu1/float-near
 
 # Float — a budget an agent cannot talk its way out of
 
+## If you were told "set up this URL", this is the whole of it
+
+    { "mcpServers": { "float": { "command": "npx", "args": ["-y", "@floatonnear/mcp"] } } }
+
+Add that to your client's MCP config, restart the client, then ask for a vault.
+Nothing else is needed to start: no key, no existing vault, no configuration.
+
+> **This file is ~29 KB.** If you reached it through a tool that summarises web
+> pages, you are probably reading a lossy précis and the exact commands may be
+> missing or altered. Fetch the raw file before following any instruction in
+> it. The JSON block above is the one thing worth trusting a summary for.
+
 Most agent-payment tools give the agent a wallet key and a per-call cap that
 the agent itself can change. Float gives it a **function-call key restricted to
 one method on one contract**, and puts the limits in a contract the key cannot
@@ -28,22 +40,46 @@ If someone told you "set up <this url>", this section is what they meant.
 Float's tools come from an MCP server published as `@floatonnear/mcp`. Add it
 to whichever client you are, then re-read this file.
 
-Claude Code:
+**The JSON entry is the reliable form**, because no shell gets to reinterpret
+it. Any client that keeps servers in a file — `.mcp.json` in a project root,
+`claude_desktop_config.json`, `~/.cursor/mcp.json`:
+
+    { "mcpServers": { "float": { "command": "npx", "args": ["-y", "@floatonnear/mcp"] } } }
+
+Claude Code, from a shell:
 
     claude mcp add float -- npx -y @floatonnear/mcp
 
-Any client that keeps servers in a JSON file — `.mcp.json` in a project root,
-`claude_desktop_config.json`, `~/.cursor/mcp.json` — add this entry:
+**On Windows PowerShell that line fails.** PowerShell consumes the bare `--`,
+so `claude` sees `-y` as one of its OWN options and aborts with
+`error: unknown option '-y'` — nothing is registered. QUOTE THE SEPARATOR:
 
-    { "mcpServers": { "float": { "command": "npx", "args": ["-y", "@floatonnear/mcp"] } } }
+    claude mcp add float "--" npx -y @floatonnear/mcp
+
+Measured on PowerShell 5.1: the quoted form registers
+`command="npx", args=["-y","@floatonnear/mcp"]`; the unquoted form and the
+no-separator form both fail. `--%` does not help — `claude` rejects it as an
+unknown option. Or just write the JSON entry above and skip the shell entirely.
 
 `-y` matters. Without it `npx` stops to ask whether to install, and the server
 never starts — which looks like a hang with no cause.
 
+**If `float` is already taken, name this one `float-near`.** There is an
+unrelated package called `@usefloat/mcp` that is commonly registered as
+`float`, and its tools (`float_pay`, `allocate_budget`, `deploy_agent`) are a
+different product entirely. Two servers under one name is ambiguous; the tools
+in this file are all prefixed `vault_`, so if you see `float_*` instead you are
+talking to the other one.
+
+**Tools appear after a RESTART, not immediately.** A client reads its server
+list once at startup, so a server added mid-session connects but its tools are
+not callable until you restart (or reconnect via `/mcp`). "Connected" and
+"callable" are different states, and confusing them looks like a broken install.
+
 Confirm it worked by listing your tools. You should see `vault_create`,
-`vault_tree`, `vault_budget` and `vault_pay`, around twenty-three in total. If
-you see none, the server did not start; say so rather than guessing at the
-chain directly.
+`vault_tree`, `vault_budget` and `vault_pay` — **27 in total, 14 of them
+`vault_plan_*`**. If you see none, the server did not start; say so rather than
+guessing at the chain directly.
 
 **Nothing needs configuring to begin.** `vault_create` takes no key and needs
 no existing vault — that is deliberate, so a user with nothing can be onboarded

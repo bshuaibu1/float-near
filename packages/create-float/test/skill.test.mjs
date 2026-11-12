@@ -368,3 +368,46 @@ test("SKILL.md tells the reader the CLI needs a SECOND command to be able to pay
       "saying why is how the step gets skipped",
   );
 });
+
+/**
+ * SKILL.md's TOOL COUNT must match what the server registers.
+ *
+ * It said "around twenty-three in total" against a real 27, and it was a
+ * first-time user who found it -- the line is a tripwire for "did the server
+ * start?", so a wrong number makes a healthy install look broken and a broken
+ * one look fine. Four off is enough to matter.
+ *
+ * The other skill tests check that every tool NAMED exists; none checked how
+ * many there are, which is exactly the gap a hand-written number falls into.
+ * Counted from the registrations rather than from a doc, so the doc is what
+ * has to move.
+ */
+test("SKILL.md's tool count matches the server's registrations", () => {
+  const src = read(SERVER);
+  // `server.tool("name", ...)` is the registration form.
+  const registered = new Set(
+    [...src.matchAll(/server\.tool\(\s*["'`](vault_[a-z_0-9]+)["'`]/g)].map((m) => m[1]),
+  );
+  assert.ok(registered.size > 20, `expected to find the registrations; found ${registered.size}`);
+
+  const planCount = [...registered].filter((n) => n.startsWith("vault_plan_")).length;
+  const skill = read(SKILL);
+
+  assert.ok(
+    skill.includes(`${registered.size} in total`),
+    `SKILL.md does not say "${registered.size} in total" — it must state the real tool count, ` +
+      `which is what a user checks their install against. Found: ` +
+      (/([a-z-]+|\d+) in total/.exec(skill)?.[0] ?? "no count at all"),
+  );
+  assert.ok(
+    skill.includes(`${planCount} of them`),
+    `SKILL.md does not say "${planCount} of them" for the vault_plan_* count`,
+  );
+
+  // A WORDED number is how this drifted: "around twenty-three" survives every
+  // code change silently. Digits at least show up in a diff.
+  assert.ok(
+    !/around (twenty|thirty)/i.test(skill),
+    "SKILL.md states the tool count as a hedged word; use the digit so it can be checked",
+  );
+});
