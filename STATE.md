@@ -103,8 +103,8 @@ state changes, and re-stamp the commit line above.
   names `vault_create`, says NO KEY is needed, covers the have-a-vault-but-unconfigured case, and
   tells the agent not to hunt for another rail. Found by a real agent that hit the old message and
   went searching three unrelated wallets instead of offering to make a vault — the WORKFLOW
-  preamble already said the right thing, which is the point (see `DECISIONS.md`). Shipped in the
-  working tree; **not yet published** — npm still has mcp 0.9.0 without it.
+  preamble already said the right thing, which is the point (see `DECISIONS.md`).
+  **Live in mcp 0.9.1** — verified against the published package, see below.
 - **LIVE DOCS FIXED AND VERIFIED 2026-11-12.** The box was on `87a4559` — ~5,000 lines behind,
   with no README, ARCHITECTURE, DEMO or FLOAT docs at all — and served a `skill.md` 4 KB older
   than the repo, which is why a second cold install reported the same four defects word for word.
@@ -119,10 +119,19 @@ state changes, and re-stamp the commit line above.
     (`ARCHITECTURE.md` §4), so the code a user's vault runs is whatever that page serves.
   - Open, nobody has decided: the apex serves `skill.md` as `text/plain`, `app.` as
     `text/markdown`. `serve.mjs` intends plain text; the deploy asserts it for the apex only.
-- **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
-  create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
-  public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
-  asks "Whose vault?" — fixing it is a staged VPS change).
+- **ALL THREE PACKAGES PUBLISHED AND VERIFIED, 2026-11-12 18:45 UTC.** mcp **0.9.1**,
+  create-float **0.8.1**, float-adapter **0.3.0**. Verified by installing fresh FROM THE REGISTRY
+  — not the local build — and reading the shipped bytes: 11/11 for the no-vault onramp,
+  plain-English refusals, the never-show-a-code rule, the mainnet default, and in create-float's
+  bundled `SKILL.md` the up-front vault offer, the 3.55-and-refundable wording, the PowerShell
+  install fix, the 27-tool count and the restart note. `float-retire` is now installable.
+  - **The cold-start dead end is fixed for real users**, which is the check worth having run:
+    `node scripts/drive-mcp.mjs --published vault_config '{}'` returns the onramp naming
+    `vault_create` and "needs NO key", where it used to return `NEAR_VAULT_CONTRACT is not set`.
+- **Remaining:** make the repo PUBLIC (git history verified clean — `scripts/scan-history-secrets.mjs`),
+  and the hackathon submission, which nobody has started and is the only item with a hard deadline
+  (**2026-11-14 23:59 UTC**). Lower priority: the public dashboard's DEFAULT vault is still testnet
+  (invisible in the demo, since the UI asks "Whose vault?"); fixing it is a staged VPS change.
 - **Incident 2026-11-12:** a private key was committed and pushed via a `.mcp.json.bak`
   that `git add -A` swept up. Purged from history and the local object store, remote
   force-pushed; the key controlled a non-existent testnet account. `check-no-secrets.mjs`
