@@ -341,6 +341,23 @@ const steps = [
      * Every gap this week was found by a user tripping over it; this is the
      * thing that was supposed to be looking.
      */
+    /**
+     * FLOAT.md publishes the contract's hard limits as a table. A doc that
+     * states a figure is a claim, and an unchecked claim drifts the moment
+     * someone changes a constant -- silently, because nothing reads it.
+     *
+     * Its uniform-failure guard refuses to report when EVERY row mismatches,
+     * which is the lesson of the session that wrote it: three matchers that
+     * day returned a clean "nothing found" which read exactly like a finding,
+     * each because a backslash collapsed going through the shell.
+     */
+    name: "doc figures",
+    cmd: "node scripts/check-doc-figures.mjs",
+    cwd: ".",
+    mustMatch: /published figures match the contract/,
+    mustNotMatch: /BAD |disagree/,
+  },
+  {
     name: "surface map",
     cmd: "node scripts/map-surfaces.mjs",
     cwd: ".",
