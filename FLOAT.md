@@ -1,4 +1,4 @@
-<!-- STAMP commit=pending date=2026-11-12 -->
+<!-- STAMP commit=0efb58e date=2026-11-12 -->
 # Float, end to end — everything it does, and the shape of actually using it
 
 `ARCHITECTURE.md` is the map: the parts and how they connect. **This is the territory**: every
