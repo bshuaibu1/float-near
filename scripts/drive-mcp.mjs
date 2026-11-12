@@ -25,7 +25,7 @@
  * one typo from spending.
  */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 
 const SERVER_NAME = "float-near";
 /**
@@ -71,7 +71,27 @@ if (tool === "vault_pay" && ALLOW_OVER_CAP) {
   }
 }
 
-const cfg = JSON.parse(readFileSync(".mcp.json", "utf8"));
+/**
+ * A MISSING .mcp.json IS A CONFIGURATION STATE, NOT A CRASH.
+ *
+ * This read used to throw a raw ENOENT stack trace, which reads like the
+ * script is broken rather than like the client is unconfigured — and the
+ * commonest time to run it is exactly when you have just reinstalled and have
+ * not written the config yet.
+ */
+function readMcpConfig() {
+  if (!existsSync(".mcp.json")) {
+    console.error(
+      `no .mcp.json in ${process.cwd()}, so there is no MCP server to read.${String.fromCharCode(10)}` +
+        `  Configure one (npx -y @floatonnear/mcp, NEAR_VAULT_NETWORK=mainnet,${String.fromCharCode(10)}` +
+        `  NEAR_VAULT_FACTORY=usefloat.near), or let create-float write it for you.`,
+    );
+    process.exit(2);
+  }
+  return JSON.parse(readFileSync(".mcp.json", "utf8"));
+}
+
+const cfg = readMcpConfig();
 const srv = (cfg.mcpServers ?? cfg.servers ?? {})[SERVER_NAME];
 if (!srv) {
   console.error(`drive-mcp: no "${SERVER_NAME}" server in .mcp.json`);

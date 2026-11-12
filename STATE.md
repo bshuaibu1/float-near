@@ -40,8 +40,8 @@ state changes, and re-stamp the commit line above.
   - Reinstall: point a client at `npx -y @floatonnear/mcp` with `NEAR_VAULT_NETWORK=mainnet`,
     `NEAR_VAULT_FACTORY=usefloat.near`, and `NEAR_VAULT_CONTRACT` **empty** — `vault_create`
     needs no vault and no key, which is the real first-run path.
-  - `scripts/drive-mcp.mjs` and `settle-baseline.mjs` read `.mcp.json` and now crash with a raw
-    ENOENT; `show-agent-key.mjs` degrades with a clear message. They work again once it exists.
+  - `drive-mcp.mjs`, `settle-baseline.mjs` and `show-agent-key.mjs` all now say "no `.mcp.json`
+    … configure one" instead of stack-tracing. They work again once it exists.
 - `README.md` and `DEMO.md` exist. `DEMO.md` is the 90-second script.
 - `vault_await_create` now refuses to call a FACTORY a live vault (`vault_id` is the
   discriminator); all four states re-verified against mainnet.
