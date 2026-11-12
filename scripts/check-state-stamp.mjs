@@ -85,6 +85,40 @@ try {
 }
 
 /**
+ * REACHABLE FROM THE BRANCH, not merely a commit that exists.
+ *
+ * `cat-file -t` above succeeds on an ORPHANED commit — one left dangling by an
+ * amend or a rebase — because the object survives until gc collects it. And
+ * the ancestor test below treats "unrelated" as fine (its own catch says
+ * "stamp is newer, or unrelated"). So an orphan passed BOTH checks.
+ *
+ * Measured 2026-11-12: amending a commit to fix its stamp makes the stamp name
+ * the PRE-amend sha, which is unreachable the instant the amend lands. The
+ * gate stayed green while STATE.md pointed at a tree that was never on the
+ * branch — worse than a stale stamp, because the SessionStart hook will diff
+ * against a commit nobody can look at.
+ *
+ * The lesson for fixing a stamp: use a SEPARATE commit, never an amend. The
+ * content-change walk below ignores stamp-only edits, so a follow-up stamp
+ * commit is correct and does not chase its own tail.
+ */
+try {
+  execSync(`git merge-base --is-ancestor ${stampSha} ${branchRef}`, { stdio: "ignore" });
+} catch {
+  fail(
+    `${FILE} is stamped ${stampSha}, which is NOT REACHABLE from ${BRANCH}.`,
+    ``,
+    `The commit exists in the object store but is not on the branch — the usual`,
+    `cause is amending or rebasing the commit the stamp named. The ledger now`,
+    `points at a tree that was never on ${BRANCH}.`,
+    ``,
+    `Fix: re-stamp in a SEPARATE commit (never an amend) to the sha holding the`,
+    `content:`,
+    `  <!-- STAMP commit=${git(`rev-parse --short ${branchRef}`)} date=<today> -->`,
+  );
+}
+
+/**
  * The last commit that changed anything in STATE.md EXCEPT the stamp line.
  *
  * Walks the file's history and diffs each revision with the stamp stripped,
