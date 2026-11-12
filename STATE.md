@@ -1,4 +1,4 @@
-<!-- STAMP commit=167165f date=2026-11-12 -->
+<!-- STAMP commit=5d039cf date=2026-11-12 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -21,6 +21,9 @@ state changes, and re-stamp the commit line above.
   mainnet one and switched to the keyring. Verify without restarting the client:
   `node scripts/drive-mcp.mjs vault_config`.
 - `README.md` and `DEMO.md` exist. `DEMO.md` is the 90-second script.
+- `vault_await_create` now refuses to call a FACTORY a live vault (`vault_id` is the
+  discriminator); all four states re-verified against mainnet.
+- One config name: the adapter's offline fallback read `NEAR_NETWORK`, now `NEAR_VAULT_NETWORK`.
 - **STILL UNVERIFIED (needs you):** the under-cap and over-cap payments. Mainnet writes are
   staged here, not run by me. `DEMO.md` has both; the over-cap one costs nothing.
 - **Incident 2026-11-12:** a private key was committed and pushed via a `.mcp.json.bak`
