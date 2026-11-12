@@ -1,4 +1,4 @@
-<!-- STAMP commit=f2a909d date=2026-11-12 -->
+<!-- STAMP commit=f151bce date=2026-11-12 -->
 # Float — 90-second demo
 
 > ## ⚠ THE DEMO VAULT WAS DELETED on 2026-11-12
