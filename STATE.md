@@ -99,6 +99,12 @@ state changes, and re-stamp the commit line above.
   count said ~23 against a real **27** and is now test-pinned; the ~29 KB file gets lossily
   summarised by fetchers so the JSON config block is hoisted to the top; and the `float` name
   collides with `@usefloat/mcp`.
+- **Cold-start error is now an onramp.** `NEAR_VAULT_CONTRACT is not set` became a message that
+  names `vault_create`, says NO KEY is needed, covers the have-a-vault-but-unconfigured case, and
+  tells the agent not to hunt for another rail. Found by a real agent that hit the old message and
+  went searching three unrelated wallets instead of offering to make a vault — the WORKFLOW
+  preamble already said the right thing, which is the point (see `DECISIONS.md`). Shipped in the
+  working tree; **not yet published** — npm still has mcp 0.9.0 without it.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
   create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
   public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
