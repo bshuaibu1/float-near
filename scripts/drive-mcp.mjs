@@ -41,7 +41,7 @@ const SERVER_NAME = "float-near";
 const REFUSED = new Set(["vault_pay"]);
 const ALLOW_OVER_CAP = process.env.FLOAT_DRIVE_ALLOW_OVER_CAP === "1";
 
-const [toolArg, argsArg] = process.argv.slice(2);
+const [toolArg, argsArg] = process.argv.slice(2).filter((a) => a !== "--published");
 const LIST = toolArg === "--list";
 const tool = LIST ? null : (toolArg ?? "vault_config");
 
@@ -91,8 +91,34 @@ function readMcpConfig() {
   return JSON.parse(readFileSync(".mcp.json", "utf8"));
 }
 
-const cfg = readMcpConfig();
-const srv = (cfg.mcpServers ?? cfg.servers ?? {})[SERVER_NAME];
+/**
+ * `--published` DRIVES THE npm PACKAGE, not the local build.
+ *
+ * The question "what does a NEW USER get?" cannot be answered by the working
+ * tree. The published artifact is a different thing — this repo has already
+ * shipped a version whose default network was wrong, and shipped a `bin` path
+ * npm rewrites, both invisible locally. And a cold start has NO .mcp.json at
+ * all, so requiring one would make the most important case the one case this
+ * tool cannot reach.
+ *
+ * Env is passed explicitly rather than inherited, so the test cannot
+ * accidentally pick up a configured vault and stop being a cold start.
+ */
+const PUBLISHED = process.argv.includes("--published");
+
+const srv = PUBLISHED
+  ? {
+      command: "npx",
+      args: ["-y", "@floatonnear/mcp"],
+      env: {
+        NEAR_VAULT_NETWORK: process.env.NEAR_VAULT_NETWORK ?? "mainnet",
+        NEAR_VAULT_FACTORY: process.env.NEAR_VAULT_FACTORY ?? "usefloat.near",
+        // DELIBERATELY EMPTY: this is the state a first-time user is in.
+        NEAR_VAULT_CONTRACT: process.env.NEAR_VAULT_CONTRACT ?? "",
+      },
+    }
+  : (readMcpConfig().mcpServers ?? readMcpConfig().servers ?? {})[SERVER_NAME];
+
 if (!srv) {
   console.error(`drive-mcp: no "${SERVER_NAME}" server in .mcp.json`);
   process.exit(1);
@@ -107,9 +133,18 @@ console.log(
 );
 console.log("");
 
+/**
+ * `shell: true` ON WINDOWS, because `npx` is `npx.cmd` there and Node's spawn
+ * will not resolve a PATHEXT extension on its own — it fails with
+ * `spawn npx ENOENT`, which looks like "npx is not installed" rather than
+ * "this spawn cannot find a .cmd". The MCP client itself runs servers through
+ * a shell for the same reason, so this also matches how the server is really
+ * launched.
+ */
 const child = spawn(srv.command, srv.args ?? [], {
   env: { ...process.env, ...(srv.env ?? {}) },
   stdio: ["pipe", "pipe", "pipe"],
+  shell: process.platform === "win32",
 });
 
 let stderr = "";
