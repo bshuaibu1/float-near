@@ -1,4 +1,4 @@
-<!-- STAMP commit=pending date=2026-11-12 -->
+<!-- STAMP commit=411d68e date=2026-11-12 -->
 # How Float works — the parts, the boundaries, and what is missing
 
 `STATE.md` says what is true *right now*. `DECISIONS.md` says what was settled and what was
