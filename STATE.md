@@ -35,6 +35,14 @@ state changes, and re-stamp the commit line above.
   gas key paying **0.000866 NEAR** while the vault's `amount` moved **-1 yocto** — the NEP-141
   `ft_transfer` deposit the vault must attach and the agent's key cannot. Storage grew 667 B,
   which stakes against the balance rather than deducting from it. See `DECISIONS.md`.
+- **Refusals and successes now speak plain English** (2026-11-12). `vault_pay` returns
+  `say` / `next_step` / `money_moved`, with the contract outcome under `technical`. A user
+  never sees `PARENT_PER_TX_LIMIT`; they get *"That's too big for one payment — the most per
+  payment is 10 USDC, and this asked for 15. Nothing was sent."* Built in the SERVER, not the
+  prompt, because the good sentence needs caps the payment response never carried. The codes
+  are kept (they are a differentiator) and the instructions still teach the
+  `DAILY_BUDGET` vs `PARENT_DAILY_BUDGET` difference while forbidding printing it.
+  See `packages/mcp/src/explain.ts` and `DECISIONS.md`.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
   create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
   public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI

@@ -95,15 +95,26 @@ Refresh nearblocks — the USDC transfer is there.
 Pay 15 USDC to test015.near
 ```
 
-Expect:
+The agent should answer in plain English, roughly:
 
-```
-"status": "BLOCKED", "reason_code": "PARENT_PER_TX_LIMIT"
-```
+> *"That's too big for one payment — a limit set higher up the budget caps each payment at 10 USDC,
+> and this asked for 15. Nothing was sent. Send 10 USDC or less, or ask the vault owner to raise
+> the per-payment limit."*
 
 > "Refused. Not by me, not by a prompt, not by the agent choosing to behave — by the contract. And
-> look at the code: **PARENT**_PER_TX_LIMIT. It tells you the limit that stopped it was the parent's,
-> not this agent's. There are 41 of these codes."
+> notice it tells you **which** limit stopped it and what to do instead, in a sentence you'd say to
+> a colleague."
+
+**If you want to show the engineering underneath** (and for a technical audience it is worth 10
+seconds), the precise reason is still in the payload under `technical`:
+
+```
+"reason_code": "PARENT_PER_TX_LIMIT"
+```
+
+> "Underneath, the contract named the exact rule: the **parent's** per-payment limit, not this
+> agent's. There are 41 of these codes, and that precision is why the refusal can be explained at
+> all. The user just never has to read it."
 
 Then prove nothing moved:
 
