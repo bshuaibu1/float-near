@@ -78,8 +78,12 @@ Expect `SETTLED` with a `request_id`. Then:
 Show me today's budget for node 1
 ```
 
-> "Executed went from 0 to 0.25. Available dropped to 24.75. That's the contract's own ledger, not
-> a dashboard's guess."
+> "Executed went up by 0.25 and available came down by the same. That's the contract's own ledger,
+> not a dashboard's guess — and the ROOT moved too, because a payment charges every level."
+
+**Check the starting number before you present.** The cap resets 00:00 UTC, so if a payment has
+already gone out today, executed starts above zero and the live figures below are the ones to read
+from. Verified 2026-11-12: `0 -> 0.25` at node 1 **and** at root, charged chain `[0,1]`.
 
 Refresh nearblocks — the USDC transfer is there.
 
@@ -107,7 +111,9 @@ Then prove nothing moved:
 Show me today's budget for node 1
 ```
 
-> "Still 0.25 executed. The refusal cost nothing and moved nothing."
+> "Executed did not move. The refusal cost nothing and moved nothing — and the request is not
+> even stored: `get_request` returns null for a blocked payment, so nobody can inflate your
+> storage bill by spamming refusals."
 
 ### 1:15 — The part that makes it a product (15s)
 
@@ -137,7 +143,7 @@ The agent returns an **unsigned payload** and a CLI line.
 | "account does not exist" about your vault | client and vault on different networks | `NEAR_VAULT_NETWORK=mainnet` in `.mcp.json`, restart |
 | reads work, `vault_pay` says "Paying requires NEAR_VAULT_AGENT_ID and a key" | no agent key loaded | check `NEAR_VAULT_AGENT_KEYS` points at `.float/agent-keys.json` |
 | `NO_RECIPIENTS_SET` | the node's allowlist is empty | pay `test015.near` — it is the allowlisted recipient |
-| `TRANSFER_FAILED` instead of `SETTLED` | vault is out of USDC, or payee unregistered | the vault holds **1.000000 USDC**; keep the demo payment small |
+| `TRANSFER_FAILED` instead of `SETTLED` | vault is out of USDC, or payee unregistered | the vault holds **0.750000 USDC**; keep the demo payment small |
 | `DAILY_BUDGET` on the first payment | a previous demo already spent today's 25 | caps reset 00:00 UTC; use a smaller amount |
 
 **Do not run `--agents`** on anything. It refuses, by design.
@@ -168,8 +174,8 @@ Read 2026-11-12, mainnet:
 | Vault | `test015-near.usefloat.near` — owner `test015.near`, not paused, 300,817 B, 3.3484 NEAR |
 | Tree | node 0 `root` (25/10 USDC), node 1 `agent` (25/10, recipients inherit) |
 | Agent key | `ed25519:E2PGijm4YqU445…` → node 1, 0.11892 NEAR, `request_payment` only |
-| USDC | vault holds **1.000000**; allowlist `test015.near`, registered on the token |
-| Today | node 1: executed 0, available 25 (day 20769) |
+| USDC | vault holds **0.750000** (0.25 spent proving the golden path); allowlist `test015.near`, registered on the token |
+| Today | node 1 AND root: executed **0.25**, available **24.75** (day 20769) — resets 00:00 UTC |
 | Gates | no cooldown, no approval threshold |
 
 Re-check before presenting:

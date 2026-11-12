@@ -24,14 +24,21 @@ state changes, and re-stamp the commit line above.
 - `vault_await_create` now refuses to call a FACTORY a live vault (`vault_id` is the
   discriminator); all four states re-verified against mainnet.
 - One config name: the adapter's offline fallback read `NEAR_NETWORK`, now `NEAR_VAULT_NETWORK`.
-- **OVER-CAP REFUSAL VERIFIED ON MAINNET 2026-11-12**: 15 USDC -> `PARENT_PER_TX_LIMIT`,
-  USDC 1.000000 unchanged, `get_request` null. Agent gas key paid 0.00023 NEAR.
-  Run it yourself: `node scripts/prove-refusal.mjs 15 test015.near` (refuses to sign
-  any amount that could actually settle).
-- **STILL UNVERIFIED (needs you):** the UNDER-cap payment (`Pay 0.25 USDC to test015.near`
-  in the MCP client). Real money moves, so it is yours to run. Also amber: "the vault is
-  not paying the agent's gas" -- the agent's drop is measured, the vault's is inside my
-  baseline's rounding.
+- **PATH A IS VERIFIED END TO END ON MAINNET, 2026-11-12.** Both halves:
+  - UNDER cap: 0.25 USDC -> **SETTLED** (`bdac52f8-3416-4c9d-b865-70091f63582b`), charged
+    chain `[0,1]` so node 1 AND root both read `executed 0.25 / available 24.75`.
+    Recipient credited 0.25. Vault now holds **0.750000 USDC**.
+  - OVER cap: 15 USDC -> **`PARENT_PER_TX_LIMIT`**, nothing moved, `get_request` null
+    (blocked payments are not stored). `node scripts/prove-refusal.mjs 15 test015.near`
+    reproduces it and refuses to sign any amount that could actually settle.
+- **Gas accounting CLOSED** (was amber): settled before/after in exact yocto showed the agent's
+  gas key paying **0.000866 NEAR** while the vault's `amount` moved **-1 yocto** — the NEP-141
+  `ft_transfer` deposit the vault must attach and the agent's key cannot. Storage grew 667 B,
+  which stakes against the balance rather than deducting from it. See `DECISIONS.md`.
+- **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
+  create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
+  public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
+  asks "Whose vault?" — fixing it is a staged VPS change).
 - **Incident 2026-11-12:** a private key was committed and pushed via a `.mcp.json.bak`
   that `git add -A` swept up. Purged from history and the local object store, remote
   force-pushed; the key controlled a non-existent testnet account. `check-no-secrets.mjs`
