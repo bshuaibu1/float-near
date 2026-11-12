@@ -182,7 +182,7 @@ async function main() {
   const provider = new JsonRpcProvider({ url: RPC });
 
   // ---- 0. Keys. Nothing is touched until we know the vault can be emptied.
-  step(0, "Keys");
+  step(0, "Authorisation");
   const ownerSecret = loadKey(owner);
   if (!ownerSecret) throw new Error(`no key for ${owner} at ${credPath(owner)}`);
   const ownerKp = KeyPair.fromString(ownerSecret);
@@ -243,6 +243,61 @@ async function main() {
     provider.callFunction({ contractId, method, args, blockQuery: { finality: "final" } });
   const ftBal = async (token, id) => BigInt((await view(token, "ft_balance_of", { account_id: id })) ?? 0);
 
+  /**
+   * A TOKEN'S NAME AND DECIMALS, so the output stops reading like an error.
+   *
+   * Mainnet USDC is a 64-character hex id and its balance is `1000000`.
+   * Printed raw, those are a scary string and a number a million times larger
+   * than the truth, on the one screen where someone is deciding whether to
+   * delete something holding their money. "1 USDC" is the same fact and the
+   * only one of the two they can check.
+   *
+   * READ FROM THE CHAIN, never assumed. Scaling by a guessed 6 would print a
+   * figure wrong by orders of magnitude while looking tidy -- worse than the
+   * raw number it replaced -- so a token whose metadata will not read keeps
+   * its id and its base units, and says so.
+   *
+   * MIRRORED from @floatonnear/mcp's token-meta.ts rather than imported.
+   * These are siblings published independently; importing across them couples
+   * their release cycles, and this repo has already lost an afternoon to a
+   * workspace range that resolved to a PUBLISHED sibling instead of the local
+   * one.
+   */
+  const META = new Map();
+  const tokenMeta = async (token) => {
+    if (META.has(token)) return META.get(token);
+    let m = null;
+    try {
+      const raw = await view(token, "ft_metadata", {});
+      // BOTH FIELDS OR NEITHER: a symbol without decimals invites formatting
+      // with an assumed exponent, which is the bug this exists to avoid.
+      if (
+        raw &&
+        typeof raw.symbol === "string" &&
+        raw.symbol &&
+        Number.isInteger(raw.decimals) &&
+        raw.decimals >= 0 &&
+        raw.decimals <= 24
+      ) {
+        m = { symbol: raw.symbol, decimals: raw.decimals };
+      }
+    } catch {
+      m = null;
+    }
+    META.set(token, m);
+    return m;
+  };
+
+  /** "1 USDC" where the chain told us how, the raw pair where it did not. */
+  const fmtToken = async (token, base) => {
+    const m = await tokenMeta(token);
+    if (!m) return `${base} of ${token} (could not read its decimals)`;
+    const s = BigInt(base).toString().padStart(m.decimals + 1, "0");
+    const whole = s.slice(0, -m.decimals) || "0";
+    const frac = m.decimals ? s.slice(-m.decimals).replace(/0+$/, "") : "";
+    return `${whole}${frac ? `.${frac}` : ""} ${m.symbol}`;
+  };
+
   // ---- 1. Inventory. Everything recoverable, in one place, before any write.
   //
   // Tokens come from get_tree(): there is no list_token_balances, but every
@@ -250,7 +305,7 @@ async function main() {
   // them means this cannot miss one — which is also why this tool does not
   // take a --token flag. A wrong one reads as a zero balance and the delete
   // would strand the real tokens silently.
-  step(1, "What is recoverable");
+  step(1, "What comes back");
   const tree = await view(vault, "get_tree");
   if (!Array.isArray(tree)) {
     throw new Error(`get_tree() returned ${typeof tree}, expected an array. Refusing to proceed.`);
@@ -283,8 +338,16 @@ async function main() {
   const balances = [];
   for (const t of tokens) balances.push([t, await ftBal(t, vault)]);
 
-  info(`${tree.length} node(s), ${acct0.storage_usage} B = ${code0.length} code + ${acct0.storage_usage - code0.length} state`);
-  for (const [t, b] of balances) info(`token    ${t} — ${b}`);
+  /**
+   * NO BYTE COUNTS. `300817 B = 298839 code + 1978 state` is true, and it is a
+   * developer's fact: a user closing a vault wants to know what comes back,
+   * not how the storage divides. The number that MATTERS from it -- the NEAR
+   * that stake refunds into -- is already printed below as the account
+   * balance, so the breakdown was detail with no decision attached.
+   */
+  for (const [t, b] of balances) {
+    info(`tokens   ${b === 0n ? "none" : await fmtToken(t, b)}`);
+  }
   /**
    * A GAS-KEY BALANCE IS HELD OUTSIDE THE ACCOUNT'S `amount`. Measured: a
    * vault with no gas key and one with a 0.118354 gas key both reported the
@@ -304,14 +367,14 @@ async function main() {
   // `withdraw` calls assert_owner(), which compares predecessor_account_id()
   // to the owner. The previous version signed this as the VAULT, so it was a
   // self-call and failed NotOwner every time.
-  step(2, "Tokens out");
+  step(2, "Your tokens");
   for (const [token, amount] of balances) {
     if (amount === 0n) {
-      ok(`${token} — already zero`);
+      ok(`no tokens to move`);
       continue;
     }
     if (DRY) {
-      info(`would withdraw ${amount} of ${token} to ${owner}`);
+      info(`would withdraw ${await fmtToken(token, amount)} to ${owner}`);
       continue;
     }
     await ownerAcct.callFunction({
@@ -343,7 +406,7 @@ async function main() {
   // add_gas_key_with_full_access and add_gas_key_with_function_call, and
   // nothing that takes money out, at any version. That is why one-signature
   // close cannot be a contract method.
-  step(3, "Gas keys");
+  step(3, "Gas held by agents");
   if (!gasKeys.length) info("none");
   for (const k of gasKeys) {
     const bal = BigInt(k.access_key.permission.GasKeyFunctionCall.balance);
@@ -377,7 +440,7 @@ async function main() {
   // Not every NEP-145 implementation agrees on the method name: Circle's
   // mainnet USDC exports storage_unregister(), this repo's mock-ft exports
   // unregister(account_id). Ask the deployed bytes rather than assuming.
-  step(4, "Token registration refund");
+  step(4, "Storage deposit with the token");
   for (const [token] of balances) {
     const reg = await view(token, "storage_balance_of", { account_id: vault }).catch(() => null);
     if (!reg) {
@@ -385,7 +448,10 @@ async function main() {
       continue;
     }
     if (DRY) {
-      info(`would unregister from ${token}, refunding ~${fmtNear(reg.total ?? 0)}`);
+      // The SYMBOL, not the 64-character id. The same string appeared four
+      // times on one screen and carried no information a reader could use.
+      const sym = (await tokenMeta(token))?.symbol ?? token;
+      info(`would reclaim ~${fmtNear(reg.total ?? 0)} NEAR from the ${sym} contract`);
       continue;
     }
     const code = Buffer.from(
@@ -417,7 +483,7 @@ async function main() {
   }
 
   // ---- 5. Shrink STATE. Without this the delete is refused outright.
-  step(5, "Shrinking state");
+  step(5, "Clearing records");
   const day = Number(await view(vault, "current_day"));
   const reqs = await view(vault, "list_requests", { from_index: 0, limit: 200 });
   if (!reqs.length) {
@@ -440,7 +506,7 @@ async function main() {
   }
 
   // ---- 6. Shrink CODE, then delete.
-  step(6, "The vault");
+  step(6, "Deleting the vault");
   console.log(`    ${C.b("about to delete")} ${vault}`);
   console.log(
     `    ${C.b("refunding")} ${C.b(fmtNear(BigInt(acct0.amount) + gasTotal))} NEAR ${C.b("to")} ${C.b(owner)} ${C.dim("minus gas")}`,
