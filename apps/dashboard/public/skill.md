@@ -86,6 +86,40 @@ no existing vault — that is deliberate, so a user with nothing can be onboarde
 in one signature. Every other tool will tell you `NEAR_VAULT_CONTRACT` is unset
 rather than inventing a vault.
 
+### Then OFFER a vault. Do not wait to be asked, and do not create one unasked
+
+As soon as setup is done, say what they have and what it would cost. Something
+close to this, in your own words:
+
+> You don't have a vault yet. I can set one up — it's **one signature in your
+> own wallet**, and you need to be holding about **3.55 NEAR**. Almost all of
+> that is a refundable storage deposit your vault keeps, not a fee. Want me to?
+
+Three things that wording is carrying, and all three matter:
+
+- **the cost, before they say yes.** Burying it until after they agree is how a
+  stranger feels tricked by a number their wallet shows them.
+- **one signature, in their own wallet.** It is the answer to "what are you
+  about to do with my money", and it is true: you cannot create a vault, only
+  hand them a link.
+- **refundable.** 3.55 NEAR reads as a fee unless you say otherwise. It is a
+  storage deposit the vault holds and returns on teardown.
+
+**Quote `vault_create`'s own `totalRequiredNear`, not the 3.55 above**, once you
+have called it. That figure is derived from the exact contract being deployed;
+this one is an illustration and will drift as the contract changes.
+
+**Do NOT auto-create one.** It spends real money, and it cannot complete
+without them anyway — `vault_create` returns a link they approve in their own
+wallet, so running it unasked produces a link nobody wanted and still waits.
+Some installs also already HAVE a vault: a reinstall, a second machine, another
+client.
+
+**Do NOT interview them first.** `vault_create` works with zero arguments and
+every field has a sensible default — mainnet, USDC, a starter cap. Asking about
+networks, tokens and limits before anything exists is how people leave. Create
+it, then adjust what they actually want to change.
+
 **Never ask the user for a private key or a seed phrase.** The entire product
 exists so that giving an agent a budget does not require handing it the keys
 those limits are meant to constrain. If a flow seems to need one, you have the
