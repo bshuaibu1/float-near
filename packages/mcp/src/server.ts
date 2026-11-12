@@ -89,7 +89,9 @@ import {
 } from "./rpc.js";
 import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
 import { resolveKeySource } from "./key-file.js";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { listAgents, listRoles, selectRole } from "./roles.js";
 import { label as tokenLabel, tokenMeta, type TokenMeta } from "./token-meta.js";
@@ -380,6 +382,12 @@ THREE LANES, and the difference is the whole design:
   PLAN    vault_plan_*. These RETURN AN UNSIGNED PAYLOAD. This server never signs a policy
           change; the human approves it in their own wallet. Do not describe a plan as done.
 
+THE FULL GUIDE IS A RESOURCE: read "float://skill" when you need depth.
+  It carries every refusal code and what to do about it, the teardown ORDER (which decides
+  whether an agent's gas is recovered or BURNED), and which flows need a human signature.
+  Read it before a first vault, before any teardown, and whenever a refusal is not
+  self-explanatory. What follows here is only the shape.
+
 WORKFLOW
   1. No vault yet? vault_create. It needs no key and no existing vault, and returns a URL the
      user approves in their own wallet. Never ask anyone for a private key or seed phrase.
@@ -422,7 +430,78 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.9.1" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.10.0" }, { instructions: INSTRUCTIONS });
+
+/**
+ * THE FULL OPERATING GUIDE, AS AN MCP RESOURCE.
+ *
+ * SKILL.md is ~34 KB of operational knowledge: the refusal vocabulary, the
+ * teardown ORDER (which is the difference between recovering an agent's gas
+ * and burning it), what the three lanes mean, which flows need a human
+ * signature. `instructions` cannot carry that — it is injected into the
+ * client's system prompt, so it has a budget measured in paragraphs.
+ *
+ * The gap was being filled by accident. On a DEVELOPER machine you can install
+ * SKILL.md as a Claude Code skill and it loads on demand; a real user has no
+ * repo to install from, and most MCP clients have no skill mechanism at all.
+ * So the depth existed for us and not for them, which is the wrong way round.
+ *
+ * A resource is the mechanism MCP already has for exactly this: the client
+ * lists it, reads it when it decides to, and pays no system-prompt cost until
+ * then. It ships INSIDE this package, so it cannot drift from the version of
+ * the server being run — `prepack` copies the root SKILL.md, the same way
+ * create-float does, so there is one source of bytes.
+ *
+ * NOT A TOOL, deliberately. A `float_guide` tool would work in every client
+ * including those without resources, but it spends a slot in a list of 27 and
+ * invites the model to call it speculatively. Clients without resource support
+ * still get the instructions and the error messages, which is where the
+ * load-bearing routing lives.
+ */
+{
+  // Resolved from THIS file's location, so it works from dist/ at any depth
+  // and does not depend on the process's working directory — a server is
+  // started by a client from wherever that client happens to be.
+  const guidePath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "SKILL.md");
+
+  server.registerResource(
+    "float-guide",
+    "float://skill",
+    {
+      title: "Float operating guide",
+      description:
+        "The full guide: every refusal code and what to do about it, the three lanes, the " +
+        "teardown ORDER that decides whether an agent's gas is recovered or burned, and which " +
+        "flows require a human signature. Read this before a first vault, before a teardown, " +
+        "or whenever a refusal is not self-explanatory.",
+      mimeType: "text/markdown",
+    },
+    async () => {
+      /**
+       * A MISSING GUIDE IS REPORTED, NOT FAKED. If the copy did not ship, say
+       * so and name the cause — an empty resource that reads as "there is no
+       * guidance" is worse than an error, because the agent proceeds.
+       */
+      if (!existsSync(guidePath)) {
+        throw new Error(
+          `the operating guide is missing from this install (${guidePath}). It is copied into ` +
+            `the package by prepack; a published tarball should always contain it. Fall back to ` +
+            `https://usefloat.xyz/skill.md, and fetch the RAW file — a summariser drops the ` +
+            `exact commands.`,
+        );
+      }
+      return {
+        contents: [
+          {
+            uri: "float://skill",
+            mimeType: "text/markdown",
+            text: readFileSync(guidePath, "utf8"),
+          },
+        ],
+      };
+    },
+  );
+}
 
 // ----------------------------------------------------------------- reads
 

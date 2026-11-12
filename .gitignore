@@ -65,3 +65,6 @@ apps/dashboard/.next-verify/
 .mcp.json
 .mcp.json.bak
 *.bak
+
+# Copied from the root SKILL.md by packages/mcp prepack — one source of bytes.
+packages/mcp/SKILL.md

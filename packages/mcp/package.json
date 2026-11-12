@@ -1,6 +1,6 @@
 {
   "name": "@floatonnear/mcp",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "type": "module",
   "description": "MCP server for the hierarchical budget vault. The agent key signs request_payment only; owner methods emit unsigned payloads for wallet approval.",
   "license": "MIT",
@@ -9,10 +9,11 @@
     "float-mcp": "dist/server.js"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "SKILL.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('fs').copyFileSync('../../SKILL.md','SKILL.md')\" && tsc -p tsconfig.json",
     "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

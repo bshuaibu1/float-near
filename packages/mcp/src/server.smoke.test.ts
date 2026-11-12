@@ -711,3 +711,63 @@ describe("the no-vault error is an onramp, not a dead end", () => {
     ).toBe(false);
   });
 });
+
+/**
+ * THE OPERATING GUIDE MUST BE DELIVERABLE TO A REAL USER.
+ *
+ * SKILL.md is ~34 KB: the refusal vocabulary, the teardown ORDER that decides
+ * whether an agent's gas is recovered or burned, which flows need a human
+ * signature. `instructions` cannot carry it — that field goes into the
+ * client's system prompt and has a budget measured in paragraphs.
+ *
+ * The depth WAS reaching us and not them. On a developer machine SKILL.md can
+ * be installed as a Claude Code skill and loads on demand; a real user has no
+ * repo to install from and most MCP clients have no skill mechanism at all.
+ * A resource is the mechanism MCP already has: listed, read on demand, no
+ * system-prompt cost until then, and it ships inside the package so it cannot
+ * drift from the server being run.
+ *
+ * Source-pinned like the blocks above — registration happens at module scope
+ * in a process that owns stdout for JSON-RPC. The end-to-end read is exercised
+ * by hand against the built server; these pin the parts that would rot.
+ */
+describe("the operating guide ships as an MCP resource", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+  const pkg = JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "..", "package.json"), "utf8"),
+  );
+
+  it("registers a resource at float://skill", () => {
+    expect(src).toMatch(/registerResource\(/);
+    expect(src).toMatch(/float:\/\/skill/);
+  });
+
+  it("is SHIPPED in the package, not read from a developer's checkout", () => {
+    expect(pkg.files, "SKILL.md is not in package.files, so a published install has no guide")
+      .toContain("SKILL.md");
+  });
+
+  it("the BUILD copies it, not only prepack", () => {
+    // If only prepack copied it, a fresh clone would build a server whose
+    // guide resource is missing, and only `npm publish` would fix that.
+    expect(pkg.scripts.build).toMatch(/copyFileSync/);
+  });
+
+  it("resolves the guide relative to the module, not the cwd", () => {
+    // A client starts the server from wherever it happens to be.
+    expect(src).toMatch(/fileURLToPath\(import\.meta\.url\)/);
+  });
+
+  it("THROWS when the guide is absent rather than returning nothing", () => {
+    // An empty resource reads as "there is no guidance" and the agent
+    // proceeds. An error stops it.
+    const block = src.slice(src.indexOf("float-guide"), src.indexOf("// ---") + 1);
+    expect(block).toMatch(/throw new Error/);
+  });
+
+  it("the instructions TELL the agent the resource exists", () => {
+    // A resource nothing mentions is a resource nothing reads.
+    const instr = src.slice(src.indexOf("Float gives an AI agent"), src.indexOf("new McpServer"));
+    expect(instr).toMatch(/float:\/\/skill/);
+  });
+});
