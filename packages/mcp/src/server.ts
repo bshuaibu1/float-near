@@ -479,9 +479,44 @@ server.tool(
     }
 
     // THE OWNER READ IS THE POINT. Getting here only proves an account exists.
-    const config = await viewFunction<{ owner?: string }>(rpc, target, "get_config", {}).catch(
-      () => null,
-    );
+    const config = await viewFunction<{ owner?: string; vault_id?: string }>(
+      rpc,
+      target,
+      "get_config",
+      {},
+    ).catch(() => null);
+
+    /**
+     * A `get_config` WITH AN OWNER IS NOT PROOF OF A VAULT.
+     *
+     * The FACTORY also exports `get_config`, and it also returns an `owner` —
+     * so pointing this tool at `usefloat.near` with the factory's own owner
+     * returned **LIVE**, and the next step it printed was
+     * `NEAR_VAULT_CONTRACT=usefloat.near`. Every later read would then query a
+     * factory for budgets it does not have.
+     *
+     * Measured 2026-11-12 on mainnet: the two shapes are cleanly separable --
+     * a vault answers `vault_id, owner, network, paused, strict_allocation,
+     * node_count, clock_mode`; the factory answers `owner, code_hash, network,
+     * required_deposit, paused`. `vault_id` is the discriminator, and it is the
+     * field whose presence means "I am the vault you are asking about".
+     *
+     * Checked BEFORE the owner comparison, because "this is not a vault" is a
+     * different and more fundamental answer than "this vault is someone
+     * else's", and reporting the latter about a factory would send someone
+     * looking for a nonexistent rival owner.
+     */
+    if (config && typeof config.vault_id !== "string") {
+      return json({
+        status: "UNVERIFIED",
+        vault: target,
+        instruction:
+          `${target} answers get_config but it is NOT a Float vault — a vault's config ` +
+          `carries vault_id, and this one does not. The factory exports get_config too, ` +
+          `with an owner field, so "it responded and the owner matched" is not proof. Do ` +
+          `NOT set NEAR_VAULT_CONTRACT to it.`,
+      });
+    }
 
     if (!config || typeof config.owner !== "string") {
       return json({

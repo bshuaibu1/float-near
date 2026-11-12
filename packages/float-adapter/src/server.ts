@@ -372,11 +372,22 @@ function perRequest(vault: string, isDefault: boolean) {
  * migrate chains — so re-reading it per request buys nothing and costs a
  * round trip on a path that is otherwise pure local computation.
  *
- * `NEAR_NETWORK` is a FALLBACK, not the primary. The chain is authoritative:
- * an operator who mistypes the env var would otherwise get CLI commands
- * carrying the wrong `network-config`, which fail after the owner has already
- * approved them. Asking the vault first means the env var can only help when
- * the chain is unreachable, never override it.
+ * The env var is a FALLBACK, not the primary. The chain is authoritative: an
+ * operator who mistypes it would otherwise get CLI commands carrying the wrong
+ * `network-config`, which fail after the owner has already approved them.
+ * Asking the vault first means the env var can only help when the chain is
+ * unreachable, never override it.
+ *
+ * ONE CONFIG NAME. This read `NEAR_NETWORK`, which appeared nowhere else in the
+ * product — every other surface uses `NEAR_VAULT_NETWORK` (33 occurrences
+ * against this one). So an operator who configured the adapter the documented
+ * way, and then lost RPC, fell through to an env var they had never been told
+ * to set, and the adapter answered with whatever `networkName()` threw instead.
+ * A second spelling of the same setting is a parallel flow, and it only shows
+ * up in the one case nobody tests: the chain being down.
+ *
+ * `NEAR_NETWORK` is still honoured so an existing deployment does not break,
+ * but it is second and it is not documented.
  */
 let cachedNetwork: string | undefined;
 async function networkName(): Promise<string> {
@@ -386,7 +397,8 @@ async function networkName(): Promise<string> {
     cachedNetwork = c.network;
     return cachedNetwork;
   } catch (e) {
-    const fallback = process.env.NEAR_NETWORK?.trim();
+    const fallback =
+      process.env.NEAR_VAULT_NETWORK?.trim() || process.env.NEAR_NETWORK?.trim();
     if (fallback) return fallback; // NOT cached: the chain still wins once reachable
     throw e;
   }

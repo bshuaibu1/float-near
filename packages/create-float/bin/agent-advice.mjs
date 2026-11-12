@@ -17,6 +17,13 @@
  *
  * Follows the pattern of ./handoff.mjs and ./tree.mjs: a pure function here, a
  * test beside it, and the wizard just prints the result.
+ *
+ * QUOTES NO FIGURE. An earlier draft said "~0.12 NEAR" against a real 0.1209
+ * (reservation + 50 payments of burn), and args.mjs already records what that
+ * costs: a user topping up to exactly what the help promised was refused by the
+ * affordability gate for want of 0.006 NEAR. Its conclusion applies here --
+ * "writing a derived number down by hand is the bug" -- so this points at
+ * `float-agent --dry-run`, which computes it.
  */
 
 /**

@@ -1134,7 +1134,7 @@ ${MAINNET ? "  " + C.y("MAINNET — this spends real funds.") + "\n" : ""}`);
 
       ${C.b(advice.command)}
 
-    ${C.dim("Add --dry-run first to see the cost (~0.12 NEAR) without signing.")}
+    ${C.dim("Add --dry-run first: it quotes the exact cost and signs nothing.")}
     ${C.dim("Or, from the agent: vault_add_role, which returns a payload you approve.")}`;
 
     // ---- 10. What is still a manual step, stated plainly.

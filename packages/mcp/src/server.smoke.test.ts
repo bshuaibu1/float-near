@@ -628,3 +628,43 @@ describe("the teardown command the report hands out", () => {
     expect(builder).toMatch(/cfg\.network === "mainnet" \? "" :/);
   });
 });
+
+/**
+ * `vault_await_create` MUST NOT CALL A FACTORY A LIVE VAULT.
+ *
+ * The factory exports `get_config` too, and it returns an `owner`. So pointing
+ * the tool at `usefloat.near` with that factory's own owner returned **LIVE**,
+ * and the nextSteps it printed told the user to
+ * `Set NEAR_VAULT_CONTRACT=usefloat.near` — after which every read would ask a
+ * factory for budgets it does not have. Measured on mainnet 2026-11-12.
+ *
+ * The discriminator is `vault_id`: a vault's config carries it, the factory's
+ * does not. Pinned at source for the same reason as the block above — the
+ * decision lives inside a tool handler in a process that owns stdout for
+ * JSON-RPC, and the live check that found this needs the network.
+ *
+ * Two separate claims, because the ORDER matters: "not a vault" must be
+ * answered before "not your vault", or a factory gets reported as somebody
+ * else's vault and the user goes looking for a rival owner who does not exist.
+ */
+describe("vault_await_create distinguishes a vault from any other contract", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+
+  it("requires vault_id before reporting LIVE", () => {
+    expect(
+      /typeof config\.vault_id !== "string"/.test(src),
+      "the vault_id discriminator is gone — a factory will read as LIVE again",
+    ).toBe(true);
+  });
+
+  it("checks not-a-vault BEFORE comparing the owner", () => {
+    const vaultIdCheck = src.indexOf('typeof config.vault_id !== "string"');
+    const ownerCheck = src.indexOf("config.owner !== owner");
+    expect(vaultIdCheck).toBeGreaterThan(-1);
+    expect(ownerCheck).toBeGreaterThan(-1);
+    expect(
+      vaultIdCheck < ownerCheck,
+      "the owner comparison now runs first, so a factory is reported NOT_YOURS",
+    ).toBe(true);
+  });
+});
