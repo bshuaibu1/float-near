@@ -530,6 +530,18 @@ so drift fails two suites.
    irreversible" before the delete. The report now emits the DRY RUN first and the destructive form
    separately, so copying the first thing you see cannot delete a vault. **I spent a round fixing
    the hard road's ergonomics before checking whether the easy one existed.** mcp 0.8.0 -> 0.8.1.
+
+   **`float-exit` READS LIKE A PRODUCT NOW (2026-11-11).** It was mathematically correct and shaped
+   like a debug log: a 64-character token id printed four times, `1000000` for one dollar, and
+   `300817 B = 298839 code + 1978 state` on the screen where someone decides whether to delete
+   something holding their money. Now: **`1 USDC`** via a local `ft_metadata` read, byte counts
+   gone (the only number they implied — the NEAR the stake refunds — was already on the next line),
+   the token named by symbol everywhere, and headings that say what the user GETS rather than what
+   the script does (`What comes back`, `Your tokens`, `Gas held by agents`). Decimals are read from
+   the CHAIN, never assumed: a token whose metadata will not read keeps its raw id and base units
+   and says so, because scaling by a guessed 6 prints a figure wrong by orders of magnitude while
+   looking tidy. **Mirrored from the MCP's `token-meta.ts`, not imported** — siblings published
+   independently, same reason `check-gas-math.mjs` exists. create-float 0.6.1 -> 0.6.2.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s
