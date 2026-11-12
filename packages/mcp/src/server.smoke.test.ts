@@ -668,3 +668,46 @@ describe("vault_await_create distinguishes a vault from any other contract", () 
     ).toBe(true);
   });
 });
+
+/**
+ * THE NO-VAULT ERROR MUST ROUTE TO `vault_create`, not just report a unset env var.
+ *
+ * It said "NEAR_VAULT_CONTRACT is not set" — true, and a dead end. Measured
+ * 2026-11-12: an agent asked to pay someone hit that, concluded the NEAR rail
+ * was unavailable, searched three unrelated wallets for something that could
+ * reach a `.near` address, and ended by asking the user to paste a contract
+ * id. It never offered to CREATE a vault, because the error did not say that
+ * was possible without one.
+ *
+ * The WORKFLOW preamble already said "No vault yet? vault_create" and that was
+ * not enough: at the moment of failure an agent reads the ERROR, not the
+ * instructions it was given at startup. So the routing has to be in the
+ * message.
+ *
+ * Source-pinned, like the rpcUrl block above: the string lives in a
+ * module-scope helper inside a process that owns stdout for JSON-RPC.
+ */
+describe("the no-vault error is an onramp, not a dead end", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+  const helper = src.slice(src.indexOf("function requireVault"), src.indexOf("function tokenFor"));
+
+  it("names vault_create", () => {
+    expect(helper).toMatch(/vault_create/);
+  });
+
+  it("says no key is needed, which is the part that unblocks a cold start", () => {
+    expect(helper).toMatch(/no\s*key/i);
+  });
+
+  it("covers the other case too — a vault that exists but is not configured", () => {
+    expect(helper).toMatch(/NEAR_VAULT_CONTRACT/);
+  });
+
+  it("is not the bare unset-variable message it used to be", () => {
+    // The exact regressed form.
+    expect(
+      /throw new Error\("NEAR_VAULT_CONTRACT is not set"\)/.test(src),
+      "the no-vault error is back to naming an env var and nothing else",
+    ).toBe(false);
+  });
+});

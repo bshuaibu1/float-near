@@ -263,8 +263,42 @@ const cfg = {
   agentKeysPath: process.env.NEAR_VAULT_AGENT_KEYS ?? ".float/agent-keys.json",
 };
 
+/**
+ * NO VAULT IS THE COMMONEST STATE, SO THE MESSAGE HAS TO BE AN ONRAMP.
+ *
+ * This said "NEAR_VAULT_CONTRACT is not set" — true, and a dead end. Measured
+ * 2026-11-12: an agent asked to pay someone got that from `vault_config` and
+ * `vault_tree`, concluded the NEAR rail was unavailable, then searched three
+ * unrelated wallets for something that could reach a `.near` address, and
+ * finally asked the user to paste a contract id. It never suggested MAKING a
+ * vault, because nothing in the failure told it that was possible without one.
+ *
+ * The WORKFLOW preamble already said "No vault yet? vault_create" and that was
+ * not enough: at the moment of failure an agent reads the ERROR, not the
+ * instructions it was handed at startup. So the routing belongs here.
+ *
+ * It is the FIRST thing a new install hits, and the product's answer is
+ * genuinely good: `vault_create` needs no key, no existing vault and no
+ * configuration. An error that does not say so turns the normal first step
+ * into a support question.
+ *
+ * Names BOTH cases — "you have none" and "you have one this client does not
+ * know about" — because the fix differs completely and the message cannot tell
+ * which it is.
+ */
 function requireVault(): string {
-  if (!cfg.vault) throw new Error("NEAR_VAULT_CONTRACT is not set");
+  if (!cfg.vault) {
+    throw new Error(
+      "No vault is configured, so there is nothing to read yet. " +
+        "If the user does not have a vault, call vault_create — it needs NO key, no existing " +
+        "vault and no configuration, and returns a link they approve in their own wallet. That " +
+        "is the normal first step, not an error. " +
+        "If they DO have one, set NEAR_VAULT_CONTRACT to its address and restart the client " +
+        "(servers are read once at startup); vault_create with an `owner` reports the address " +
+        "the factory derives for them. " +
+        "Do not go looking for another way to send money — no other rail can reach a NEAR vault.",
+    );
+  }
   return cfg.vault;
 }
 function tokenFor(t?: string): string {
