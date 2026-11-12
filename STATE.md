@@ -11,10 +11,20 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
-- Demo vault: `test015-near.usefloat.near` (owner `test015.near`), **1.000000 USDC**,
-  root 25/10 + node 1 `agent`, gas key `ed25519:E2PGijm4…` with 0.11892 NEAR,
-  `request_payment` only. Allowlist `test015.near`, registered on USDC. No cooldown,
-  no approval gate.
+- **THE DEMO VAULT IS GONE.** `test015-near.usefloat.near` was deleted 2026-11-12 with
+  `float-exit --yes`, deliberately, to re-test the flow from scratch. Fully reconciled:
+  **USDC +0.750000** and **NEAR +3.465858** back to `test015.near` (0.000128 short of the
+  3.465986 quoted = gas across the six steps). Nothing stranded. Owner now holds 5.797730 NEAR
+  and 8.857652 USDC.
+  - **Next step to have a demo again:** create a vault (browser, <https://usefloat.xyz>), fund
+    it with USDC, bind an agent (`float-agent` or `vault_add_role`), then re-read the figures.
+    The address is DERIVED, so it lands on the same id and `.mcp.json` needs no change.
+  - `DEMO.md` carries a banner saying its numbers are historical. `check-mcp-live.mjs` is red
+    (11 failures) and correctly so; `verify-all` is green because the gate never depended on a
+    live vault.
+  - The dead agent key was pruned from `.float/agent-keys.json` — a recreated vault shares the
+    same derived address, so a stale entry could have been handed to `vault_pay` instead of the
+    new one and failed like a contract bug.
 - **Every surface now defaults to mainnet** (was: CLIs mainnet, MCP/adapter/page testnet).
   `scripts/check-network-defaults.mjs` fails the gate if the eight of them drift apart.
 - `.mcp.json` was pointing at a **non-existent testnet vault**; repointed at the live

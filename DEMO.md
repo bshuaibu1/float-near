@@ -1,10 +1,26 @@
 <!-- STAMP commit=f2a909d date=2026-11-12 -->
 # Float — 90-second demo
 
+> ## ⚠ THE DEMO VAULT WAS DELETED on 2026-11-12
+>
+> `test015-near.usefloat.near` was torn down deliberately, to re-test the flow from scratch
+> (`float-exit`, everything recovered: 0.75 USDC + 3.465858 NEAR). **Every figure below is
+> historical until a new vault exists.**
+>
+> The *address* is unchanged — it derives from `test015.near`, so a recreated vault lands on the
+> same id and `.mcp.json` starts working again. The *state* will not match: new node ids, a new
+> agent key, zero USDC, zero spent today.
+>
+> Before presenting, create and fund a vault, bind an agent, then re-read the figures:
+> ```bash
+> node scripts/drive-mcp.mjs vault_config
+> node scripts/drive-mcp.mjs vault_budget '{"nodeId":1}'
+> node scripts/show-agent-key.mjs
+> ```
+> `node scripts/check-mcp-live.mjs` exercises all 27 tools and will stay red until then.
+
 **The one thing to land:** the agent asks for money, the *contract* decides, and the refusal names
 which rule stopped it. Everything else is supporting detail.
-
-Verified live state as of 2026-11-12 (read from chain, see the bottom of this file).
 
 ---
 
