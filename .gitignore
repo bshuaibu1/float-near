@@ -55,3 +55,13 @@ packages/create-float/SKILL.md
 
 # the gate's own dashboard build output (scripts/verify-all.mjs)
 apps/dashboard/.next-verify/
+
+# MCP client config and its backups: these carry NEAR_VAULT_AGENT_KEY inline on
+# some setups, so they are LIVE PRIVATE KEYS. `.mcp.json.bak` was committed and
+# pushed on 2026-11-12 by a `git add -A` after a script wrote the backup --
+# the key was for a testnet vault that does not exist, so it controlled
+# nothing, but the mechanism would have leaked a mainnet key just as readily.
+# Ignored by PATTERN, not by name, so the next backup is covered too.
+.mcp.json
+.mcp.json.bak
+*.bak
