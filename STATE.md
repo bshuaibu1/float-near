@@ -1,4 +1,4 @@
-<!-- STAMP commit=411d68e date=2026-11-12 -->
+<!-- STAMP commit=a52a9a5 date=2026-11-12 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -6,6 +6,29 @@ Long-form reasoning lives in `docs/`; settled calls live in `DECISIONS.md`; **ho
 together lives in `ARCHITECTURE.md`** — the parts, the trust boundaries, where the vault's code
 comes from, and the list of what is missing. This file is *current state only*. Update it when
 state changes, and re-stamp the commit line above.
+
+## Hackathon status — 2026-11-12
+
+**Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
+
+- Demo vault: `test015-near.usefloat.near` (owner `test015.near`), **1.000000 USDC**,
+  root 25/10 + node 1 `agent`, gas key `ed25519:E2PGijm4…` with 0.11892 NEAR,
+  `request_payment` only. Allowlist `test015.near`, registered on USDC. No cooldown,
+  no approval gate.
+- **Every surface now defaults to mainnet** (was: CLIs mainnet, MCP/adapter/page testnet).
+  `scripts/check-network-defaults.mjs` fails the gate if the eight of them drift apart.
+- `.mcp.json` was pointing at a **non-existent testnet vault**; repointed at the live
+  mainnet one and switched to the keyring. Verify without restarting the client:
+  `node scripts/drive-mcp.mjs vault_config`.
+- `README.md` and `DEMO.md` exist. `DEMO.md` is the 90-second script.
+- **STILL UNVERIFIED (needs you):** the under-cap and over-cap payments. Mainnet writes are
+  staged here, not run by me. `DEMO.md` has both; the over-cap one costs nothing.
+- **Incident 2026-11-12:** a private key was committed and pushed via a `.mcp.json.bak`
+  that `git add -A` swept up. Purged from history and the local object store, remote
+  force-pushed; the key controlled a non-existent testnet account. `check-no-secrets.mjs`
+  is now gate check 1.
+
+Gate: **38 checks**, all green (`node scripts/verify-all.mjs`).
 
 ## The pitch, in one paragraph
 
