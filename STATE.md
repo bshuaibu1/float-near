@@ -2,8 +2,10 @@
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
-Long-form reasoning lives in `docs/`; settled calls live in `DECISIONS.md`. This file is
-*current state only*. Update it when state changes, and re-stamp the commit line above.
+Long-form reasoning lives in `docs/`; settled calls live in `DECISIONS.md`; **how the parts fit
+together lives in `ARCHITECTURE.md`** — the parts, the trust boundaries, where the vault's code
+comes from, and the list of what is missing. This file is *current state only*. Update it when
+state changes, and re-stamp the commit line above.
 
 ## The pitch, in one paragraph
 

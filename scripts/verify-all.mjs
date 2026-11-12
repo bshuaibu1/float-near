@@ -329,6 +329,25 @@ const steps = [
      * were in that state while the Overview looked correct, because it was
      * the one that passed an owner.
      */
+    /**
+     * Every contract capability must be reachable by SOMETHING.
+     *
+     * The contract is the product; the MCP, the CLIs, the adapter and the web
+     * page are only ways to reach it. A method with no caller is a feature
+     * that shipped and cannot be used -- built, tested, deployed, invisible.
+     *
+     * Found six on its first run, including a complete two-step ownership
+     * transfer that vault_config already REPORTS while nothing can start it.
+     * Every gap this week was found by a user tripping over it; this is the
+     * thing that was supposed to be looking.
+     */
+    name: "surface map",
+    cmd: "node scripts/map-surfaces.mjs",
+    cwd: ".",
+    mustMatch: /every contract capability is reachable/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "dashboard owner",
     cmd: "node scripts/check-dashboard-owner.mjs",
     cwd: ".",
