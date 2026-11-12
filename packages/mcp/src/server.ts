@@ -107,6 +107,7 @@ function toYoctoNear(n: string): string {
 }
 import { buildCreatePlan, FACTORY_BY_NETWORK } from "./create.js";
 import { buildRoute, sendRequestPayment, type RouteArg } from "./sign.js";
+import { explainOutcome } from "./explain.js";
 import { getQuote, signBinding, toBase64 } from "./quote.js";
 
 /** How long a quote stays valid. Long enough to sign and send, short
@@ -354,15 +355,35 @@ WORKFLOW
   5. Winding down is a CLI job, not a tool: npx -p @floatonnear/create-float float-exit. It returns the tokens,
      the gas-key balances and the storage deposit. vault_teardown_report says what is recoverable.
 
-REFUSALS ARE ANSWERS. Report the reason code, do not retry blindly:
-  DAILY_BUDGET         this agent's own cap is spent.
-  PARENT_DAILY_BUDGET  a SIBLING drained the shared pool; this agent's own cap may look free.
-  PER_TX_LIMIT         one payment was too large; splitting it may still be refused by the cap.
-  NO_RECIPIENTS_SET    the node pays nobody yet; that is an owner decision, via vault_plan_set_recipients.
+SPEAK LIKE A PERSON. NEVER SHOW A REASON CODE TO THE USER.
+  vault_pay returns "say" -- a plain-English sentence with the real numbers in it -- plus
+  "next_step" and "money_moved". RELAY "say". Add "next_step" if there is one. That is the
+  whole reply; do not append the code, the request id, or the raw JSON.
+
+  A user who asked to pay someone and got "PARENT_PER_TX_LIMIT" has been told nothing. The
+  codes are precise and they do matter -- they are under "technical" for debugging, and you
+  should quote them only if the user asks why, asks for detail, or is clearly a developer.
+
+  Say this:   "That is too big for one payment -- the most per payment is 10 USDC, and this
+               asked for 15. Nothing was sent. Send 10 USDC or less, or ask the vault owner
+               to raise the limit."
+  Not this:   "The payment was BLOCKED with reason_code PARENT_PER_TX_LIMIT."
+
+  On success too: "Sent 0.25 USDC to alice.near. There is 24.75 USDC left to spend today."
+  Not "status: SETTLED".
+
+  REFUSALS ARE ANSWERS, not errors. Do not retry blindly -- a refused payment is the contract
+  doing its job. "money_moved" tells you whether anything actually left the vault; never imply
+  money moved when it is false, and never imply money is lost when a refusal was free.
 
 WORTH KNOWING
   Budgets are hierarchical: a payment charges every ancestor, so a vault-wide ceiling holds even
   when a child's cap looks free.
+  Understand the difference between DAILY_BUDGET and PARENT_DAILY_BUDGET even though you must
+  not print either. DAILY_BUDGET means this agent spent its own allowance. PARENT_DAILY_BUDGET
+  means a SIBLING drained the shared pool, so this agent's own cap can still read as fully
+  available -- a user who checks their budget, sees room, and is told only "refused" will
+  reasonably think the product is broken. Neither is fixed by retrying.
   An implicit account (a 64-character hex id) cannot own a vault at all. Tell the user to use a
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
@@ -1322,7 +1343,102 @@ server.tool(
       gasTgas: DEFAULT_GAS_TGAS,
       route,
     });
-    return json(out);
+
+    /**
+     * HAND THE AGENT THE SENTENCE, do not hope it writes a good one.
+     *
+     * This used to `return json(out)` — just the contract's four fields — and
+     * the instructions said "Report the reason code", so a user who asked to
+     * pay someone got `PARENT_PER_TX_LIMIT` back. Correct, and useless to them.
+     *
+     * A good explanation needs NUMBERS the payment response never carried: the
+     * per-payment cap, what is left today. So read them HERE, on the way out,
+     * and only when they will be used. The budget read is one view call; the
+     * caps come from the tree, fetched only when a limit actually fired.
+     *
+     * The code is NOT discarded — it moves under `technical`. Knowing exactly
+     * which rule fired is a real asset (PARENT_DAILY_BUDGET meaning "a sibling
+     * drained the shared pool" is something a flat policy model cannot say),
+     * it is just not what a person wants first.
+     */
+    const o = out as { status?: string; reason_code?: string; node_id?: number };
+    const limitFired = /PER_TX_LIMIT|DAILY_BUDGET/.test(o.reason_code ?? "");
+    const settled = o.status === "SETTLED";
+    const tok = tokenFor(token);
+
+    // The token's own symbol and decimals, cached process-wide, so the sentence
+    // says "USDC" and not a 64-character contract id.
+    const meta = await tokenMeta(cfg.rpcUrl, tok, (rpc, t) =>
+      viewFunction(rpc, t, "ft_metadata", {}),
+    ).catch(() => null);
+    const dec = meta?.decimals ?? cfg.decimals;
+
+    let perTxCap: string | undefined;
+    let available: string | undefined;
+    let dailyCap: string | undefined;
+    const nodeId = o.node_id;
+
+    if (nodeId !== undefined && (limitFired || settled)) {
+      // One view call, and it is the figure BOTH a success and a daily-cap
+      // refusal want.
+      const b = await viewFunction<{ daily_cap: string; available: string } | null>(
+        cfg.rpcUrl,
+        vault,
+        "get_node_budget",
+        { node_id: nodeId, token: tok },
+      ).catch(() => null);
+      if (b) {
+        available = fromBaseUnits(BigInt(b.available), dec);
+        dailyCap = fromBaseUnits(BigInt(b.daily_cap), dec);
+      }
+
+      if (limitFired) {
+        // The SMALLEST per-payment cap from this node up is the one that bound.
+        // Fetched only when a limit actually fired, so a settled payment pays
+        // for one extra call and not two.
+        type CapNode = {
+          id: number;
+          parent: number | null;
+          limits?: { token: string; per_tx_cap: string }[];
+        };
+        const tree = await viewFunction<CapNode[]>(cfg.rpcUrl, vault, "get_tree", {}).catch(
+          () => null,
+        );
+        if (tree) {
+          const byId = new Map(tree.map((n) => [n.id, n]));
+          let smallest: bigint | undefined;
+          for (
+            let cur = byId.get(nodeId);
+            cur !== undefined;
+            cur = cur.parent === null ? undefined : byId.get(cur.parent)
+          ) {
+            const lim = (cur.limits ?? []).find((l) => l.token === tok);
+            if (!lim) continue;
+            const v = BigInt(lim.per_tx_cap);
+            if (smallest === undefined || v < smallest) smallest = v;
+          }
+          if (smallest !== undefined) perTxCap = fromBaseUnits(smallest, dec);
+        }
+      }
+    }
+
+    const explained = explainOutcome({
+      status: o.status,
+      reason_code: o.reason_code,
+      amount,
+      recipient,
+      symbol: meta?.symbol ?? "tokens",
+      perTxCap,
+      available,
+      dailyCap,
+    });
+
+    return json({
+      say: explained.say,
+      next_step: explained.next,
+      money_moved: explained.moved,
+      technical: out,
+    });
   },
 );
 

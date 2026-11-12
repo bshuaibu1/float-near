@@ -189,7 +189,32 @@ signed by the vault, so like closing, it is a CLI job.
 A refusal comes back as a **value**, not an error. `status: "BLOCKED"` with a
 `reason_code`. Do not retry it — nothing about retrying changes the answer.
 
-These are the exact strings the contract emits. Match on them literally.
+### Never show a reason code to the user
+
+`vault_pay` already returns a plain-English `say`, a `next_step`, and a
+`money_moved` flag. **Relay `say`, add `next_step` if there is one, and stop.**
+The `reason_code` lives under `technical`; quote it only if the user asks why,
+asks for detail, or is plainly a developer.
+
+> Say: *"That's too big for one payment — the most per payment is 10 USDC, and
+> this asked for 15. Nothing was sent. Send 10 USDC or less, or ask the vault
+> owner to raise the limit."*
+>
+> Not: *"The payment was BLOCKED with reason_code PARENT_PER_TX_LIMIT."*
+
+The same applies when it works: *"Sent 0.25 USDC to alice.near. There's 24.75
+USDC left to spend today."* — not `status: SETTLED`.
+
+Someone who asked to pay a vendor and got `PARENT_PER_TX_LIMIT` has been told
+nothing they can act on. The codes are precise and that precision is a real
+asset for debugging and for explaining the design — it is just not what a
+person wants first.
+
+### The codes themselves
+
+You still need to understand these, to give correct advice and to avoid
+retrying something a retry cannot fix. These are the exact strings the contract
+emits. Match on them literally.
 
 | reason_code | what it means | what to do |
 | --- | --- | --- |

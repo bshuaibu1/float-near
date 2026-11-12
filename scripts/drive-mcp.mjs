@@ -28,18 +28,47 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const SERVER_NAME = "float-near";
+/**
+ * `vault_pay` stays refused BY DEFAULT, for the reason in the header: a
+ * convenience script that can spend is one typo from spending.
+ *
+ * FLOAT_DRIVE_ALLOW_OVER_CAP=1 opens it for amounts that CANNOT settle, and the
+ * check is the same one scripts/prove-refusal.mjs uses: read the smallest
+ * per-payment cap in the node's ancestor chain from the chain, and refuse
+ * unless the amount exceeds it. So the escape hatch cannot move money -- it is
+ * narrowed by live state, not by my intention to be careful.
+ */
 const REFUSED = new Set(["vault_pay"]);
+const ALLOW_OVER_CAP = process.env.FLOAT_DRIVE_ALLOW_OVER_CAP === "1";
 
 const [toolArg, argsArg] = process.argv.slice(2);
 const LIST = toolArg === "--list";
 const tool = LIST ? null : (toolArg ?? "vault_config");
 
-if (tool && REFUSED.has(tool)) {
+if (tool && REFUSED.has(tool) && !ALLOW_OVER_CAP) {
   console.error(
     `drive-mcp: refusing ${tool}. This script is read-only — mainnet writes are staged and ` +
-      `human-run. Run the payment yourself, deliberately, from the MCP client.`,
+      `human-run. Run the payment yourself, deliberately, from the MCP client.` +
+      `${String.fromCharCode(10)}  To demonstrate a REFUSAL (an amount that cannot settle), set ` +
+      `FLOAT_DRIVE_ALLOW_OVER_CAP=1.`,
   );
   process.exit(2);
+}
+
+if (tool === "vault_pay" && ALLOW_OVER_CAP) {
+  // Enforced HERE rather than trusted: the amount must exceed the smallest
+  // per-payment cap in the chain, so no transfer is reachable on this path.
+  //
+  // CAUGHT, not left to an unhandled rejection. A refusal here is an expected
+  // outcome of a safety check, and a 20-line stack trace reads like the script
+  // is broken rather than like the guard did its job.
+  const { assertCannotSettle } = await import("./cannot-settle.mjs");
+  try {
+    await assertCannotSettle(JSON.parse(argsArg ?? "{}"));
+  } catch (e) {
+    console.error(`drive-mcp: ${e.message}`);
+    process.exit(2);
+  }
 }
 
 const cfg = JSON.parse(readFileSync(".mcp.json", "utf8"));
