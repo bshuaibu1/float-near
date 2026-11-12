@@ -105,6 +105,20 @@ state changes, and re-stamp the commit line above.
   went searching three unrelated wallets instead of offering to make a vault — the WORKFLOW
   preamble already said the right thing, which is the point (see `DECISIONS.md`). Shipped in the
   working tree; **not yet published** — npm still has mcp 0.9.0 without it.
+- **THE LIVE DOCS ARE STALE, and this made four real fixes invisible.**
+  `usefloat.xyz/skill.md` and `app.usefloat.xyz/skill.md` both serve a **28,050-byte** file while
+  the repo has **32,003**. A second cold install reported the same four defects word for word,
+  because it read the deployed copy. `check-plugin.mjs` was green the whole time — it compares the
+  three REPO copies, and the one users read lives on a server.
+  - **Remedy is a PULL, not a redeploy.** `web/serve.mjs` does `readFileSync(file)` inside the
+    request handler with `cache-control: no-store`, so the served bytes change the moment the file
+    does: `ssh root@154.12.117.17 'cd /srv/float-near-web && git pull --ff-only origin main'`.
+    That avoids `deploy-skill-host.sh` entirely — the script memory records as resetting the tree
+    it runs from and executing its own comments.
+  - `node scripts/check-live-docs.mjs` detects the drift and names which user-visible defect is
+    still live. **Currently RED.** Not in the gate (needs the internet and a live host).
+  - Open, minor: the apex serves `skill.md` as `text/plain`, `app.` as `text/markdown`;
+    `serve.mjs` is explicit that plain text is the intent.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
   create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
   public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
