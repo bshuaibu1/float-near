@@ -362,6 +362,27 @@ const steps = [
      * Flipping the MCP broke zero of 290 tests, which is the real defect: the
      * value was defensible, the absence of any check comparing them was not.
      */
+    /**
+     * NO PRIVATE KEY MAY BE TRACKED BY GIT. Runs FIRST, because a leaked
+     * secret is the only failure here that cannot be undone by a later commit.
+     *
+     * Added the day it happened: a script wrote .mcp.json.bak before editing
+     * the MCP config, the .bak matched no ignore rule, `git add -A` swept it
+     * up, and an ed25519 private key was committed AND pushed. The key was for
+     * a testnet vault that does not exist, so it controlled nothing -- but the
+     * mechanism would have taken a mainnet key just as readily.
+     *
+     * The backup was the CAREFUL half of the operation. That is what this
+     * guards: not reckless commits, but a prudent step whose output nobody
+     * classified.
+     */
+    name: "no tracked secrets",
+    cmd: "node scripts/check-no-secrets.mjs",
+    cwd: ".",
+    mustMatch: /no secrets: \d+ tracked files scanned/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "network defaults agree",
     cmd: "node scripts/check-network-defaults.mjs",
     cwd: ".",
