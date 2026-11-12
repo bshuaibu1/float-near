@@ -43,6 +43,15 @@ state changes, and re-stamp the commit line above.
   are kept (they are a differentiator) and the instructions still teach the
   `DAILY_BUDGET` vs `PARENT_DAILY_BUDGET` difference while forbidding printing it.
   See `packages/mcp/src/explain.ts` and `DECISIONS.md`.
+- **Merged to `main`** (2026-11-12). All of the above was on `docs/map-the-surfaces` for 23
+  commits, so the repo's front page had no README. Main now carries everything.
+- **Git history is CLEAN of secrets** — 3393 text blobs across all refs, verified with a
+  planted-secret control (`node scripts/scan-history-secrets.mjs`). This is the pre-flight for
+  making the repo public, which is still **PRIVATE** and therefore invisible to judges.
+- **Release staged, NOT published** — needs your 2FA. mcp **0.9.0**, create-float **0.8.0**,
+  adapter **0.3.0**. Published npm is still mcp 0.6.5, which has none of the mainnet default or
+  the plain-English refusals, so anyone following the README's `npx` today gets the old footgun.
+  Dry-runs pass and the tarball was checked to contain the new UX.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
   create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
   public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
