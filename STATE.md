@@ -48,10 +48,17 @@ state changes, and re-stamp the commit line above.
 - **Git history is CLEAN of secrets** — 3393 text blobs across all refs, verified with a
   planted-secret control (`node scripts/scan-history-secrets.mjs`). This is the pre-flight for
   making the repo public, which is still **PRIVATE** and therefore invisible to judges.
-- **Release staged, NOT published** — needs your 2FA. mcp **0.9.0**, create-float **0.8.0**,
-  adapter **0.3.0**. Published npm is still mcp 0.6.5, which has none of the mainnet default or
-  the plain-English refusals, so anyone following the README's `npx` today gets the old footgun.
-  Dry-runs pass and the tarball was checked to contain the new UX.
+- **PUBLISHED 2026-11-12 and verified from the registry**: mcp **0.9.0**, create-float
+  **0.8.0**, adapter **0.3.0** (were 0.6.5 / 0.6.1 / 0.2.1). So `npx -y @floatonnear/mcp` now
+  gets mainnet by default and plain-English refusals instead of raw reason codes.
+  Verified by INSTALLING EACH FRESH FROM npm and checking the shipped artifact, not the version
+  number: explain.js present with the real copy, instructions forbid printing codes, mainnet
+  default, unknown network fails closed, `float-retire` finally in `bin` at all, and the shipped
+  wasm is still the mainnet-validated `dc7a3fb6…`.
+- **Gotcha worth keeping: `npm view` serves stale metadata for minutes after a publish.** It
+  reported 0.6.5 with `--prefer-online` while the registry already had 0.9.0, and `npm install`
+  failed `ETARGET` for a version that existed. To check a publish, hit
+  `https://registry.npmjs.org/<pkg>` directly, or `npm cache clean --force` first.
 - GitHub description updated (the old one still advertised the retired Chain Signatures/Base
   rail). Repo has no topics and no website link yet — `usefloat.xyz` is live.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
