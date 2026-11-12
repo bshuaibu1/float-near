@@ -92,7 +92,7 @@ As soon as setup is done, say what they have and what it would cost. Something
 close to this, in your own words:
 
 > You don't have a vault yet. I can set one up — it's **one signature in your
-> own wallet**, and you need to be holding about **3.55 NEAR**. Almost all of
+> own wallet**, and you need to be holding about **3.7 NEAR**. Almost all of
 > that is a refundable storage deposit your vault keeps, not a fee. Want me to?
 
 Three things that wording is carrying, and all three matter:
@@ -105,9 +105,17 @@ Three things that wording is carrying, and all three matter:
 - **refundable.** 3.55 NEAR reads as a fee unless you say otherwise. It is a
   storage deposit the vault holds and returns on teardown.
 
-**Quote `vault_create`'s own `totalRequiredNear`, not the 3.55 above**, once you
+**Quote `vault_create`'s own `totalRequiredNear`, not the 3.7 above**, once you
 have called it. That figure is derived from the exact contract being deployed;
 this one is an illustration and will drift as the contract changes.
+
+**3.7 IS THE WITH-AGENT FIGURE, AND IT IS DELIBERATELY THE HIGHER ONE.** Binding
+an agent in the creation transaction adds 0.12 NEAR of gas-key funding, so the
+real totals are **3.54839 without** an agent and **3.66839 with** one. Binding
+one is the normal thing to do — otherwise the vault cannot pay — so the offer
+must quote the larger number. An understated quote is not a rounding nicety: a
+user who funds to exactly what they were told has the transaction REFUSED by
+their own wallet, which reads as the product being broken. Round up, always.
 
 **Do NOT auto-create one.** It spends real money, and it cannot complete
 without them anyway — `vault_create` returns a link they approve in their own

@@ -7,7 +7,9 @@ import {
   buildCreatePlan,
   CONTRACT_BYTES,
   CREATE_GAS_TGAS,
+  GAS_RESERVATION_YOCTO,
   PAGE_HEADROOM_YOCTO,
+  STORAGE_COST_PER_BYTE,
 } from "./create.js";
 
 /**
@@ -264,5 +266,49 @@ describe("the page's default caps can actually deliver a round payment", () => {
 
   it("allows more than one max-size payment per day", () => {
     expect(def("daily")).toBeGreaterThanOrEqual(def("pertx") * 2);
+  });
+});
+
+/**
+ * SKILL.md'S OFFER MUST NOT UNDERSTATE WHAT THE USER HAS TO HOLD.
+ *
+ * The offer quotes a figure BEFORE any tool call, so it cannot come from
+ * `vault_create` — it is hand-written, which is the bug args.mjs already paid
+ * for. The existing "never UNDERSTATES" test in create-float covers the CLI
+ * path (`vaultFunding`); the offer is the BROWSER path and was uncovered.
+ *
+ * It said 3.55, the no-agent total. Binding an agent in the creation
+ * transaction adds 0.12 of gas-key funding, and binding one is the normal
+ * thing to do — the vault cannot pay otherwise — so the real default is
+ * 3.66839. A user who funds to exactly 3.55 has the transaction REFUSED by
+ * their own wallet, which reads as the product being broken.
+ *
+ * Asserts >= the WITH-AGENT total, computed from the same constants the tool
+ * uses, so a contract that grows fails this instead of a user.
+ */
+describe("the SKILL.md vault offer never understates the deposit", () => {
+  const PAGE = resolve(import.meta.dirname, "..", "..", "..", "SKILL.md");
+
+  it("quotes at least the with-agent total a wallet will demand", () => {
+    if (!existsSync(PAGE)) {
+      throw new Error(`cannot find ${PAGE}; this test must not silently skip`);
+    }
+    const skill = readFileSync(PAGE, "utf8");
+
+    const stake = BigInt(CONTRACT_BYTES) * STORAGE_COST_PER_BYTE;
+    const withAgent = stake + PAGE_HEADROOM_YOCTO + AGENT_GAS_KEY_FUNDING_YOCTO;
+    const total = Number(withAgent + GAS_RESERVATION_YOCTO) / 1e24;
+
+    // Every "N.N NEAR" / "N.NN NEAR" the offer section quotes.
+    const quoted = [...skill.matchAll(/\*\*([0-9]+\.[0-9]+) NEAR\*\*/g)].map((m) => Number(m[1]));
+    expect(quoted.length, "the offer quotes no bolded NEAR figure at all").toBeGreaterThan(0);
+
+    const headline = quoted[0];
+    expect(
+      headline >= total,
+      `SKILL.md's offer quotes ${headline} NEAR but a wallet will demand ${total.toFixed(5)} ` +
+        `with an agent bound. Round UP — an understated quote gets the user's transaction ` +
+        `refused by their own wallet.`,
+    ).toBe(true);
   });
 });

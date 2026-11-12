@@ -1,4 +1,4 @@
-<!-- STAMP commit=f163fa7 date=2026-11-12 -->
+<!-- STAMP commit=946e278 date=2026-11-12 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -140,6 +140,15 @@ state changes, and re-stamp the commit line above.
     0.10.0 — a caret on a 0.x range pins the MINOR. Now `^0.10.0`.
   - **Needs publishing:** `mcp 0.10.0` and `float-adapter 0.3.1`. No server pull needed; the
     live `skill.md` is unaffected.
+- **The operating guide now ships as an MCP resource** (`float://skill`), so a real user gets the
+  depth without a repo or a skill install — verified by reading it back from the PUBLISHED
+  `@floatonnear/mcp@0.10.0`: 33,784 bytes of markdown. Published: mcp **0.10.0**,
+  float-adapter **0.3.1** (its `^0.9.0` would not have accepted 0.10.0 — caret on 0.x pins the
+  MINOR), create-float **0.8.1**.
+- **Fixed an UNDERSTATED cost in the vault offer.** SKILL.md quoted 3.55 NEAR, the no-agent
+  figure, while the default path binds an agent and really needs **3.66839**. A user funding to
+  the quote has the transaction refused by their own wallet. Now quotes **3.7** (rounded up) and
+  `create.pins.test.ts` fails if the quoted figure drops below the with-agent total.
 - **Remaining:** make the repo PUBLIC (git history verified clean — `scripts/scan-history-secrets.mjs`),
   and the hackathon submission, which nobody has started and is the only item with a hard deadline
   (**2026-11-14 23:59 UTC**). Lower priority: the public dashboard's DEFAULT vault is still testnet
