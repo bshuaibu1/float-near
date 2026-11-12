@@ -1,4 +1,4 @@
-<!-- STAMP commit=cee4786 date=2026-11-12 -->
+<!-- STAMP commit=90d7f7c date=2026-11-12 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -119,6 +119,10 @@ state changes, and re-stamp the commit line above.
     still live. **Currently RED.** Not in the gate (needs the internet and a live host).
   - Open, minor: the apex serves `skill.md` as `text/plain`, `app.` as `text/markdown`;
     `serve.mjs` is explicit that plain text is the intent.
+- **Release staged and ready to publish:** mcp **0.9.1** (no-vault onramp), create-float
+  **0.8.1** (ships the corrected SKILL.md and the new up-front vault offer). float-adapter
+  **0.3.0 needs nothing** — unchanged since it published. Tarballs unpacked and verified to
+  carry the changes; prepack guards pass.
 - **Remaining for the demo:** nothing on Path A. Open items are `npm publish` (mcp 0.8.1,
   create-float 0.7.0 — needs your 2FA; `float-retire` is not installable until then) and the
   public dashboard's DEFAULT vault still being testnet (invisible in the demo, since the UI
