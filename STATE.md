@@ -18,7 +18,8 @@ state changes, and re-stamp the commit line above.
   and 8.857652 USDC.
   - **Next step to have a demo again:** create a vault (browser, <https://usefloat.xyz>), fund
     it with USDC, bind an agent (`float-agent` or `vault_add_role`), then re-read the figures.
-    The address is DERIVED, so it lands on the same id and `.mcp.json` needs no change.
+    The address is DERIVED, so a recreated vault lands on the same id — but `.mcp.json` is
+    gone now too (see below), so the client needs configuring either way.
   - `DEMO.md` carries a banner saying its numbers are historical. `check-mcp-live.mjs` is red
     (11 failures) and correctly so; `verify-all` is green because the gate never depended on a
     live vault.
@@ -27,9 +28,20 @@ state changes, and re-stamp the commit line above.
     new one and failed like a contract bug.
 - **Every surface now defaults to mainnet** (was: CLIs mainnet, MCP/adapter/page testnet).
   `scripts/check-network-defaults.mjs` fails the gate if the eight of them drift apart.
-- `.mcp.json` was pointing at a **non-existent testnet vault**; repointed at the live
-  mainnet one and switched to the keyring. Verify without restarting the client:
-  `node scripts/drive-mcp.mjs vault_config`.
+- **NO MCP SERVER IS CONFIGURED RIGHT NOW** (2026-11-12, deliberate — reinstalling from
+  scratch alongside the vault). `.mcp.json` was deleted, and `float` was removed from
+  `~/.claude.json`. Both were the SAME product: the repo's local `dist/server.js` and
+  `npx @floatonnear/mcp`. **`float-agent` was kept** — it is `@usefloat/mcp`, a different
+  product (Solana/Twitter/swap tools) for the Colosseum work, and a "remove the float MCPs"
+  instruction should not take it.
+  - Backups: `~/.claude.json.float-backup` and `.float/mcp.json.float-backup` (gitignored, held
+    an agent key). `~/.claude.json` was edited surgically — it carries project history and
+    other servers.
+  - Reinstall: point a client at `npx -y @floatonnear/mcp` with `NEAR_VAULT_NETWORK=mainnet`,
+    `NEAR_VAULT_FACTORY=usefloat.near`, and `NEAR_VAULT_CONTRACT` **empty** — `vault_create`
+    needs no vault and no key, which is the real first-run path.
+  - `scripts/drive-mcp.mjs` and `settle-baseline.mjs` read `.mcp.json` and now crash with a raw
+    ENOENT; `show-agent-key.mjs` degrades with a clear message. They work again once it exists.
 - `README.md` and `DEMO.md` exist. `DEMO.md` is the 90-second script.
 - `vault_await_create` now refuses to call a FACTORY a live vault (`vault_id` is the
   discriminator); all four states re-verified against mainnet.
