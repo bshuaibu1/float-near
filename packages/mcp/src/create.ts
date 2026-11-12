@@ -67,6 +67,17 @@ export const STORAGE_COST_PER_BYTE = 10n ** 19n;
 export const PAGE_HEADROOM_YOCTO = 36n * 10n ** 22n;
 
 /**
+ * NEP-145 registration for ONE token, mirroring the factory's
+ * `TOKEN_REGISTRATION` and the vault's `DEPOSIT_ADDRESS_STORAGE`.
+ *
+ * The factory registers a new vault on every token named in `root_limits`, so
+ * a plain `ft_transfer` into it succeeds — before that it failed with "the
+ * account is not registered", which broke funding for every browser-created
+ * vault. Pinned against the contract by `create.pins.test.ts`.
+ */
+export const TOKEN_REGISTRATION_YOCTO = 125n * 10n ** 19n;
+
+/**
  * Funding for an agent's gas key, when one is bound at creation.
  *
  * A NEP-611 gas key's BALANCE is its spending cap — `allowance` is null by
@@ -404,8 +415,21 @@ export function buildCreatePlan(i: CreatePlanInput): CreatePlan {
   // Both floors move by the gas-key funding when an agent is bound: the page
   // attaches it, and the factory requires it.
   const agentFunding = i.agentPk ? AGENT_GAS_KEY_FUNDING_YOCTO : 0n;
+  /**
+   * The factory also registers the new vault on each token in `root_limits`,
+   * so its floor covers that too — otherwise it would fund those receipts from
+   * its OWN balance, which is the drain documented in the contract.
+   *
+   * Counted as ONE because `vault_create` builds a single-token `root_limits`.
+   * It does not change the quoted total today: the page's 0.36 headroom keeps
+   * `pageAttaches` above the floor either way, and `max` picks the page. It is
+   * included so the floor stays correct if an operator raises
+   * `required_deposit` and the floor becomes the binding term.
+   */
+  const registrations = TOKEN_REGISTRATION_YOCTO;
   const pageAttaches = stake + PAGE_HEADROOM_YOCTO + agentFunding;
-  const factoryFloor = BigInt(i.requiredDepositYocto) + stake + agentFunding;
+  const factoryFloor =
+    BigInt(i.requiredDepositYocto) + stake + agentFunding + registrations;
   const deposit = pageAttaches > factoryFloor ? pageAttaches : factoryFloor;
   const total = deposit + GAS_RESERVATION_YOCTO;
 

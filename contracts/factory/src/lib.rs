@@ -48,6 +48,33 @@ const GAS_FOR_VAULT_NEW: Gas = Gas::from_tgas(30);
 /// Enough for the refund callback, which at most makes one transfer.
 const GAS_FOR_REFUND: Gas = Gas::from_tgas(10);
 
+/// NEP-145 registration for ONE token, so a new vault can RECEIVE it.
+///
+/// WHY THE FACTORY DOES THIS AT ALL. A NEP-141 transfer to an unregistered
+/// account FAILS — "The account <id> is not registered" — it does not silently
+/// succeed. So a freshly created vault could not be funded, and the golden
+/// path's fourth step ("send it some USDC") was broken for every vault made
+/// through the browser.
+///
+/// The CLI wizard registers the vault as one of its steps. The browser path
+/// did not, and the browser path is the one strangers use. Measured 2026-11-13
+/// on `test015-near.usefloat.near`: created through the page, LIVE, owner
+/// verified — and `storage_balance_of` returned null, so the owner's first
+/// `ft_transfer` into their own vault would have failed with nothing in the
+/// product explaining why.
+///
+/// Matches the vault's own `DEPOSIT_ADDRESS_STORAGE` and the live USDC
+/// `storage_balance_bounds.min` exactly, both 1.25e21.
+const TOKEN_REGISTRATION: NearToken = NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
+
+/// Gas for one `storage_deposit`. Mirrors the vault's `GAS_FOR_STORAGE_DEPOSIT`.
+const GAS_FOR_TOKEN_REGISTRATION: Gas = Gas::from_tgas(10);
+
+/// The vault's own `MAX_TOKENS`, so a caller cannot inflate the deposit floor
+/// by passing a hundred token ids. Registrations beyond this are skipped; the
+/// vault's `new` rejects such a `root_limits` anyway, with a better message.
+const MAX_REGISTRATIONS: usize = 4;
+
 /// The vault account id this factory would create for `owner`.
 ///
 /// Deterministic, and that is the point: the dashboard computes the same id
@@ -95,6 +122,32 @@ pub fn vault_id(owner: &str, factory: &str) -> Option<AccountId> {
 /// vault. The root limits and recipients are forwarded verbatim from the
 /// caller: a root with no limits holds no budget, and a root with no recipients
 /// refuses every payment NO_RECIPIENTS_SET.
+/// The token ids a new vault will hold a budget in, read out of `root_limits`.
+///
+/// DEFENSIVE BY DESIGN: a shape this cannot parse yields an empty list rather
+/// than a panic. The vault's `new` validates `root_limits` properly and its
+/// error is the one worth showing; failing here would replace a good message
+/// with a worse one, and would do it AFTER the deposit moved.
+fn tokens_in(root_limits: &near_sdk::serde_json::Value) -> Vec<AccountId> {
+    let Some(arr) = root_limits.as_array() else {
+        return Vec::new();
+    };
+    let mut out: Vec<AccountId> = Vec::new();
+    for lim in arr.iter().take(MAX_REGISTRATIONS) {
+        if let Some(id) = lim
+            .get("token")
+            .and_then(|t| t.as_str())
+            .and_then(|t| t.parse::<AccountId>().ok())
+        {
+            // A duplicated token would be registered, and PAID FOR, twice.
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
 fn new_args(
     owner: &AccountId,
     network: &str,
@@ -234,6 +287,14 @@ impl Factory {
         // covers only code + state leaves the vault below its storage
         // requirement the moment the key is funded — the same bricking this
         // floor exists to prevent, arriving one action later.
+        // AND IT SCALES WITH THE TOKEN REGISTRATIONS, for the same reason: each
+        // `storage_deposit` receipt is funded by THIS factory, so a deposit
+        // that does not cover them spends the factory's own balance per vault.
+        // That is the exact drain documented below for the gas key.
+        let registrations = tokens_in(&root_limits);
+        let registration_cost = TOKEN_REGISTRATION
+            .saturating_mul(registrations.len() as u128);
+
         let need = self
             .required_deposit
             .saturating_add(NearToken::from_yoctonear(bytes as u128 * 10u128.pow(19)))
@@ -241,7 +302,8 @@ impl Factory {
                 AGENT_GAS_KEY_FUNDING
             } else {
                 NearToken::from_yoctonear(0)
-            });
+            })
+            .saturating_add(registration_cost);
         let (owner, vault) = self.begin(&label, need);
         let deposit = env::attached_deposit();
 
@@ -268,7 +330,12 @@ impl Factory {
             deposit.saturating_sub(AGENT_GAS_KEY_FUNDING)
         } else {
             deposit
-        };
+        }
+        // Held back for the same reason as the gas key: `begin` has already
+        // refused a deposit below `need`, which includes this, so it cannot
+        // underflow — and `saturating_sub` would transfer a colossal number
+        // rather than panic if it ever could.
+        .saturating_sub(registration_cost);
 
         let batch = Promise::new(vault.clone())
             .create_account()
@@ -309,6 +376,44 @@ impl Factory {
                 .transfer_to_gas_key(pk.clone(), AGENT_GAS_KEY_FUNDING),
             None => batch,
         };
+
+        // REGISTERED BY A SEPARATE PROMISE, NOT INSIDE THE BATCH.
+        //
+        // The batch's receiver is the VAULT; `storage_deposit` has to reach
+        // the TOKEN, so it cannot be another action on it. That turns out to
+        // be the safer shape anyway:
+        //
+        // INDEPENDENT FAILURE IS THE POINT. Chained, a token that does not
+        // implement NEP-145, or wants more than TOKEN_REGISTRATION, or is
+        // simply a typo in `root_limits`, would revert the whole creation —
+        // the user pays gas and gets nothing. Independent, the vault is
+        // created and merely unregistered, which the owner can fix with one
+        // `storage_deposit` of their own. A vault that exists and needs one
+        // more step beats a transaction that burned gas for nothing.
+        //
+        // `registration_only: true` makes it degrade safely in both
+        // directions: a cheaper token refunds the excess, a dearer one fails
+        // alone. Same reasoning as the vault's own DEPOSIT_ADDRESS_STORAGE.
+        //
+        // THE DROP IS THE MECHANISM. near-sdk's `impl Drop for Promise` calls
+        // `construct_recursively`, so letting each binding fall out of scope
+        // is what schedules it. Bound explicitly because `Promise` is
+        // `must_use` and a warning is the only thing that would distinguish
+        // "scheduled" from "silently never happened" — the same note the
+        // vault carries over its gas-key install.
+        for token in &registrations {
+            let _register = Promise::new(token.clone()).function_call(
+                "storage_deposit".to_string(),
+                near_sdk::serde_json::json!({
+                    "account_id": vault,
+                    "registration_only": true,
+                })
+                .to_string()
+                .into_bytes(),
+                TOKEN_REGISTRATION,
+                GAS_FOR_TOKEN_REGISTRATION,
+            );
+        }
 
         batch
             .function_call(

@@ -430,7 +430,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.10.0" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.10.2" }, { instructions: INSTRUCTIONS });
 
 /**
  * THE FULL OPERATING GUIDE, AS AN MCP RESOURCE.

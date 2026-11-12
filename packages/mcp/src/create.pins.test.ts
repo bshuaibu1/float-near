@@ -10,6 +10,7 @@ import {
   GAS_RESERVATION_YOCTO,
   PAGE_HEADROOM_YOCTO,
   STORAGE_COST_PER_BYTE,
+  TOKEN_REGISTRATION_YOCTO,
 } from "./create.js";
 
 /**
@@ -309,6 +310,48 @@ describe("the SKILL.md vault offer never understates the deposit", () => {
       `SKILL.md's offer quotes ${headline} NEAR but a wallet will demand ${total.toFixed(5)} ` +
         `with an agent bound. Round UP — an understated quote gets the user's transaction ` +
         `refused by their own wallet.`,
+    ).toBe(true);
+  });
+});
+
+/**
+ * THE REGISTRATION COST IS A COPY, so pin it to the contract.
+ *
+ * The factory's `TOKEN_REGISTRATION`, the vault's `DEPOSIT_ADDRESS_STORAGE`
+ * and the MCP's `TOKEN_REGISTRATION_YOCTO` are the same number in three
+ * places. Live USDC `storage_balance_bounds.min` is the fourth, which is why
+ * the value is 1.25e21 and not a guess.
+ */
+describe("the token-registration cost matches the contracts", () => {
+  it("equals the factory's TOKEN_REGISTRATION", () => {
+    const factory = readFileSync(
+      resolve(import.meta.dirname, "..", "..", "..", "contracts", "factory", "src", "lib.rs"),
+      "utf8",
+    );
+    const m = /const TOKEN_REGISTRATION: NearToken =\s*NearToken::from_yoctonear\(([0-9_]+)\)/.exec(
+      factory,
+    );
+    expect(m, "cannot find TOKEN_REGISTRATION in the factory").not.toBeNull();
+    expect(TOKEN_REGISTRATION_YOCTO).toBe(BigInt(m![1].replace(/_/g, "")));
+  });
+
+  it("the page's headroom still covers the floor, so the quote does not move", () => {
+    // If the floor ever OVERTOOK pageAttaches, the user-visible total would
+    // jump and every quoted figure in the docs would be wrong at once.
+    const stake = BigInt(CONTRACT_BYTES) * STORAGE_COST_PER_BYTE;
+    const pageAttaches = stake + PAGE_HEADROOM_YOCTO + AGENT_GAS_KEY_FUNDING_YOCTO;
+    // Worst case the vault permits: MAX_TOKENS = 4 registrations.
+    // required_deposit is 0.1 NEAR = 1e23. Written as 10n ** 23n because the
+    // first draft said `100n * 10n ** 22n`, which is 1 NEAR -- ten times too
+    // much -- and the test duly failed on its own bad arithmetic rather than on
+    // anything the code did.
+    const requiredDeposit = 10n ** 23n;
+    const floor =
+      requiredDeposit + stake + AGENT_GAS_KEY_FUNDING_YOCTO + TOKEN_REGISTRATION_YOCTO * 4n;
+    expect(
+      pageAttaches >= floor,
+      `the factory floor (${floor}) has overtaken what the page attaches (${pageAttaches}); ` +
+        `the quoted deposit must be raised and every doc figure rechecked`,
     ).toBe(true);
   });
 });

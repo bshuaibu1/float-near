@@ -5,6 +5,7 @@ import {
   CONTRACT_BYTES,
   FACTORY_BY_NETWORK,
   PAGE_HEADROOM_YOCTO,
+  TOKEN_REGISTRATION_YOCTO,
 } from "./create.js";
 import { rpcForNetwork } from "./rpc.js";
 
@@ -55,7 +56,12 @@ describe("buildCreatePlan", () => {
 
     // Raise the floor above the page's headroom and the quote must rise too.
     const raised = buildCreatePlan({ ...base, requiredDepositYocto: (10n ** 24n).toString() });
-    expect(BigInt(raised.depositYocto)).toBe(10n ** 24n + BigInt(CONTRACT_BYTES) * 10n ** 19n);
+    // + ONE token registration: the factory registers the new vault on each
+    // token in root_limits, and its floor covers that or it would fund those
+    // receipts from its own balance.
+    expect(BigInt(raised.depositYocto)).toBe(
+      10n ** 24n + BigInt(CONTRACT_BYTES) * 10n ** 19n + TOKEN_REGISTRATION_YOCTO,
+    );
   });
 
   /**

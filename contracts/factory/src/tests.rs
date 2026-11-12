@@ -38,6 +38,15 @@ fn required() -> NearToken {
     NearToken::from_millinear(100)
 }
 
+/// What registering the vault on ONE token costs, which the deposit floor must
+/// now cover. `root_limits()` names a single token, so that is one of these.
+///
+/// NAMED rather than inlined, so the floor tests below do not each carry a bare
+/// 1_250_000_000_000_000_000_000 for the next reader to decode.
+fn registration() -> NearToken {
+    NearToken::from_yoctonear(1_250_000_000_000_000_000_000)
+}
+
 /// The whole no-backend design rests on this being DETERMINISTIC.
 ///
 /// A dashboard computes the vault id from the owner's account id client-side.
@@ -267,7 +276,11 @@ fn create_vault_with_code_refuses_a_deposit_that_ignores_the_code_size() {
 fn create_vault_with_code_accepts_code_storage_plus_the_floor() {
     let mut f = ready();
     let bytes = 100_000u128;
-    let needed = NearToken::from_yoctonear(bytes * 10u128.pow(19)).saturating_add(required());
+    let needed = NearToken::from_yoctonear(bytes * 10u128.pow(19))
+        .saturating_add(required())
+        // The floor covers registering the vault on its token, or the factory
+        // would fund that receipt out of its own balance.
+        .saturating_add(registration());
     testing_env!(fctx(alice(), needed).build());
     // Passing is the assertion: no panic means the boundary is inclusive.
     let _ = f.create_vault_with_code(code(100_000), None, root_limits(), root_recipients(), None);
@@ -655,6 +668,26 @@ fn there_is_exactly_one_new_args_builder() {
     );
 }
 
+/// Every yoctoNEAR the factory schedules to leave, across ALL receipts.
+///
+/// Conservation is the invariant worth asserting — what leaves must equal what
+/// arrived — and it has to span every receipt, not just the vault batch. Token
+/// registration is a SEPARATE promise (its receiver is the token, not the
+/// vault), so a sum over the create batch alone would miss it and report a
+/// shortfall that is in fact correctly accounted for.
+fn all_outgoing_yocto() -> u128 {
+    near_sdk::test_utils::get_created_receipts()
+        .into_iter()
+        .flat_map(|r| r.actions.into_iter())
+        .map(|a| match a {
+            MockAction::Transfer { deposit, .. } => deposit.as_yoctonear(),
+            MockAction::TransferToGasKey { deposit, .. } => deposit.as_yoctonear(),
+            MockAction::FunctionCallWeight { attached_deposit, .. } => attached_deposit.as_yoctonear(),
+            _ => 0,
+        })
+        .sum()
+}
+
 /// Find the batch receipt that creates the vault.
 fn create_batch() -> near_sdk::mock::Receipt {
     near_sdk::test_utils::get_created_receipts()
@@ -749,7 +782,7 @@ fn no_agent_means_no_gas_key() {
 fn the_same_deposit_is_enough_without_an_agent() {
     let mut f = ready();
     let just_enough = NearToken::from_yoctonear(
-        required().as_yoctonear() + 1_000u128 * 10u128.pow(19),
+        required().as_yoctonear() + 1_000u128 * 10u128.pow(19) + registration().as_yoctonear(),
     );
     let mut b = fctx(alice(), just_enough);
     b.signer_account_pk(a_pk());
@@ -813,18 +846,15 @@ fn the_gas_key_is_funded_from_the_deposit_not_the_factory() {
 
     let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), Some(a_pk()));
 
-    let batch = create_batch();
-    let to_vault: u128 = batch
-        .actions
-        .iter()
-        .filter_map(|a| match a {
-            MockAction::Transfer { deposit, .. } => Some(deposit.as_yoctonear()),
-            _ => None,
-        })
-        .sum();
-    let to_gas_key: u128 = batch
-        .actions
-        .iter()
+    let _batch = create_batch(); // the batch must exist; sums come from all receipts
+
+    // Summed over EVERY receipt: token registration is a separate promise to
+    // the token, so a create-batch-only sum would miss it and read as the
+    // factory having short-changed the vault.
+    let outgoing = all_outgoing_yocto();
+    let to_gas_key: u128 = near_sdk::test_utils::get_created_receipts()
+        .into_iter()
+        .flat_map(|r| r.actions.into_iter())
         .filter_map(|a| match a {
             MockAction::TransferToGasKey { deposit, .. } => Some(deposit.as_yoctonear()),
             _ => None,
@@ -832,11 +862,10 @@ fn the_gas_key_is_funded_from_the_deposit_not_the_factory() {
         .sum();
 
     assert_eq!(
-        to_vault + to_gas_key,
+        outgoing,
         attached.as_yoctonear(),
-        "the factory moved {} yocto but only {} was attached — the difference comes out of \
-         the factory's own balance and eventually breaks its storage stake",
-        to_vault + to_gas_key,
+        "the factory scheduled {} yocto but only {} was attached — the difference comes out of          the factory's own balance and eventually breaks its storage stake",
+        outgoing,
         attached.as_yoctonear(),
     );
     assert_eq!(to_gas_key, AGENT_GAS_KEY_FUNDING.as_yoctonear());
@@ -861,5 +890,104 @@ fn a_bare_vault_receives_the_entire_deposit() {
             _ => None,
         })
         .sum();
-    assert_eq!(to_vault, attached.as_yoctonear());
+    // NOT the entire deposit any more, and that is correct: one token
+    // registration is paid out of it so the vault can RECEIVE the token it
+    // holds a budget in. Held back for the same reason as the gas key — every
+    // receipt the factory schedules is funded BY the factory, so anything not
+    // held back comes out of its own balance.
+    assert_eq!(
+        to_vault,
+        attached.as_yoctonear() - registration().as_yoctonear(),
+        "the vault should receive the deposit minus exactly one token registration"
+    );
+}
+
+/// THE VAULT IS REGISTERED ON ITS TOKEN, OR IT CANNOT BE FUNDED.
+///
+/// A NEP-141 transfer to an unregistered account FAILS — "The account <id> is
+/// not registered" — it does not silently succeed. So before this, the golden
+/// path's fourth step ("send it some USDC") was broken for every vault created
+/// through the browser: the CLI wizard registers the vault as one of its
+/// steps, the browser path did not, and the browser path is the one strangers
+/// use.
+///
+/// Measured 2026-11-13 on `test015-near.usefloat.near`: created through the
+/// page, LIVE, owner verified — and `storage_balance_of` returned null, so the
+/// owner's first transfer into their own vault would have failed with nothing
+/// in the product explaining why.
+#[test]
+fn the_vault_is_registered_on_its_token() {
+    let mut f = ready();
+    let mut b = fctx(alice(), NearToken::from_near(4));
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let _ = f.create_vault_with_code(code(1_000), None, root_limits(), root_recipients(), None);
+
+    // A SEPARATE RECEIPT, not an action on the create batch: `storage_deposit`
+    // has to reach the TOKEN, and the batch's receiver is the vault.
+    let reg = near_sdk::test_utils::get_created_receipts()
+        .into_iter()
+        .find(|r| {
+            r.actions.iter().any(|a| matches!(
+                a,
+                MockAction::FunctionCallWeight { method_name, .. }
+                    if method_name == b"storage_deposit"
+            ))
+        })
+        .expect("no storage_deposit receipt — the vault cannot receive its own token");
+
+    assert_eq!(
+        reg.receiver_id,
+        "usdc.near".parse::<AccountId>().unwrap(),
+        "the registration must go to the TOKEN, not the vault"
+    );
+
+    let (args, deposit) = reg
+        .actions
+        .iter()
+        .find_map(|a| match a {
+            MockAction::FunctionCallWeight { args, attached_deposit, .. } => {
+                Some((args.clone(), *attached_deposit))
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    let parsed: near_sdk::serde_json::Value =
+        near_sdk::serde_json::from_slice(&args).expect("args are not JSON");
+    assert_eq!(parsed["account_id"], "alice-near.float.near");
+    // `registration_only` so a cheaper token refunds the excess instead of
+    // keeping it as a balance the vault never asked for.
+    assert_eq!(parsed["registration_only"], true);
+    assert_eq!(deposit, registration());
+}
+
+/// NO TOKEN IN `root_limits` MEANS NO REGISTRATION, AND NO EXTRA FLOOR.
+///
+/// A caller is not charged for something that cannot be done, and a malformed
+/// `root_limits` must not panic HERE — the vault's `new` validates it properly
+/// and its error is the one worth showing, rather than one raised after the
+/// deposit moved.
+#[test]
+fn an_unparseable_limits_shape_registers_nothing_and_still_creates() {
+    let mut f = ready();
+    let mut b = fctx(alice(), NearToken::from_near(4));
+    b.signer_account_pk(a_pk());
+    testing_env!(b.build());
+
+    let junk = near_sdk::serde_json::json!("not an array");
+    let _ = f.create_vault_with_code(code(1_000), None, junk, root_recipients(), None);
+
+    let any_reg = near_sdk::test_utils::get_created_receipts().into_iter().any(|r| {
+        r.actions.iter().any(|a| matches!(
+            a,
+            MockAction::FunctionCallWeight { method_name, .. }
+                if method_name == b"storage_deposit"
+        ))
+    });
+    assert!(!any_reg, "registered a token that root_limits never named");
+
+    // And the vault is still created, so the better error comes from `new`.
+    let _ = create_batch();
 }
