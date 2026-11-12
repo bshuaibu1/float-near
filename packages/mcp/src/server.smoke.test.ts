@@ -554,56 +554,6 @@ describe("vault_history reads the chain directly, so memos survive", () => {
     expect(tool).toMatch(/r\.memo \? \{ memo: r\.memo \} : \{\}/);
   });
 });
-
-/**
- * THE TEARDOWN COMMAND MUST ACTUALLY RUN, and must carry the guard.
- *
- * This is the first thing a user asks for when closing a vault, so every
- * defect in it lands on someone operating on real money. The emitted command
- * previously had three:
- *
- *   no CONFIRM_MAINNET   teardown-vault.mjs exits 2 on mainnet. The tool
- *                        handed out a command that cannot work, discovered by
- *                        running it.
- *   no EXPECT_TOKENS     the script's own guard against its worst documented
- *                        failure: a WRONG token id reads as a zero balance,
- *                        prints "no tokens to withdraw", and the delete
- *                        strands the real USDC at an address nobody can sign
- *                        for, permanently.
- *   bash-only syntax     `VAR=x node ...` sets nothing in PowerShell.
- *
- * Asserted on the SOURCE rather than by running the tool, because the live
- * sweep deliberately skips teardown — it is the one report whose command, if
- * followed, deletes an account.
- */
-describe("vault_teardown_report emits a runnable command", () => {
-  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
-  const block = src.slice(src.indexOf("command: (() => {"), src.indexOf("note:", src.indexOf("command: (() => {")));
-
-  it("includes CONFIRM_MAINNET on mainnet, or the script refuses to run", () => {
-    expect(block).toMatch(/CONFIRM_MAINNET/);
-    expect(block).toMatch(/cfg\.network === "mainnet"/);
-  });
-
-  it("fills EXPECT_TOKENS from the balance it just read", () => {
-    // Not a placeholder a user retypes: the guard only works if the number is
-    // the real one, and the report has already fetched it.
-    expect(block).toMatch(/EXPECT_TOKENS.*tokenStr/s);
-  });
-
-  it("omits EXPECT_TOKENS when the balance is UNKNOWN, and says so", () => {
-    // A guard built from "unknown" asserts a number nobody verified. The
-    // script treats absence as "no expectation" and presence as a claim.
-    expect(block).toMatch(/tokenStr !== null/);
-    expect(block).toMatch(/tokenStr === null[\s\S]{0,400}warning/);
-  });
-
-  it("emits PowerShell as well as bash", () => {
-    expect(block).toMatch(/powershell:/);
-    expect(block).toMatch(/\$env:NETWORK/);
-  });
-});
-
 /**
  * THE TEARDOWN COMMAND MUST ACTUALLY RUN, and must carry the guard.
  *
@@ -627,31 +577,54 @@ describe("vault_teardown_report emits a runnable command", () => {
  */
 describe("the teardown command the report hands out", () => {
   const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
-  const builder = src.slice(src.indexOf("A COMMAND THAT ACTUALLY RUNS"), src.indexOf("      note:\n        \"Read-only."));
+  const builder = src.slice(
+    // THE EMITTED EXPRESSION, not the doc comment above it. The first
+    // version sliced from the comment and asserted the block does not
+    // mention `teardown-vault.mjs` -- which it does, legitimately, because
+    // the comment EXPLAINS why it stopped pointing there. A check that
+    // cannot tell code from prose fails on an accurate sentence and
+    // teaches you to delete documentation to keep it quiet.
+    src.indexOf("command: signable", src.indexOf("POINT AT THE USER-FACING CLI")),
+    // A marker with NO escapes in it. Generating a JS string escape through
+    // another language is how this file failed to parse twice; the shortest
+    // unique literal that needs no escaping is the safest slice point.
+    src.indexOf("Read-only. This server holds at most"),
+  );
 
-  it("includes CONFIRM_MAINNET on mainnet, or the script refuses to run", () => {
-    expect(builder).toMatch(/CONFIRM_MAINNET/);
-    expect(builder).toMatch(/cfg\.network === "mainnet"/);
+  /**
+   * IT MUST POINT AT THE PUBLISHED CLI, not the repo's internal script.
+   *
+   * It emitted `NETWORK=… VAULT=… OWNER=… TOKEN=… CONFIRM_MAINNET=1
+   * EXPECT_TOKENS=1 node scripts/teardown-vault.mjs` — six env vars, a path
+   * only someone who cloned the repo has, and no dry run, for the one action
+   * a user takes when they are already nervous.
+   *
+   * `float-exit` ships for exactly this: two flags, `--dry-run`, numbered
+   * steps, and an explicit irreversibility warning.
+   */
+  it("uses float-exit, not the internal teardown script", () => {
+    expect(builder).toMatch(/float-exit/);
+    expect(builder).not.toMatch(/teardown-vault\.mjs/);
+    expect(builder).not.toMatch(/CONFIRM_MAINNET=|EXPECT_TOKENS=/);
   });
 
-  it("fills EXPECT_TOKENS from the balance it just read", () => {
-    // The one number a user would otherwise supply from memory, and getting
-    // it wrong is permanent.
-    expect(builder).toMatch(/EXPECT_TOKENS/);
-    expect(builder).toMatch(/tokenStr/);
+  it("leads with the DRY RUN, so copying the first thing cannot delete a vault", () => {
+    const first = builder.indexOf("first_look");
+    const real = builder.indexOf("then_for_real");
+    expect(first).toBeGreaterThan(-1);
+    expect(real).toBeGreaterThan(first);
+    expect(builder).toMatch(/--dry-run/);
   });
 
-  it("omits EXPECT_TOKENS when the balance could NOT be read, and says so", () => {
-    // A guard built from "unknown" asserts a number nobody verified, which is
-    // worse than no guard: the script treats absence as "no expectation" and
-    // presence as a claim.
-    expect(builder).toMatch(/tokenStr !== null/);
-    expect(builder).toMatch(/could not be read/i);
+  it("uses `npx -p <pkg> <bin>`, since the bare form 404s", () => {
+    // float-exit is a BIN of create-float. `npx @floatonnear/float-exit` is
+    // not a package and never resolves.
+    expect(builder).toMatch(/npx -p @floatonnear\/create-float float-exit/);
   });
 
-  it("emits BOTH shells, since the server cannot know which is reading", () => {
-    expect(builder).toMatch(/powershell:/);
-    expect(builder).toMatch(/bash:/);
-    expect(builder).toMatch(/\$env:NETWORK/);
+  it("passes --network only when it is not the CLI's default", () => {
+    // float-exit defaults to mainnet, so passing it there is noise on the one
+    // command a nervous user reads character by character.
+    expect(builder).toMatch(/cfg\.network === "mainnet" \? "" :/);
   });
 });
