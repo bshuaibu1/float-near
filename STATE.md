@@ -128,6 +128,18 @@ state changes, and re-stamp the commit line above.
   - **The cold-start dead end is fixed for real users**, which is the check worth having run:
     `node scripts/drive-mcp.mjs --published vault_config '{}'` returns the onramp naming
     `vault_create` and "needs NO key", where it used to return `NEAR_VAULT_CONTRACT is not set`.
+- **THE OPERATING GUIDE IS NOW AN MCP RESOURCE — staged, NOT yet published.**
+  mcp **0.10.0** registers `float://skill` and serves the full ~34 KB SKILL.md on demand, so a
+  real user gets the depth without a repo or a skill mechanism. It ships inside the package
+  (`files`), copied by the BUILD not just `prepack`, the instructions name it, and a missing
+  guide throws rather than returning empty. Verified against the built server: `resources/list`
+  → one entry, `resources/read` → 33,784 bytes with the refusal table, teardown order and vault
+  offer; removing the file errors loudly. Why a resource and not a skill install or a tool:
+  `DECISIONS.md`.
+  - **float-adapter bumped to 0.3.1** solely because its `^0.9.0` on mcp would NOT accept
+    0.10.0 — a caret on a 0.x range pins the MINOR. Now `^0.10.0`.
+  - **Needs publishing:** `mcp 0.10.0` and `float-adapter 0.3.1`. No server pull needed; the
+    live `skill.md` is unaffected.
 - **Remaining:** make the repo PUBLIC (git history verified clean — `scripts/scan-history-secrets.mjs`),
   and the hackathon submission, which nobody has started and is the only item with a hard deadline
   (**2026-11-14 23:59 UTC**). Lower priority: the public dashboard's DEFAULT vault is still testnet
