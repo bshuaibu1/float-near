@@ -1788,10 +1788,59 @@ server.tool(
           "0.08322 NEAR as tokens_burnt. Always withdrawFromGasKey first. teardown-vault.mjs " +
           "does this and exits rather than continuing if it fails.",
       },
-      command: signable
-        ? `NETWORK=${cfg.network} VAULT=${vault} OWNER=${config?.owner ?? "<owner>"} ` +
-          `TOKEN=${tok ?? "<token>"} node scripts/teardown-vault.mjs`
-        : "(none — nothing can sign as this vault)",
+      /**
+       * A COMMAND THAT ACTUALLY RUNS, in the shell the reader is using.
+       *
+       * The old one had three defects and was the FIRST thing a user asked
+       * for, so every one of them landed on someone trying to close a vault:
+       *
+       *   1. NO CONFIRM_MAINNET. teardown-vault.mjs exits 2 on mainnet without
+       *      it. The tool emitted a command that cannot work, and the user
+       *      finds out by running it against real money.
+       *   2. NO EXPECT_TOKENS. That is the script's own guard against its
+       *      worst documented failure: a WRONG token id reads as a zero
+       *      balance, prints "no tokens to withdraw", and the delete strands
+       *      the real USDC at an address nobody can ever sign for. The report
+       *      has just READ the balance, so it can fill this in — the one
+       *      number a user would otherwise have to supply correctly from
+       *      memory to avoid permanent loss.
+       *   3. BASH ENV-PREFIX SYNTAX. `VAR=x node ...` is not PowerShell, where
+       *      it silently fails to set anything. Both shells are emitted,
+       *      because this server cannot know which one is reading.
+       *
+       * EXPECT_TOKENS is only included when the balance was actually read. A
+       * guard built from "unknown" would assert a number nobody verified,
+       * which is worse than omitting it — the script treats absence as "no
+       * expectation" and presence as a claim.
+       */
+      command: (() => {
+        if (!signable) return "(none — nothing can sign as this vault)";
+        const owner = config?.owner ?? "<owner>";
+        const token = tok ?? "<token>";
+        const confirm = cfg.network === "mainnet" ? ' CONFIRM_MAINNET="1"' : "";
+        const expect = tokenStr !== null ? ` EXPECT_TOKENS="${tokenStr}"` : "";
+        return {
+          powershell:
+            `$env:NETWORK="${cfg.network}"; $env:VAULT="${vault}"; $env:OWNER="${owner}"; ` +
+            `$env:TOKEN="${token}";` +
+            (confirm ? ` $env:CONFIRM_MAINNET="1";` : "") +
+            (expect ? ` $env:EXPECT_TOKENS="${tokenStr}";` : "") +
+            ` node scripts/teardown-vault.mjs`,
+          bash:
+            `NETWORK=${cfg.network} VAULT=${vault} OWNER=${owner} TOKEN=${token}` +
+            confirm.replace(/"/g, "") +
+            expect.replace(/"/g, "") +
+            ` node scripts/teardown-vault.mjs`,
+          ...(tokenStr === null
+            ? {
+                warning:
+                  "The token balance could not be read, so EXPECT_TOKENS is NOT set. Set it " +
+                  "by hand before running: without it, a wrong TOKEN reads as an empty vault " +
+                  "and the delete strands whatever is really in there, permanently.",
+              }
+            : {}),
+        };
+      })(),
       note:
         "Read-only. This server holds at most a restricted agent key and signed nothing. " +
         "Run the command yourself, after the token withdrawal has settled.",

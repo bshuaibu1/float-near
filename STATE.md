@@ -504,6 +504,21 @@ so drift fails two suites.
    options put to him: leave it (consistent with a public ledger); hide memos behind proof of
    ownership (reintroduces the authentication the design deliberately avoided); or keep reads open
    and drop memos from the public view, keeping amounts and status. **DECIDED: option 3**, and shipped — see DECISIONS.md.
+
+   **`vault_teardown_report` HANDED OUT A COMMAND THAT COULD NOT RUN (fixed 2026-11-11).** It is
+   the first thing a user asks when closing a vault, so all three defects landed on someone
+   deleting an account holding real money. (a) **No `CONFIRM_MAINNET=1`** — `teardown-vault.mjs`
+   exits 2 on mainnet without it, so the command did nothing and the user found out by running it.
+   (b) **No `EXPECT_TOKENS`** — the script's own guard against its worst documented failure: a
+   WRONG token id reads as a zero balance, prints "no tokens to withdraw", and the delete strands
+   the real USDC at an address nobody can ever sign for. The report has just READ the balance, so
+   it now fills this in — the one number a user would otherwise supply from memory, where being
+   wrong is permanent. Omitted (with a warning) when the balance could not be read, because a guard
+   built from "unknown" asserts a number nobody verified. (c) **bash env-prefix syntax only**,
+   which silently sets nothing in PowerShell; both shells are emitted now. Mutation-tested.
+   **Also: `apps/dashboard/lib/proxy-gate.ts` was found to be 3,970 NUL bytes** — power-loss
+   corruption during load shedding, metadata written and data not. Restored from git; a full scan
+   found no other file affected.
 4. ~~Key files work but are not the DEFAULT.~~ **FIXED 2026-11-09.** The provisioning path
    now writes a PATH, never the secret: `.float/adapter.env` and `.mcp.json` carry
    `NEAR_VAULT_AGENT_KEY_FILE` pointing at `.float/agent-keys.json`, and `vault_create`'s

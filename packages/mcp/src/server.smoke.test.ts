@@ -554,3 +554,104 @@ describe("vault_history reads the chain directly, so memos survive", () => {
     expect(tool).toMatch(/r\.memo \? \{ memo: r\.memo \} : \{\}/);
   });
 });
+
+/**
+ * THE TEARDOWN COMMAND MUST ACTUALLY RUN, and must carry the guard.
+ *
+ * This is the first thing a user asks for when closing a vault, so every
+ * defect in it lands on someone operating on real money. The emitted command
+ * previously had three:
+ *
+ *   no CONFIRM_MAINNET   teardown-vault.mjs exits 2 on mainnet. The tool
+ *                        handed out a command that cannot work, discovered by
+ *                        running it.
+ *   no EXPECT_TOKENS     the script's own guard against its worst documented
+ *                        failure: a WRONG token id reads as a zero balance,
+ *                        prints "no tokens to withdraw", and the delete
+ *                        strands the real USDC at an address nobody can sign
+ *                        for, permanently.
+ *   bash-only syntax     `VAR=x node ...` sets nothing in PowerShell.
+ *
+ * Asserted on the SOURCE rather than by running the tool, because the live
+ * sweep deliberately skips teardown — it is the one report whose command, if
+ * followed, deletes an account.
+ */
+describe("vault_teardown_report emits a runnable command", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+  const block = src.slice(src.indexOf("command: (() => {"), src.indexOf("note:", src.indexOf("command: (() => {")));
+
+  it("includes CONFIRM_MAINNET on mainnet, or the script refuses to run", () => {
+    expect(block).toMatch(/CONFIRM_MAINNET/);
+    expect(block).toMatch(/cfg\.network === "mainnet"/);
+  });
+
+  it("fills EXPECT_TOKENS from the balance it just read", () => {
+    // Not a placeholder a user retypes: the guard only works if the number is
+    // the real one, and the report has already fetched it.
+    expect(block).toMatch(/EXPECT_TOKENS.*tokenStr/s);
+  });
+
+  it("omits EXPECT_TOKENS when the balance is UNKNOWN, and says so", () => {
+    // A guard built from "unknown" asserts a number nobody verified. The
+    // script treats absence as "no expectation" and presence as a claim.
+    expect(block).toMatch(/tokenStr !== null/);
+    expect(block).toMatch(/tokenStr === null[\s\S]{0,400}warning/);
+  });
+
+  it("emits PowerShell as well as bash", () => {
+    expect(block).toMatch(/powershell:/);
+    expect(block).toMatch(/\$env:NETWORK/);
+  });
+});
+
+/**
+ * THE TEARDOWN COMMAND MUST ACTUALLY RUN, and must carry the guard.
+ *
+ * `vault_teardown_report` is the first thing someone asks when closing a
+ * vault, so every defect in what it emits lands on a person deleting an
+ * account holding real money. It had three:
+ *
+ *   NO CONFIRM_MAINNET   teardown-vault.mjs exits 2 on mainnet without it, so
+ *                        the emitted command could not work at all
+ *   NO EXPECT_TOKENS     the script's own guard against its worst documented
+ *                        failure — a WRONG token id reads as a zero balance,
+ *                        prints "no tokens to withdraw", and the delete
+ *                        strands the real USDC at an address nobody can ever
+ *                        sign for
+ *   BASH SYNTAX ONLY     `VAR=x node ...` silently sets nothing in PowerShell
+ *
+ * Asserted against the SOURCE because the command is assembled from live
+ * chain reads; a runtime test would need a funded mainnet vault to be
+ * meaningful, and the thing worth pinning is that the builder cannot omit
+ * these.
+ */
+describe("the teardown command the report hands out", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+  const builder = src.slice(src.indexOf("A COMMAND THAT ACTUALLY RUNS"), src.indexOf("      note:\n        \"Read-only."));
+
+  it("includes CONFIRM_MAINNET on mainnet, or the script refuses to run", () => {
+    expect(builder).toMatch(/CONFIRM_MAINNET/);
+    expect(builder).toMatch(/cfg\.network === "mainnet"/);
+  });
+
+  it("fills EXPECT_TOKENS from the balance it just read", () => {
+    // The one number a user would otherwise supply from memory, and getting
+    // it wrong is permanent.
+    expect(builder).toMatch(/EXPECT_TOKENS/);
+    expect(builder).toMatch(/tokenStr/);
+  });
+
+  it("omits EXPECT_TOKENS when the balance could NOT be read, and says so", () => {
+    // A guard built from "unknown" asserts a number nobody verified, which is
+    // worse than no guard: the script treats absence as "no expectation" and
+    // presence as a claim.
+    expect(builder).toMatch(/tokenStr !== null/);
+    expect(builder).toMatch(/could not be read/i);
+  });
+
+  it("emits BOTH shells, since the server cannot know which is reading", () => {
+    expect(builder).toMatch(/powershell:/);
+    expect(builder).toMatch(/bash:/);
+    expect(builder).toMatch(/\$env:NETWORK/);
+  });
+});
