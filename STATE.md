@@ -149,10 +149,35 @@ state changes, and re-stamp the commit line above.
   figure, while the default path binds an agent and really needs **3.66839**. A user funding to
   the quote has the transaction refused by their own wallet. Now quotes **3.7** (rounded up) and
   `create.pins.test.ts` fails if the quoted figure drops below the with-agent total.
-- **Remaining:** make the repo PUBLIC (git history verified clean — `scripts/scan-history-secrets.mjs`),
-  and the hackathon submission, which nobody has started and is the only item with a hard deadline
-  (**2026-11-14 23:59 UTC**). Lower priority: the public dashboard's DEFAULT vault is still testnet
-  (invisible in the demo, since the UI asks "Whose vault?"); fixing it is a staged VPS change.
+- **GOLDEN-PATH BREAK FOUND AND FIXED STRUCTURALLY, 2026-11-13: a browser-created vault could
+  not be funded.** A NEP-141 transfer to an unregistered account FAILS; the CLI wizard registers
+  the vault on its token, the browser path did not, and the browser path is the one strangers
+  use. So "send it some USDC" — step 4 of Path A — was broken for every vault made through the
+  page, and `SKILL.md` had no funding section to warn anyone. Measured on
+  `test015-near.usefloat.near`: LIVE, owner verified, `storage_balance_of` → **null**.
+  - `create_vault_with_code` now fires `storage_deposit` on every token in `root_limits`, in the
+    transaction the user already signs. A SEPARATE promise, not an action on the batch: the
+    batch's receiver is the vault and the deposit must reach the token — and independent failure
+    is the safer shape, since a chained one would revert the whole creation and charge the user
+    gas for nothing. See `DECISIONS.md`.
+  - The deposit floor rises by the registration and the same amount is held back from the
+    vault's transfer, because **every receipt a factory schedules is funded by the factory** —
+    the drain already documented for the gas key. **No user-facing figure moves**: floor with an
+    agent and 4 tokens is 3.21339 against the page's 3.46839, and a new pin fails if the floor
+    ever overtakes the headroom.
+  - **NOT DEPLOYED.** Built factory is **166,841 B / `02323ecc…`**; mainnet `usefloat.near` runs
+    **164,596 B / `ec28be51…`**. Dry run passes and the factory holds the 0.02245 needed:
+    `$env:FACTORY="usefloat.near"; $env:CONFIRM_MAINNET="1"; node scripts/deploy-factory-mainnet.mjs`
+  - **The fix is forward-only.** `test015-near.usefloat.near` stays unregistered until someone
+    calls `storage_deposit` for it, or it is torn down and recreated after the redeploy —
+    recreating is the better demo, since it proves the fix end to end.
+- **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
+  version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
+  SKILL.md cost fix; make the repo PUBLIC (git history verified clean —
+  `scripts/scan-history-secrets.mjs`); and the hackathon submission, which nobody has started and
+  is the only item with a hard deadline (**2026-11-14 23:59 UTC**). Lower priority: the public
+  dashboard's DEFAULT vault is still testnet (invisible in the demo, since the UI asks "Whose
+  vault?"); fixing it is a staged VPS change.
 - **Incident 2026-11-12:** a private key was committed and pushed via a `.mcp.json.bak`
   that `git add -A` swept up. Purged from history and the local object store, remote
   force-pushed; the key controlled a non-existent testnet account. `check-no-secrets.mjs`
