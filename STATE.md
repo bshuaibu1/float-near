@@ -34,9 +34,19 @@ state changes, and re-stamp the commit line above.
   `npx @floatonnear/mcp`. **`float-agent` was kept** — it is `@usefloat/mcp`, a different
   product (Solana/Twitter/swap tools) for the Colosseum work, and a "remove the float MCPs"
   instruction should not take it.
-  - Backups: `~/.claude.json.float-backup` and `.float/mcp.json.float-backup` (gitignored, held
-    an agent key). `~/.claude.json` was edited surgically — it carries project history and
-    other servers.
+  - **Local Float state is wiped too**, so a fresh session meets the product as a new user
+    does: `.float/` (agent keys, `adapter.env`, fixtures), the deleted vault's refusal log, and
+    the `~/.claude/skills/float` skill are all gone.
+  - Everything is backed up to **`~/float-reset-backup/`** — deliberately OUTSIDE the repo, so
+    a fresh run cannot see it. Contains `dot-float/`, `claude-skill-float/`, the blocked log and
+    `~/.claude.json.float-backup`. `~/.claude.json` itself was edited surgically; it carries
+    project history and three unrelated servers.
+  - **NEAR CLI credentials were NOT touched.** `~/.near-credentials/mainnet/` holds
+    `test015.near.json` (the owner, 5.797730 NEAR) and `usefloat.near.json` (the operator key
+    for the LIVE mainnet factory). Deleting those would cost the factory and real money, and the
+    browser path needs no CLI credential, so they do not contaminate a new-user test.
+  - The one difference a reset cannot remove: this is a developer machine with the full repo.
+    A real new user has only the npm package and a wallet.
   - Reinstall: point a client at `npx -y @floatonnear/mcp` with `NEAR_VAULT_NETWORK=mainnet`,
     `NEAR_VAULT_FACTORY=usefloat.near`, and `NEAR_VAULT_CONTRACT` **empty** — `vault_create`
     needs no vault and no key, which is the real first-run path.
