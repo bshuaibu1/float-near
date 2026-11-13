@@ -11,8 +11,13 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
-- **THE DEMO VAULT IS GONE.** `test015-near.usefloat.near` was deleted 2026-11-12 with
-  `float-exit --yes`, deliberately, to re-test the flow from scratch. Fully reconciled:
+- **THE DEMO VAULT IS BACK, on the fixed factory (2026-11-13).**
+  `test015-near.usefloat.near` — owner `test015.near`, not paused, 300,035 B, 3.34714 NEAR,
+  **registered on USDC**, node 0 `root` 25/day 10/tx recipients `["test015.near"]`, node 1
+  `agent` inheriting, agent gas key 0.12. **USDC balance 0 — it still needs funding**, which is
+  now a plain wallet send. Owner holds 2.29791 NEAR and 8.857652 USDC.
+  (Historic: an earlier vault at this same derived id was deleted 2026-11-12 with
+  `float-exit --yes` to re-test from scratch.) Fully reconciled:
   **USDC +0.750000** and **NEAR +3.465858** back to `test015.near` (0.000128 short of the
   3.465986 quoted = gas across the six steps). Nothing stranded. Owner now holds 5.797730 NEAR
   and 8.857652 USDC.
@@ -182,15 +187,15 @@ state changes, and re-stamp the commit line above.
     chain, not the script's summary: NEAR **+3.467992** of 3.468390 quoted (0.000398 = gas
     across the six steps), USDC unchanged, nothing stranded. Storage shrank 300,035 -> 1,229 B
     before the delete. Owner now holds **5.781862**, so a vault is affordable again.
-  - **AWAITING ONE SIGNATURE: the recreation IS the end-to-end proof.** Link issued with
-    `bindAgent`, agent key `ed25519:EUNSWPmaiHisn2uXDVqDtY5gnE2XXdQB5GMFLs7zYpGu` -> node 1.
-    When it lands, three things get checked and the second is the fix:
-    (1) `get_config.owner` is really `test015.near`, not merely that something exists at the
-    derived id; (2) **`storage_balance_of` is NON-NULL** — a browser-created vault registered on
-    USDC with no extra step, which is what the old factory got wrong; (3) the agent key carries
-    `receiver_id` = the vault and `method_names` = `["request_payment"]`.
-    If (2) comes back null the fix did not work and that must be said plainly rather than
-    handing over a vault that cannot be funded.
+  - **PROVEN END TO END ON A REAL VAULT, 2026-11-13.** Recreated through the fixed factory and
+    all three pre-committed checks PASS:
+    (1) `get_config.owner` = `test015.near`, read from the contract rather than inferred from the
+    address existing; (2) **`storage_balance_of` = `{total: 1250000000000000000000}`** — exactly
+    `TOKEN_REGISTRATION`, so the factory registered the vault on USDC inside the signed
+    transaction; (3) the agent key `ed25519:EUNSWPmaiHisn2uXDVqDtY5gnE2XXdQB5GMFLs7zYpGu` carries
+    `receiver_id` = the vault, `method_names` = `["request_payment"]`, balance 0.12.
+    **The golden-path funding break is closed**: funding is now a plain wallet send, no
+    registration step, no "account not registered" failure.
 - **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
   version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
   SKILL.md cost fix; make the repo PUBLIC (git history verified clean —
