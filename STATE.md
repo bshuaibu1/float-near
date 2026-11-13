@@ -11,26 +11,44 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
-- **THE DEMO VAULT IS BACK, on the fixed factory (2026-11-13).**
-  `test015-near.usefloat.near` — owner `test015.near`, not paused, 300,035 B, 3.34714 NEAR,
-  **registered on USDC**, node 0 `root` 25/day 10/tx recipients `["test015.near"]`, node 1
-  `agent` inheriting, agent gas key 0.12. **USDC balance 0 — it still needs funding**, which is
-  now a plain wallet send. Owner holds 2.29791 NEAR and 8.857652 USDC.
-  (Historic: an earlier vault at this same derived id was deleted 2026-11-12 with
-  `float-exit --yes` to re-test from scratch.) Fully reconciled:
-  **USDC +0.750000** and **NEAR +3.465858** back to `test015.near` (0.000128 short of the
-  3.465986 quoted = gas across the six steps). Nothing stranded. Owner now holds 5.797730 NEAR
-  and 8.857652 USDC.
+- **THERE IS NO MAINNET VAULT RIGHT NOW — torn down 2026-11-13 to re-test as a new user.**
+  `test015-near.usefloat.near` is **deleted** (`UNKNOWN_ACCOUNT`). Reconciled against a
+  *settled* owner baseline: **+3.467730 NEAR** back to `test015.near` of the **3.468390**
+  quoted — the 0.000660 difference is gas. USDC unchanged at 8.857652 (the vault held 0).
+  Owner went 2.297912 → **5.765642 NEAR**. Teardown order held: the agent gas key was
+  **withdrawn (0.120000) before** the delete, so nothing was burned; the USDC storage deposit
+  (~0.001250) was unregistered and refunded; storage went 300,035 → 1,229 B. Nothing stranded.
+  - **ALL LOCAL FLOAT STATE WAS REMOVED** in the same pass, deliberately, so the next run is a
+    true cold start: both MCP servers (`float` = `@floatonnear/mcp`, `float-agent` =
+    `@usefloat/mcp`, the Solana/Colosseum one), all three `.float/` directories (home,
+    `near-vault`, `New project`), `~/.claude/skills/float`, and 8 npx cache entries across
+    `@floatonnear` and `@usefloat`. Backed up — **not deleted** — to
+    `C:\Users\BASHIR\float-removed-2026-11-13\` because several of those files hold live
+    private keys. `~/.near-credentials` was left untouched; it is the NEAR wallet, not Float.
   - **Next step to have a demo again:** create a vault (browser, <https://usefloat.xyz>), fund
     it with USDC, bind an agent (`float-agent` or `vault_add_role`), then re-read the figures.
-    The address is DERIVED, so a recreated vault lands on the same id — but `.mcp.json` is
-    gone now too (see below), so the client needs configuring either way.
+    The address is DERIVED, so a recreated vault lands on the same id.
   - `DEMO.md` carries a banner saying its numbers are historical. `check-mcp-live.mjs` is red
     (11 failures) and correctly so; `verify-all` is green because the gate never depended on a
     live vault.
   - The dead agent key was pruned from `.float/agent-keys.json` — a recreated vault shares the
     same derived address, so a stale entry could have been handed to `vault_pay` instead of the
     new one and failed like a contract bug.
+- **PUBLISHED `create-float` 0.8.1 IS NOT THE REPO'S 0.8.1 — same version, older bytes.**
+  Found 2026-11-13 by diffing the npx-cached copy against
+  `packages/create-float/bin/float-exit.mjs`: the published one still says `step(0, "Keys")`
+  and lacks the token-metadata block that turns a 64-character USDC id and `1000000` into
+  "1 USDC" on the one screen where someone decides whether to delete something holding their
+  money. So the refund command in the MCP instructions (`npx -p @floatonnear/create-float
+  float-exit`) serves **older code than this repo**, and a version bump alone will not fix it —
+  0.8.1 was published and then edited without a bump. **Publish a 0.8.2 before pointing anyone
+  at that command.** A gate check comparing published bytes to repo bytes would have caught it.
+- **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
+  Measured three times, including `--help`, and once on the real teardown — the vault was
+  **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
+  `node <bin>.mjs > file` works. The teardown above was therefore run through `node`, and
+  confirmed by **querying the chain**, not by the exit code. Recorded in project memory as
+  `npx-with-stdout-redirected-silently-does-nothing`.
 - **Every surface now defaults to mainnet** (was: CLIs mainnet, MCP/adapter/page testnet).
   `scripts/check-network-defaults.mjs` fails the gate if the eight of them drift apart.
 - **NO MCP SERVER IS CONFIGURED RIGHT NOW** (2026-11-12, deliberate — reinstalling from
