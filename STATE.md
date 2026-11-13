@@ -34,15 +34,20 @@ state changes, and re-stamp the commit line above.
   - The dead agent key was pruned from `.float/agent-keys.json` — a recreated vault shares the
     same derived address, so a stale entry could have been handed to `vault_pay` instead of the
     new one and failed like a contract bug.
-- **PUBLISHED `create-float` 0.8.1 IS NOT THE REPO'S 0.8.1 — same version, older bytes.**
-  Found 2026-11-13 by diffing the npx-cached copy against
-  `packages/create-float/bin/float-exit.mjs`: the published one still says `step(0, "Keys")`
-  and lacks the token-metadata block that turns a 64-character USDC id and `1000000` into
-  "1 USDC" on the one screen where someone decides whether to delete something holding their
-  money. So the refund command in the MCP instructions (`npx -p @floatonnear/create-float
-  float-exit`) serves **older code than this repo**, and a version bump alone will not fix it —
-  0.8.1 was published and then edited without a bump. **Publish a 0.8.2 before pointing anyone
-  at that command.** A gate check comparing published bytes to repo bytes would have caught it.
+- **Published `create-float` 0.8.1 ships a SKILL.md that is 49 lines STALE** — including the
+  corrected deposit quote. The bundled guide still understates the cost: it lacks the
+  with-agent **3.66839** / without-agent **3.54839** breakdown and the "round up, always"
+  rule. A user who funds to the understated figure has the transaction **refused by their own
+  wallet**, which reads as the product being broken. `SKILL.md` is copied into the package at
+  `prepack`, so it only refreshes on a publish. **Fixed by publishing 0.8.2.**
+  - **CORRECTION (2026-11-13):** an earlier revision of this file claimed the published
+    0.8.1 shipped *older code* (`step(0, "Keys")`, no token-metadata rendering). **That was
+    wrong.** It came from diffing against an arbitrary **npx cache directory** — one of 8,
+    holding an older version — instead of the published tarball. Checked properly against
+    `npm pack @floatonnear/create-float@0.8.1`: **22 of 24 files are byte-identical**,
+    including `bin/float-exit.mjs`. Only `SKILL.md` and `package.json` (the version field)
+    differ. The lesson is the one this repo keeps re-learning: **an npx cache entry is not
+    the published artifact** — compare against the tarball the registry serves.
 - **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
   Measured three times, including `--help`, and once on the real teardown — the vault was
   **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
