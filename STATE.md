@@ -165,12 +165,25 @@ state changes, and re-stamp the commit line above.
     the drain already documented for the gas key. **No user-facing figure moves**: floor with an
     agent and 4 tokens is 3.21339 against the page's 3.46839, and a new pin fails if the floor
     ever overtakes the headroom.
-  - **NOT DEPLOYED.** Built factory is **166,841 B / `02323ecc…`**; mainnet `usefloat.near` runs
-    **164,596 B / `ec28be51…`**. Dry run passes and the factory holds the 0.02245 needed:
-    `$env:FACTORY="usefloat.near"; $env:CONFIRM_MAINNET="1"; node scripts/deploy-factory-mainnet.mjs`
-  - **The fix is forward-only.** `test015-near.usefloat.near` stays unregistered until someone
-    calls `storage_deposit` for it, or it is torn down and recreated after the redeploy —
-    recreating is the better demo, since it proves the fix end to end.
+  - **DEPLOYED TO MAINNET 2026-11-13.** `usefloat.near` now runs **166,841 B / `02323ecc…`**
+    (was 164,596 / `ec28be51…`). No migration was needed and that was verified, not assumed: the
+    `Factory` struct gained no field, so borsh layout is unchanged. The artifact was REBUILT
+    before deploying and reproduced `02323ecc…` byte-for-byte, because mtime has lied in this
+    repo before.
+  - **PROVEN LIVE BY THE PRODUCT'S OWN BEHAVIOUR, not by its hash.** The deploy printed 5/5
+    (hash, owner, network, paused, key) — which is exactly the suite
+    `deploy-checks-that-never-try-the-product-action` records passing on a factory that could not
+    create a single vault. So: a probe attached **0.101 NEAR** against a 1-byte code, which sits
+    ABOVE the old floor (0.10001) and BELOW the new one (0.10126). The contract panicked
+    `DEPOSIT_TOO_SMALL`, which only happens if the registration term is in the live floor. Safe
+    either way — `begin()` panics before scheduling any receipt. `.demo/probe-registration-floor.mjs`.
+  - **The fix is forward-only, and the next step is blocked on money, not code.**
+    `test015-near.usefloat.near` is still unregistered, and `test015.near` has only **2.31205**
+    free against the **3.66839** a new vault needs — the 3.34839 is locked as that vault's own
+    storage stake. So the end-to-end proof requires tearing it down first, which returns
+    **3.468390** (3.348390 account + 0.120000 gas key; no tokens, nothing stranded) and then
+    recreating through the new factory. That also rebuilds the demo vault, and the recreation
+    IS the proof: a browser-created vault should come out registered on USDC with no extra step.
 - **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
   version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
   SKILL.md cost fix; make the repo PUBLIC (git history verified clean —
