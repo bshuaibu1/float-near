@@ -39,7 +39,8 @@ state changes, and re-stamp the commit line above.
   with-agent **3.66839** / without-agent **3.54839** breakdown and the "round up, always"
   rule. A user who funds to the understated figure has the transaction **refused by their own
   wallet**, which reads as the product being broken. `SKILL.md` is copied into the package at
-  `prepack`, so it only refreshes on a publish. **Fixed by publishing 0.8.2.**
+  `prepack`, so it only refreshes on a publish. Fix is **prepared as 0.8.2 but NOT published
+  — see the blocker below.**
   - **CORRECTION (2026-11-13):** an earlier revision of this file claimed the published
     0.8.1 shipped *older code* (`step(0, "Keys")`, no token-metadata rendering). **That was
     wrong.** It came from diffing against an arbitrary **npx cache directory** — one of 8,
@@ -48,6 +49,27 @@ state changes, and re-stamp the commit line above.
     including `bin/float-exit.mjs`. Only `SKILL.md` and `package.json` (the version field)
     differ. The lesson is the one this repo keeps re-learning: **an npx cache entry is not
     the published artifact** — compare against the tarball the registry serves.
+- **NOTHING IS PUBLISHED YET — both fixes are prepared, unreleased, and BLOCKED ON 2FA.**
+  Registry packument read directly 2026-11-13: `@floatonnear/mcp` latest is still **0.10.1**
+  and `@floatonnear/create-float` latest is still **0.8.1**. npm is now authenticated
+  (`masterwattson`, read-write on both), but `npm publish` returns **`EOTP`** — the account
+  requires a one-time password, which no script can generate. **A human must run, with a
+  fresh ~30s code per package:**
+  `cd packages/mcp && npm publish --access public --otp=XXXXXX`, then the same in
+  `packages/create-float`, then `node scripts/publish-and-verify.mjs --verify`.
+  - **So the `vault_add_role` orphan/keyring fix is NOT live for users.** Verified against
+    the published tarball: `mcp@0.10.1`'s `dist/server.js` contains none of
+    `resolveKeyringPath`, `retireRole`, or `Nothing was written`. Anyone installing today
+    still gets the broken `vault_add_role`.
+  - `scripts/publish-and-verify.mjs` publishes and then **proves** the registry serves this
+    repo's bytes by downloading the tarball and diffing it — never from a success message,
+    the same reason `check-live-docs.mjs` exists for the skill host. It checks `SKILL.md` for
+    both packages, because that is the file that was actually stale and a code-only verifier
+    would have called create-float clean. Positive-controlled against published 0.8.1.
+  - Its first run reported `PUBLISH FAILED` with nothing but a file listing: npm writes its
+    whole tarball listing to **stderr** as `npm notice` lines and the real error LAST, so
+    slicing the first 400 chars buried the `EOTP` entirely. Now prints the tail and names the
+    EOTP case. **A truncated error message is the same defect class as a silent exit 0.**
 - **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
   Measured three times, including `--help`, and once on the real teardown — the vault was
   **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
@@ -166,8 +188,9 @@ state changes, and re-stamp the commit line above.
   `DECISIONS.md`.
   - **float-adapter bumped to 0.3.1** solely because its `^0.9.0` on mcp would NOT accept
     0.10.0 — a caret on a 0.x range pins the MINOR. Now `^0.10.0`.
-  - **Needs publishing:** `mcp 0.10.0` and `float-adapter 0.3.1`. No server pull needed; the
-    live `skill.md` is unaffected.
+  - **Needs publishing** (superseded — see the blocker near the top): the pending versions are
+    now **`mcp 0.10.2`** and **`create-float 0.8.2`**; `float-adapter 0.3.1` is already live.
+    No server pull needed; the live `skill.md` is unaffected.
 - **The operating guide now ships as an MCP resource** (`float://skill`), so a real user gets the
   depth without a repo or a skill install — verified by reading it back from the PUBLISHED
   `@floatonnear/mcp@0.10.0`: 33,784 bytes of markdown. Published: mcp **0.10.0**,
