@@ -196,6 +196,14 @@ state changes, and re-stamp the commit line above.
     `receiver_id` = the vault, `method_names` = `["request_payment"]`, balance 0.12.
     **The golden-path funding break is closed**: funding is now a plain wallet send, no
     registration step, no "account not registered" failure.
+  - **`vault_await_create` now TELLS the owner how to fund it**, derived from live state rather
+    than a fixed list. It used to end "nothing can spend from it until an agent is bound", which
+    is false for a vault created with `bindAgent` — the agent relaying it had to correct the tool
+    in front of the owner. It now returns a `funding` block (token, symbol, balance,
+    `registeredOnToken`, `sendTo`) and next steps that name the ACTUAL gate: register first if
+    unregistered (that one makes a transfer FAIL), else FUND IT with the address and an
+    instruction to ASK how much, else bind an agent, else ready. The token is read from the TREE,
+    because at creation time `NEAR_VAULT_CONTRACT` is unset and the configured token is empty.
 - **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
   version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
   SKILL.md cost fix; make the repo PUBLIC (git history verified clean —

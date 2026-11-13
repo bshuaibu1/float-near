@@ -771,3 +771,58 @@ describe("the operating guide ships as an MCP resource", () => {
     expect(instr).toMatch(/float:\/\/skill/);
   });
 });
+
+/**
+ * AFTER CREATION, THE NEXT STEP IS FUNDING — AND THE USER NEEDS THE ADDRESS.
+ *
+ * `vault_await_create`'s LIVE branch used a FIXED list of next steps ending
+ * "nothing can spend from it until an agent is bound — vault_add_role". For a
+ * vault created with `bindAgent` that is false: the agent is already bound and
+ * the real gate is that the vault holds no tokens. Measured 2026-11-13 — the
+ * agent relaying it had to correct the tool in front of the owner.
+ *
+ * Nothing told the owner HOW to fund it either, or that funding is a plain
+ * wallet send, or what address to send to. That is the moment they need it:
+ * they have just signed and the only thing between them and a working vault is
+ * money.
+ *
+ * Source-pinned, like the blocks above: this is inline in a tool handler in a
+ * process that owns stdout for JSON-RPC. Behaviour was verified by driving the
+ * built server against the real mainnet vault.
+ */
+describe("vault_await_create tells the owner how to fund the vault", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+  const live = src.slice(src.indexOf("WHAT ACTUALLY STOPS THIS VAULT PAYING"), src.indexOf('status: "LIVE"'));
+
+  it("no longer asserts an agent must be bound regardless of state", () => {
+    // The exact regressed sentence.
+    expect(
+      /Nothing can spend from it until an agent is bound/.test(src),
+      "the fixed 'bind an agent' step is back; it is wrong for a vault created with bindAgent",
+    ).toBe(false);
+  });
+
+  it("names funding and gives the address to send to", () => {
+    expect(live).toMatch(/FUND IT/);
+    expect(live).toMatch(/sendTo/);
+  });
+
+  it("tells the agent to ASK how much, rather than picking a figure", () => {
+    expect(live).toMatch(/ASK how much/);
+  });
+
+  it("reads the token from the TREE, not from the configured env", () => {
+    // At creation time NEAR_VAULT_CONTRACT is typically unset, so cfg.token
+    // can be empty while the vault plainly names one in its root limits.
+    expect(live).toMatch(/get_tree/);
+  });
+
+  it("names UNREGISTERED first, because that one makes a transfer FAIL", () => {
+    expect(live).toMatch(/REGISTER IT FIRST/);
+    expect(live).toMatch(/storage_balance_of/);
+  });
+
+  it("says the server cannot fund it, and why", () => {
+    expect(live).toMatch(/cannot touch a token contract/);
+  });
+});

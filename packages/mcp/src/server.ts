@@ -676,16 +676,126 @@ server.tool(
       });
     }
 
+    /**
+     * WHAT ACTUALLY STOPS THIS VAULT PAYING, read from the chain.
+     *
+     * The old `nextSteps` were a FIXED list ending "nothing can spend from it
+     * until an agent is bound — vault_add_role". For a vault created with
+     * `bindAgent` that is simply false: the agent is already bound, and the
+     * real gate is that the vault holds no tokens. Measured 2026-11-13 — the
+     * agent relaying it had to correct the tool in front of the user.
+     *
+     * Worse, nothing told the owner HOW to fund it, or that funding is a plain
+     * wallet send to an address, or what that address is. This is the moment
+     * they need it: they have just signed, they are looking at the result, and
+     * the next thing standing between them and a working vault is money.
+     *
+     * So the steps are derived from live state instead of asserted. Three
+     * reads, once, on a path that runs once per vault.
+     */
+    const rootToken = await (async () => {
+      // THE TREE IS AUTHORITATIVE, not cfg.token: at creation time
+      // NEAR_VAULT_CONTRACT is typically unset, so the configured token may be
+      // empty while the vault plainly names one in its root limits.
+      const tree = await viewFunction<{ id: number; limits?: { token: string }[] }[]>(
+        rpc,
+        target,
+        "get_tree",
+        {},
+      ).catch(() => null);
+      return tree?.find((n) => n.id === 0)?.limits?.[0]?.token;
+    })();
+
+    const meta = rootToken
+      ? await tokenMeta(rpc, rootToken, (r, t) => viewFunction(r, t, "ft_metadata", {})).catch(
+          () => null,
+        )
+      : null;
+    const symbol = meta?.symbol ?? "the token";
+
+    const [held, registered, agentKeys] = await Promise.all([
+      rootToken
+        ? viewFunction<string>(rpc, rootToken, "ft_balance_of", { account_id: target }).catch(
+            () => null,
+          )
+        : Promise.resolve(null),
+      rootToken
+        ? viewFunction<unknown>(rpc, rootToken, "storage_balance_of", {
+            account_id: target,
+          }).catch(() => undefined)
+        : Promise.resolve(undefined),
+      viewAccessKeys(rpc, target)
+        // Narrowed the same way vault_gas does: `permission` is a union and
+        // only the gas-key arm carries this field.
+        .then(
+          (ks) =>
+            ks.filter(
+              (k) =>
+                (k.access_key?.permission as { GasKeyFunctionCall?: unknown })
+                  ?.GasKeyFunctionCall !== undefined,
+            ).length,
+        )
+        .catch(() => null),
+    ]);
+
+    const empty = held !== null && BigInt(held) === 0n;
+
+    const funding = {
+      token: rootToken ?? null,
+      symbol: rootToken ? symbol : null,
+      balance: held === null ? null : fromBaseUnits(BigInt(held), meta?.decimals ?? cfg.decimals),
+      /** `undefined` = could not read; `null` = read and NOT registered. */
+      registeredOnToken: registered === undefined ? null : registered !== null,
+      sendTo: target,
+      howTo:
+        `Funding is a plain send from the owner's own wallet: send ${symbol} to ${target}. ` +
+        `This server cannot do it — the agent key cannot touch a token contract, which is the ` +
+        `point of the product.`,
+    };
+
+    const nextSteps: string[] = [
+      `Set NEAR_VAULT_CONTRACT=${target} so every other tool reads this vault.`,
+    ];
+
+    /**
+     * UNREGISTERED IS NAMED FIRST, because it is the one that makes a transfer
+     * FAIL rather than merely be impossible. Vaults created before the factory
+     * registered them are still in this state; the fix is forward-only.
+     */
+    if (registered === null) {
+      nextSteps.push(
+        `REGISTER IT FIRST: ${target} is not registered on ${rootToken}, and a transfer to an ` +
+          `unregistered account FAILS. The owner must call storage_deposit on the token with ` +
+          `about 0.00125 NEAR attached and registration_only: true. Vaults created through the ` +
+          `current factory are registered automatically; this one was not.`,
+      );
+    }
+
+    if (empty) {
+      nextSteps.push(
+        `FUND IT: the vault holds no ${symbol}. Tell the owner to send ${symbol} to ${target} ` +
+          `from their own wallet, and ASK how much they want to move. Nothing can be paid out ` +
+          `until it has a balance — the budget caps what MAY be spent, not what exists.`,
+      );
+    }
+
+    if (agentKeys === 0) {
+      nextSteps.push(`No agent is bound yet, so nothing can authorise a payment — vault_add_role.`);
+    }
+
+    if (!empty && agentKeys !== 0 && registered !== null) {
+      nextSteps.push(`Ready. vault_budget shows today's allowance; vault_pay makes a payment.`);
+    } else {
+      nextSteps.push(`vault_tree shows the budget shape; vault_budget shows what is left today.`);
+    }
+
     return json({
       status: "LIVE",
       vault: target,
       owner: config.owner,
       config,
-      nextSteps: [
-        `Set NEAR_VAULT_CONTRACT=${target} so every other tool reads this vault.`,
-        `vault_tree shows the budget; vault_budget shows what is left today.`,
-        `Nothing can spend from it until an agent is bound with a budget — vault_add_role.`,
-      ],
+      funding,
+      nextSteps,
     });
   },
 );
