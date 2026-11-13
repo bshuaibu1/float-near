@@ -19,6 +19,53 @@ export interface RoleCredential {
   nodeId?: number;
 }
 
+/**
+ * Entries belonging to this vault that the loader REJECTS, and why.
+ *
+ * `loadable` drops anything without a string `secret`, and the reasoning is
+ * sound — the adapter applies the same predicate, so listing such an entry
+ * would advertise an agent that can never be selected. But DROPPING IT
+ * SILENTLY is the same failure this file already has a memory about: the user
+ * holds a key, the tool shows nothing, and there is no way to tell "no agent"
+ * from "an agent in a shape I refuse to read".
+ *
+ * Shapes do vary in the wild: `prove-refusal.mjs` reads
+ * `privateKey ?? secret ?? agentKey`, so a file written by another path can
+ * land here unreadable. Reported, not hidden.
+ */
+export function listUnloadable(cfg: { agentKeysPath?: string; vault?: string }): {
+  reason: string;
+}[] {
+  const path = cfg.agentKeysPath ?? ".float/agent-keys.json";
+  if (!existsSync(path)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    return [{ reason: `${path} is not readable JSON (${(e as Error).message}). A UTF-8 BOM does this.` }];
+  }
+  if (!Array.isArray(parsed)) return [{ reason: `${path} is not a JSON array.` }];
+
+  const out: { reason: string }[] = [];
+  for (const e of parsed as Record<string, unknown>[]) {
+    if (!e || typeof e !== "object") continue;
+    const id = (e.agentId ?? e.vault) as string | undefined;
+    // Only this vault's entries; another vault's are not this tool's business.
+    if (cfg.vault && id !== cfg.vault) continue;
+    if (typeof e.agentId === "string" && typeof e.secret === "string") continue; // loadable
+    const has = ["secret", "privateKey", "agentKey"].filter((k) => typeof e[k] === "string");
+    out.push({
+      reason:
+        typeof e.agentId !== "string"
+          ? `an entry for this vault has no string 'agentId', so it cannot be matched to a vault.`
+          : `an entry has no 'secret' field${has.length ? ` (it uses '${has.join("', '")}' instead)` : ""}, ` +
+            `which is the only field the keyring loader reads. It will never be selectable. ` +
+            `Re-create the agent with vault_add_role.`,
+    });
+  }
+  return out;
+}
+
 /** Entries that `loadKeyring` would accept, nothing else. */
 function loadable(path: string): Array<Record<string, unknown>> {
   if (!existsSync(path)) return [];
@@ -130,10 +177,20 @@ export function listAgents(cfg: { agentKeysPath?: string; vault?: string }): {
   agentId: string;
   role: string | null;
   nodeId?: number;
+  /**
+   * THE PUBLIC half, so a caller can ask the CHAIN about this key.
+   *
+   * It was omitted, and that omission is what made `vault_roles` unable to
+   * tell a working agent from a dead one: with no public key there is nothing
+   * to look up, so the only thing it could report was what the local file
+   * claimed. No key material — the public key is public.
+   */
+  publicKey?: string;
 }[] {
   return forVault(cfg).map((e) => ({
     agentId: e.agentId as string,
     role: typeof e.role === "string" ? e.role : null,
     nodeId: typeof e.nodeId === "number" ? e.nodeId : undefined,
+    publicKey: typeof e.publicKey === "string" ? e.publicKey : undefined,
   }));
 }

@@ -93,7 +93,7 @@ import { dirname, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { listAgents, listRoles, selectRole } from "./roles.js";
+import { listAgents, listRoles, listUnloadable, selectRole } from "./roles.js";
 import { label as tokenLabel, tokenMeta, type TokenMeta } from "./token-meta.js";
 
 /**
@@ -1237,31 +1237,142 @@ server.tool(
 
 server.tool(
   "vault_roles",
-  "List the agents this server can sign as, by role. Use it before vault_pay when a vault has more than one agent — the signing key decides which budget is charged. No key material is returned.",
+  "List the agents this server can sign as, CROSS-CHECKED against the vault. Says which keys are actually installed and which are dead. Use it before vault_pay when a vault has more than one agent — the signing key decides which budget is charged. No key material is returned.",
   {},
-  async () =>
-    json(
-      // `listAgents`, NOT `listRoles`. The latter filters to entries carrying a
-      // role, which is correct for SELECTION and wrong for REPORTING: a
-      // creation-time agent from `bindAgent` has no role, so a working vault
-      // with a funded gas key reported `[]` — indistinguishable from having no
-      // agent at all, and the obvious next move is then the wrong one.
-      listAgents(cfg).map((r) => ({
-        role: r.role,
-        nodeId: r.nodeId,
-        agentId: r.agentId,
-        ...(r.role === null
-          ? {
-              note:
-                "No role name — created by vault_create({bindAgent:true}), which does not " +
-                "name one. It can still sign; vault_pay selects it by nodeId or as the only " +
-                "credential. Give it a name with vault_add_role if you want several agents.",
-            }
-          : {}),
-      })),
-    ),
-);
+  async () => {
+    const vault = requireVault();
 
+    /**
+     * THE KEYRING IS A CLAIM. THE CHAIN IS THE FACT.
+     *
+     * This used to report `listAgents(cfg)` verbatim — role, nodeId and all —
+     * straight out of the local file, without ever asking the vault whether it
+     * had heard of those keys. So a keyring pointing at the wrong directory
+     * reported a healthy, signable agent on node 1 that the vault had never
+     * been told about, and `vault_pay` then signed with it and came back
+     * NOT_VIRTUAL_AGENT.
+     *
+     * Measured 2026-11-13: that cost a user a whole session of forensics —
+     * reading .claude.json by hand, diffing two keyring files, checking gas
+     * balances — to find a single wrong path. The tool whose entire job is
+     * "which agents can I sign as" was the one reporting the false positive,
+     * which is why nothing caught it earlier.
+     *
+     * So every entry is now resolved against the vault:
+     *   get_virtual_agent_node(pk)  -> the node the CHAIN binds it to, or null
+     *   the access-key list         -> is a funded gas key actually installed
+     *
+     * And the INVERSE is reported too: a gas key on the vault that is not in
+     * the keyring is an agent you cannot sign as. Both directions of the
+     * disagreement matter, and only one of them was ever visible.
+     */
+    const local = listAgents(cfg);
+
+    const onChainKeys = await viewAccessKeys(cfg.rpcUrl, vault)
+      .then((ks) =>
+        ks
+          .map((k) => ({
+            publicKey: k.public_key,
+            gas: (
+              k.access_key?.permission as {
+                GasKeyFunctionCall?: { balance: string; receiver_id: string; method_names: string[] };
+              }
+            )?.GasKeyFunctionCall,
+          }))
+          .filter((k) => k.gas !== undefined),
+      )
+      .catch(() => null);
+
+    const resolved = await Promise.all(
+      local.map(async (r) => {
+        if (!r.publicKey) {
+          return {
+            role: r.role,
+            agentId: r.agentId,
+            status: "UNVERIFIABLE",
+            detail:
+              "This keyring entry has no public key recorded, so the chain cannot be asked " +
+              "about it. It predates the field. Re-create the agent with vault_add_role.",
+          };
+        }
+        const node = await viewFunction<number | null>(cfg.rpcUrl, vault, "get_virtual_agent_node", {
+          public_key: r.publicKey,
+        }).catch(() => undefined);
+
+        const installed = onChainKeys?.find((k) => k.publicKey === r.publicKey);
+        const balance = installed?.gas?.balance;
+
+        if (node === undefined) {
+          return { role: r.role, agentId: r.agentId, status: "UNKNOWN", detail: "could not reach the chain" };
+        }
+        if (node === null) {
+          return {
+            role: r.role,
+            agentId: r.agentId,
+            publicKey: r.publicKey,
+            status: "DEAD",
+            detail:
+              `This key is NOT bound on ${vault}. Signing with it returns NOT_VIRTUAL_AGENT. ` +
+              `It is a key for a different vault, or left over from one that was torn down, or ` +
+              `this client is reading the wrong keyring. Do NOT use it; vault_add_role creates ` +
+              `one the vault will accept.`,
+          };
+        }
+        return {
+          role: r.role,
+          agentId: r.agentId,
+          nodeId: node,
+          // The LOCAL nodeId is reported only when it disagrees, because a
+          // disagreement means the file is stale and that is worth saying.
+          ...(r.nodeId !== undefined && r.nodeId !== node
+            ? { staleLocalNodeId: r.nodeId, note: "the keyring records a different node; the chain wins" }
+            : {}),
+          status: installed ? "USABLE" : "BOUND_BUT_NO_GAS_KEY",
+          gasNear: balance ? fromBaseUnits(BigInt(balance), 24) : null,
+          ...(installed
+            ? {}
+            : {
+                detail:
+                  "Bound to a node, so it may AUTHORISE a payment, but no gas key is installed " +
+                  "on the vault, so it cannot SUBMIT one. float-agent installs and funds it.",
+              }),
+        };
+      }),
+    );
+
+    const heldKeys = new Set(local.map((r) => r.publicKey).filter(Boolean));
+    const unheld = (onChainKeys ?? [])
+      .filter((k) => !heldKeys.has(k.publicKey))
+      .map((k) => ({
+        publicKey: k.publicKey,
+        status: "ON_CHAIN_BUT_NO_LOCAL_KEY",
+        detail:
+          "The vault has this agent installed, but this client does not hold its private key, " +
+          "so it cannot sign as it. It belongs to another machine or another client.",
+      }));
+
+    const unloadable = listUnloadable(cfg);
+    const usable = resolved.filter((r) => r.status === "USABLE").length;
+
+    return json({
+      vault,
+      usable,
+      agents: resolved,
+      ...(unheld.length ? { onChainWithoutLocalKey: unheld } : {}),
+      // Entries the loader refuses to read. Reported rather than dropped, so
+      // "I have a key but this shows nothing" is answerable.
+      ...(unloadable.length ? { unreadableKeyringEntries: unloadable } : {}),
+      ...(usable === 0
+        ? {
+            warning:
+              `NO USABLE AGENT. vault_pay cannot succeed against ${vault} from this client. ` +
+              `Every entry above is dead, unbound, or missing its gas key — the commonest cause ` +
+              `is NEAR_VAULT_AGENT_KEYS pointing at a keyring for a different vault.`,
+          }
+        : {}),
+    });
+  },
+);
 // ------------------------------------------------------------- onboarding
 
 server.tool(

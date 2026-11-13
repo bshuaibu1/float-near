@@ -826,3 +826,67 @@ describe("vault_await_create tells the owner how to fund the vault", () => {
     expect(live).toMatch(/cannot touch a token contract/);
   });
 });
+
+/**
+ * `vault_roles` MUST CROSS-CHECK THE CHAIN. It used to report the local file.
+ *
+ * It returned `listAgents(cfg)` verbatim — role, nodeId and all — straight out
+ * of the keyring, without asking the vault whether it had ever heard of those
+ * keys. So a keyring pointed at the wrong directory reported a healthy,
+ * signable agent on node 1 that the vault did not know, and `vault_pay` then
+ * signed with it and came back NOT_VIRTUAL_AGENT.
+ *
+ * Measured 2026-11-13: that cost a user a full session of forensics — reading
+ * .claude.json by hand, diffing two keyring files, checking gas balances — to
+ * find one wrong path. The tool whose whole job is "which agents can I sign
+ * as" was the one producing the false positive, which is exactly why nothing
+ * caught it sooner.
+ *
+ * Verified against mainnet both ways while writing it: a fresh unbound key
+ * reports DEAD with the cause, and the real keyring reports usable: 1 with the
+ * node read from the chain.
+ */
+describe("vault_roles answers from the chain, not from the keyring file", () => {
+  const src = readFileSync(resolve(import.meta.dirname, "server.ts"), "utf8");
+  const block = src.slice(src.indexOf('"vault_roles"'), src.indexOf('"vault_create"'));
+
+  it("asks the chain which node each key is bound to", () => {
+    expect(block).toMatch(/get_virtual_agent_node/);
+  });
+
+  it("does not return listAgents verbatim any more", () => {
+    // The exact regressed shape: mapping straight from the file to the output.
+    expect(
+      /listAgents\(cfg\)\.map\(\(r\) => \(\{\s*role: r\.role,\s*nodeId: r\.nodeId/.test(src),
+      "vault_roles is reporting the keyring verbatim again",
+    ).toBe(false);
+  });
+
+  it("has a DEAD status that names NOT_VIRTUAL_AGENT", () => {
+    // The point is to connect the symptom a user WILL see to the cause.
+    expect(block).toMatch(/DEAD/);
+    expect(block).toMatch(/NOT_VIRTUAL_AGENT/);
+  });
+
+  it("warns loudly when NO key is usable", () => {
+    // Silence here is what let the vault be unspendable for hours unnoticed.
+    expect(block).toMatch(/NO USABLE AGENT/);
+    expect(block).toMatch(/NEAR_VAULT_AGENT_KEYS/);
+  });
+
+  it("reports keys the VAULT has that this client cannot sign as", () => {
+    expect(block).toMatch(/ON_CHAIN_BUT_NO_LOCAL_KEY/);
+  });
+
+  it("reports keyring entries the loader refuses to read", () => {
+    // Previously dropped in silence, so "I have a key but this shows nothing"
+    // was unanswerable.
+    expect(block).toMatch(/unreadableKeyringEntries/);
+  });
+
+  it("distinguishes bound-but-no-gas-key from usable", () => {
+    // Authorised and unable to submit is a real state, and it fails at the
+    // first payment rather than at setup.
+    expect(block).toMatch(/BOUND_BUT_NO_GAS_KEY/);
+  });
+});

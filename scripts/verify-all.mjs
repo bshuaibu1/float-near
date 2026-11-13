@@ -74,6 +74,26 @@ const steps = [
     mustNotMatch: /Failed to compile|Build error/,
   },
   {
+    /**
+     * THE MCP PACKAGE WAS NOT TYPECHECKED BY THIS GATE, and it is the most
+     * edited package in the repo and the one that ships to npm.
+     *
+     * Found 2026-11-13 the hard way: a mutation left `server.ts` with a
+     * literal syntax error — `')' expected` — and the gate reported all 38
+     * checks passing while 368 vitest tests also passed. vitest transforms
+     * with esbuild, which is more permissive than tsc and happily ran around
+     * the damage; nothing else looked at the file at all.
+     *
+     * So a broken MCP could have been committed, published, and only failed
+     * in a user's client. Same shape as the dashboard entry above: a gate that
+     * checks something ADJACENT to what ships reports on a program nobody runs.
+     */
+    name: "mcp typecheck",
+    cmd: "npx tsc --noEmit -p tsconfig.json",
+    cwd: "packages/mcp",
+    mustNotMatch: /error TS/,
+  },
+  {
     name: "adapter typecheck",
     cmd: "npx tsc --noEmit -p tsconfig.json",
     cwd: "packages/float-adapter",

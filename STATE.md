@@ -213,6 +213,20 @@ state changes, and re-stamp the commit line above.
   implementation, design, impact, originality, sustainability — **with an AI screening first to
   verify the project runs as described**, which is why every figure in the draft is measured and
   §6 lists what is deliberately NOT claimed.
+- **`vault_roles` NOW ANSWERS FROM THE CHAIN, not from the keyring file.** It reported
+  `listAgents(cfg)` verbatim — role, nodeId and all — without ever asking the vault whether it
+  had heard of those keys. A keyring pointed at the wrong directory therefore reported a healthy,
+  signable agent on node 1 that the vault did not know, `vault_pay` signed with it and came back
+  `NOT_VIRTUAL_AGENT`, and the vault was unspendable for hours with nothing noticing. Cost a user
+  a whole session of forensics to find one wrong path. Every entry is now resolved against
+  `get_virtual_agent_node` and the access-key list, with statuses **USABLE / DEAD /
+  BOUND_BUT_NO_GAS_KEY**, plus `onChainWithoutLocalKey` (an agent the vault has and this client
+  cannot sign as), `unreadableKeyringEntries` (previously dropped in silence) and a loud warning
+  when NOTHING is usable. Verified both ways against mainnet.
+- **Gate is 39 checks: `mcp typecheck` was missing.** The most-edited package, and the one that
+  ships to npm, was never typechecked here. A `server.ts` with a literal syntax error passed all
+  38 checks AND 368 vitest tests, because esbuild is more permissive than tsc. A broken MCP could
+  have been published and failed only in a user's client.
 - **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
   version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
   SKILL.md cost fix; make the repo PUBLIC (git history verified clean —
