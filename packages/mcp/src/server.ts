@@ -87,13 +87,14 @@ import {
   viewAccount,
   viewFunction,
 } from "./rpc.js";
-import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
+import { AGENT_NODE_ID, generateAgentKey, retireRole } from "./agent-key.js";
 import { resolveKeySource } from "./key-file.js";
 import { dirname, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { listAgents, listRoles, listUnloadable, selectRole } from "./roles.js";
+import { resolveKeyringPath } from "./keyring-path.js";
 import { label as tokenLabel, tokenMeta, type TokenMeta } from "./token-meta.js";
 
 /**
@@ -196,6 +197,27 @@ if (!Object.hasOwn(RPC_BY_NETWORK, NETWORK)) {
   process.exit(1);
 }
 
+/**
+ * A syntactically valid ed25519 key used ONLY to dry-run payload construction.
+ *
+ * `planAddRole` needs a public key to build args, and we want its exceptions
+ * BEFORE generating a real one. All zeroes in base58 is "1" repeated, which
+ * parses as a key and is obviously not anyone's.
+ */
+/**
+ * Resolved ONCE, at startup, from the environment — never recomputed, so the
+ * path cannot change mid-session if something alters the working directory.
+ *
+ * The vault id is read straight from the env rather than from `cfg`, because
+ * `cfg` is what this feeds.
+ */
+const KEYRING = resolveKeyringPath({
+  explicit: process.env.NEAR_VAULT_AGENT_KEYS,
+  vault: process.env.NEAR_VAULT_CONTRACT,
+});
+
+const PLACEHOLDER_PUBLIC_KEY = `ed25519:${"1".repeat(44)}`;
+
 const cfg = {
   vault: process.env.NEAR_VAULT_CONTRACT ?? "",
   /**
@@ -259,10 +281,17 @@ const cfg = {
   // Guarded by `scripts/check-create-page.mjs`, which fetches the real link
   // shape, follows redirects, and checks the wasm at the landing origin.
   appUrl: process.env.NEAR_VAULT_APP_URL ?? "https://usefloat.xyz",
-  // The fleet keyring. Same default and same file the adapter reads — two
-  // readers disagreeing about where credentials live is how an agent ends up
-  // "configured" and unreachable.
-  agentKeysPath: process.env.NEAR_VAULT_AGENT_KEYS ?? ".float/agent-keys.json",
+  // The fleet keyring. Same file the adapter reads — two readers disagreeing
+  // about where credentials live is how an agent ends up "configured" and
+  // unreachable.
+  //
+  // RESOLVED, NOT DEFAULTED. This was the bare relative string
+  // `.float/agent-keys.json`, which Node resolves against the server's CWD —
+  // i.e. wherever the CLIENT happened to be launched. One server entry in
+  // `~/.claude.json` therefore meant a DIFFERENT keyring per directory, and a
+  // key written from one project was invisible from another. See
+  // `keyring-path.ts` for the resolution rule and the measurement.
+  agentKeysPath: KEYRING.path,
 };
 
 /**
@@ -1176,43 +1205,131 @@ server.tool(
   async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear }) => {
     const vault = requireVault();
 
-    // REFUSE A DUPLICATE ROLE BEFORE GENERATING A KEY. The contract would
-    // happily create a second node with the same label, and the keyring would
-    // index only the last one — so the first agent would still be bound and
-    // funded on chain while becoming unreachable locally.
-    if (listRoles(cfg).some((r) => r.role === role)) {
+    /**
+     * A DUPLICATE ROLE IS REFUSED — BUT "IN THE KEYRING" IS NOT "ALIVE".
+     *
+     * The contract would happily create a second node with the same label, and
+     * `selectRole` resolves with `find`, so the FIRST entry wins forever: the
+     * older agent would stay bound and funded on chain with nothing able to
+     * select it. That part of the old guard was right.
+     *
+     * What was wrong was treating a keyring entry as proof an agent exists. A
+     * `vault_add_role` that writes a key and then fails to land on chain leaves
+     * an ORPHAN — a role bound to nothing, no node, no gas key — and this guard
+     * then refused the user's own retry, citing the wreckage of the attempt
+     * that failed thirty seconds earlier. Reported 2026-11-13 for a `travel`
+     * agent; the user had to go and find the file by hand.
+     *
+     * So ask the CHAIN, which is the only thing that knows:
+     *   bound to a node -> a real agent. Refuse, as before.
+     *   not bound       -> an orphan. Retire it and carry on.
+     *   chain unreachable or no recorded key -> cannot tell. Refuse, and SAY
+     *                      it is a "cannot tell", not a "there is one".
+     */
+    let retired: { retiredTo: string } | null = null;
+    const clash = listAgents(cfg).find((a) => a.role === role);
+    if (clash) {
+      const boundNode = clash.publicKey
+        ? await viewFunction<number | null>(cfg.rpcUrl, vault, "get_virtual_agent_node", {
+            public_key: clash.publicKey,
+          }).catch(() => undefined)
+        : undefined;
+
+      if (boundNode === undefined) {
+        return text(
+          `There is already a key filed under the role '${role}' for this vault, and I could not ` +
+            `confirm with ${vault} whether it is a working agent — ` +
+            `${clash.publicKey ? "the network read failed" : "that entry predates recorded public keys"}. ` +
+            `Refusing rather than guessing: adding a second '${role}' would permanently hide ` +
+            `whichever was filed first, and if the existing one IS bound and funded, nothing ` +
+            `would be able to select it again. Try vault_roles to see the fleet, or pick ` +
+            `another name.`,
+        );
+      }
+
+      if (boundNode !== null) {
+        return text(
+          `This vault already has a working agent with the role '${role}' — it is bound to ` +
+            `node ${boundNode}. A second one would hide it, and it would stay funded on chain ` +
+            `with nothing able to select it. Pick another name, or just use the existing agent.`,
+        );
+      }
+
+      /**
+       * ORPHAN. The chain says this key is bound to nothing, so it cannot be
+       * anyone's working agent. Its name is taken off it — the secret stays on
+       * disk, see `retireRole` — and the request proceeds, which is what the
+       * user asked for in the first place.
+       */
+      retired = retireRole({
+        keyringPath: cfg.agentKeysPath,
+        vault,
+        publicKey: clash.publicKey as string,
+      });
+    }
+
+    /**
+     * VALIDATE EVERYTHING BEFORE A KEY TOUCHES DISK.
+     *
+     * This used to generate and WRITE the agent's key, and only then build the
+     * payload — which calls `tokenFor()` and the amount conversions, any of
+     * which can throw. So a call that failed validation left a real keypair
+     * filed under the role name, bound to nothing: no node, no gas key. The
+     * user's retry then hit "this vault already has an agent with the role
+     * 'travel'" and was blocked by the wreckage of their own failed attempt.
+     *
+     * Measured 2026-11-13: a `vault_add_role` that failed on a missing token
+     * wrote `travel` to the keyring 55 seconds before the retry was refused.
+     *
+     * Everything that can throw now runs FIRST, against a throwaway public key,
+     * so a failure writes nothing at all. The key is generated only once the
+     * payload is known to be buildable.
+     */
+    const fundingYocto = toYoctoNear(fundingNear ?? "0.12");
+
+    let limits;
+    try {
+      limits = [{ token: tokenFor(token), dailyCap, perTxCap, decimals: cfg.decimals }];
+      // Build it once with a placeholder to force every conversion and check
+      // to run. Nothing is kept; this is a dry run for its exceptions.
+      planAddRole(
+        vault,
+        role,
+        limits,
+        cooldownSec ?? 0,
+        recipients ?? null,
+        PLACEHOLDER_PUBLIC_KEY,
+        fundingYocto,
+      );
+    } catch (e) {
       return text(
-        `This vault already has an agent with the role '${role}'. Roles index the ` +
-          `keyring, so a second one would hide the first — which would stay bound and ` +
-          `funded on chain with nothing able to select it. Pick another name, or use ` +
-          `the existing agent.`,
+        `${String((e as Error).message)}${String.fromCharCode(10)}${String.fromCharCode(10)}` +
+          `Nothing was written — no key was generated, so '${role}' is still free to use once ` +
+          `this is corrected.`,
       );
     }
 
-    const fundingYocto = toYoctoNear(fundingNear ?? "0.12");
-    // `nodeId: null` — NOT YET KNOWN. `add_role` creates the node inside the
-    // contract, so its id does not exist until the transaction lands.
+    // Only now. `nodeId: null` — NOT YET KNOWN: `add_role` creates the node
+    // inside the contract, so its id does not exist until the transaction lands.
     const generated = generateAgentKey({
       vault,
-      dir: dirname(cfg.agentKeysPath),
+      // The FULL configured path, not its directory. Passing the directory
+      // discarded the filename, so a keyring pinned to anything other than
+      // `agent-keys.json` was read from one file and written to another.
+      keyringPath: cfg.agentKeysPath,
       role,
       nodeId: null,
     });
 
-    let payload;
-    try {
-      payload = planAddRole(
-        vault,
-        role,
-        [{ token: tokenFor(token), dailyCap, perTxCap, decimals: cfg.decimals }],
-        cooldownSec ?? 0,
-        recipients ?? null,
-        generated.publicKey,
-        fundingYocto,
-      );
-    } catch (e) {
-      return text(String((e as Error).message));
-    }
+    const payload = planAddRole(
+      vault,
+      role,
+      limits,
+      cooldownSec ?? 0,
+      recipients ?? null,
+      generated.publicKey,
+      fundingYocto,
+    );
 
     return json({
       role,
@@ -1227,9 +1344,31 @@ server.tool(
           `credential is filed under the ROLE, so vault_pay({role:"${role}"}) works ` +
           `without it.`,
       ],
+      // Only present when something was actually cleaned up, so the ordinary
+      // case stays quiet. An orphan silently replaced would be the same
+      // invisible-state problem in a new costume.
+      ...(retired
+        ? {
+            replaced:
+              `A key was already filed under '${role}' but ${vault} reports it bound to ` +
+              `nothing — a leftover from an earlier attempt that never landed on chain. It has ` +
+              `been renamed '${retired.retiredTo}' so it cannot shadow this one. Its secret ` +
+              `was NOT deleted.`,
+          }
+        : {}),
       warnings: [
         `Show the owner this public key and have them confirm it before signing: ${generated.publicKey}`,
         `The private key is at ${generated.keyringPath}. Do not print it.`,
+        // A second keyring holding keys for THIS vault means roles this server
+        // cannot see. Said here rather than left to surface later as "my agent
+        // vanished".
+        ...(KEYRING.alsoFound.length
+          ? [
+              `Another keyring also holds keys for this vault and is NOT being read: ` +
+                `${KEYRING.alsoFound.join(", ")}. This one was chosen. Set ` +
+                `NEAR_VAULT_AGENT_KEYS to pin one deliberately.`,
+            ]
+          : []),
       ],
     });
   },

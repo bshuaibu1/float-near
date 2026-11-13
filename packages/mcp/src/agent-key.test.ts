@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import { loadKeyring } from "../../float-adapter/src/keyring.js";
 import { readKeyFile } from "./key-file.js";
-import { AGENT_NODE_ID, generateAgentKey } from "./agent-key.js";
+import { AGENT_NODE_ID, generateAgentKey, retireRole } from "./agent-key.js";
+import { selectRole } from "./roles.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "float-agent-key-"));
 
@@ -137,5 +138,103 @@ describe("generateAgentKey", () => {
     const a = generateAgentKey({ vault: "v.fac.testnet", dir: tmp() });
     const b = generateAgentKey({ vault: "v.fac.testnet", dir: tmp() });
     expect(a.publicKey).not.toBe(b.publicKey);
+  });
+});
+
+/**
+ * Retiring an orphaned role.
+ *
+ * The scenario: `vault_add_role` wrote a key, the transaction never landed, so
+ * the role names a credential the contract has never heard of. The entry must
+ * stop answering to that name — `selectRole` takes the FIRST match — without
+ * its secret being destroyed.
+ */
+describe("retireRole", () => {
+  const VAULT = "v.near";
+
+  function ringWith(entries: unknown[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "float-retire-"));
+    const p = join(dir, "agent-keys.json");
+    writeFileSync(p, JSON.stringify(entries, null, 2), "utf8");
+    return p;
+  }
+
+  const ent = (role: string, pk: string, extra: Record<string, unknown> = {}) => ({
+    agentId: VAULT,
+    role,
+    publicKey: pk,
+    secret: `ed25519:secret-for-${role}`,
+    ...extra,
+  });
+
+  it("renames the role but keeps the secret and the entry", () => {
+    const p = ringWith([ent("travel", "ed25519:AAAABBBBCCCCDDDD")]);
+    const got = retireRole({ keyringPath: p, vault: VAULT, publicKey: "ed25519:AAAABBBBCCCCDDDD" });
+    expect(got?.retiredTo).toBe("travel-retired-AAAABBBB");
+
+    const after = JSON.parse(readFileSync(p, "utf8"));
+    expect(after).toHaveLength(1);
+    expect(after[0].role).toBe("travel-retired-AAAABBBB");
+    expect(after[0].secret).toBe("ed25519:secret-for-travel");
+    expect(after[0].publicKey).toBe("ed25519:AAAABBBBCCCCDDDD");
+  });
+
+  /**
+   * THE WHOLE POINT. After retiring, the name must resolve to the NEW key —
+   * asserted through `selectRole`, the function that actually picks a signer,
+   * rather than by re-reading the field this code just wrote.
+   */
+  it("stops the orphan shadowing a replacement in selectRole", () => {
+    const p = ringWith([
+      ent("travel", "ed25519:DEADDEADDEADDEAD"), // orphan, written first
+    ]);
+    retireRole({ keyringPath: p, vault: VAULT, publicKey: "ed25519:DEADDEADDEADDEAD" });
+
+    // The replacement is appended, exactly as generateAgentKey would.
+    const entries = JSON.parse(readFileSync(p, "utf8"));
+    entries.push(ent("travel", "ed25519:LIVELIVELIVELIVE"));
+    writeFileSync(p, JSON.stringify(entries, null, 2), "utf8");
+
+    const picked = selectRole({ agentKeysPath: p, vault: VAULT }, "travel");
+    expect(picked.agentKey).toBe("ed25519:secret-for-travel");
+    // Both share a secret string in this fixture, so assert on the key itself.
+    const chosen = JSON.parse(readFileSync(p, "utf8")).find(
+      (e: Record<string, unknown>) => e.role === "travel",
+    );
+    expect(chosen.publicKey).toBe("ed25519:LIVELIVELIVELIVE");
+  });
+
+  it("identifies the entry by public key, never by role alone", () => {
+    const p = ringWith([
+      ent("travel", "ed25519:11112222333344445"),
+      ent("travel", "ed25519:55556666777788889"),
+    ]);
+    retireRole({ keyringPath: p, vault: VAULT, publicKey: "ed25519:55556666777788889" });
+    const after = JSON.parse(readFileSync(p, "utf8"));
+    // The one NOT named is untouched.
+    expect(after[0].role).toBe("travel");
+    expect(after[1].role).toBe("travel-retired-55556666");
+  });
+
+  it("leaves another vault's entry with the same public key alone", () => {
+    const p = ringWith([
+      { agentId: "other.near", role: "travel", publicKey: "ed25519:AAAABBBBCCCCDDDD", secret: "s" },
+    ]);
+    expect(retireRole({ keyringPath: p, vault: VAULT, publicKey: "ed25519:AAAABBBBCCCCDDDD" })).toBeNull();
+    expect(JSON.parse(readFileSync(p, "utf8"))[0].role).toBe("travel");
+  });
+
+  it("drops a nodeId, which was never real for an unbound key", () => {
+    const p = ringWith([ent("travel", "ed25519:AAAABBBBCCCCDDDD", { nodeId: 7 })]);
+    retireRole({ keyringPath: p, vault: VAULT, publicKey: "ed25519:AAAABBBBCCCCDDDD" });
+    expect(JSON.parse(readFileSync(p, "utf8"))[0].nodeId).toBeUndefined();
+  });
+
+  it("a missing file or no match is null, not a throw", () => {
+    expect(
+      retireRole({ keyringPath: join(tmpdir(), "nope-float-xyz.json"), vault: VAULT, publicKey: "ed25519:x" }),
+    ).toBeNull();
+    const p = ringWith([ent("travel", "ed25519:AAAABBBBCCCCDDDD")]);
+    expect(retireRole({ keyringPath: p, vault: VAULT, publicKey: "ed25519:NOSUCHKEY0000000" })).toBeNull();
   });
 });

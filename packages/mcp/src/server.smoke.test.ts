@@ -890,3 +890,157 @@ describe("vault_roles answers from the chain, not from the keyring file", () => 
     expect(block).toMatch(/BOUND_BUT_NO_GAS_KEY/);
   });
 });
+
+/**
+ * Call ONE tool on a freshly spawned server and return its text content.
+ *
+ * Separate from `listTools` because these tests care about the ENV each server
+ * starts with — the keyring path in particular — and a shared long-lived
+ * server would resolve it once for all of them.
+ */
+async function callTool(
+  name: string,
+  args: Record<string, unknown>,
+  env: Record<string, string>,
+): Promise<string> {
+  const child = spawn(process.execPath, [SERVER], {
+    env: { ...process.env, ...env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const send = (o: unknown) => child.stdin.write(JSON.stringify(o) + "\n");
+  send({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+  });
+
+  return await new Promise<string>((ok, bad) => {
+    let buf = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      bad(new Error(`no answer to ${name} in 25s. stderr:\n${stderr}`));
+    }, 25_000);
+    child.stderr.on("data", (d) => (stderr += String(d)));
+    child.stdout.on("data", (d) => {
+      buf += String(d);
+      for (const line of buf.split("\n")) {
+        if (!line.trim()) continue;
+        let msg: { id?: number; result?: { content?: { text?: string }[] } };
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.id === 1) {
+          send({ jsonrpc: "2.0", method: "notifications/initialized" });
+          send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } });
+        }
+        if (msg.id === 2) {
+          clearTimeout(timer);
+          child.kill();
+          ok((msg.result?.content ?? []).map((c) => c.text ?? "").join("\n"));
+        }
+      }
+      buf = buf.slice(buf.lastIndexOf("\n") + 1);
+    });
+  });
+}
+
+/**
+ * A FAILED vault_add_role MUST LEAVE NOTHING BEHIND.
+ *
+ * Measured 2026-11-13: the handler generated and WROTE the agent's keypair,
+ * and only then built the payload — which validates the token and the caps and
+ * can throw. A call that failed validation therefore filed a real key under
+ * the role name, bound to nothing. The user's retry was then refused with
+ * "this vault already has an agent with the role 'travel'", blocked by the
+ * wreckage of the attempt that had failed seconds earlier.
+ *
+ * This drives the REAL tool over the REAL protocol, because that is the only
+ * level at which the ordering is observable: both the write and the throw are
+ * internal to the handler, and every unit test of the pieces passed throughout.
+ */
+describe("a vault_add_role that fails validation writes nothing", () => {
+  it("refuses an unknown token without creating a key", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-smoke-ring-"));
+    const ring = join(dir, "agent-keys.json");
+
+    // NO token argument and NO NEAR_VAULT_TOKEN — which is the exact shape of
+    // the failure reported: `tokenFor` throws only when a token is MISSING.
+    // An arbitrary string like "not-a-token-xyz" is a legal account id and
+    // does NOT throw, so a test built on one proves nothing; this test asserted
+    // exactly that at first and passed for the wrong reason.
+    const out = await callTool(
+      "vault_add_role",
+      { role: "travel", dailyCap: "10", perTxCap: "2" },
+      {
+        NEAR_VAULT_CONTRACT: "vault.testnet",
+        NEAR_VAULT_NETWORK: "testnet",
+        NEAR_VAULT_AGENT_KEYS: ring,
+      },
+    );
+
+    // It must actually have refused — otherwise "no file" proves nothing.
+    expect(out).toMatch(/token/i);
+    // And it must SAY nothing was written, because the next thing the user
+    // does is retry, and silence here is what sent one digging through files.
+    expect(out).toMatch(/[Nn]othing was written/);
+
+    expect(existsSync(ring)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+
+  /**
+   * THE CONTROL. If the same call with a VALID token also wrote nothing, the
+   * assertion above would pass for the wrong reason — a tool that is simply
+   * broken, or a role name the schema rejects before any of this is reached.
+   */
+  it("control: the same call with a valid token DOES write a key", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-smoke-ring-ok-"));
+    const ring = join(dir, "agent-keys.json");
+
+    const out = await callTool(
+      "vault_add_role",
+      { role: "travel", dailyCap: "10", perTxCap: "2" },
+      {
+        NEAR_VAULT_CONTRACT: "vault.testnet",
+        NEAR_VAULT_NETWORK: "testnet",
+        NEAR_VAULT_TOKEN: "usdc.testnet",
+        NEAR_VAULT_AGENT_KEYS: ring,
+      },
+    );
+
+    expect(out).not.toMatch(/[Nn]othing was written/);
+    expect(existsSync(ring)).toBe(true);
+    const entries = JSON.parse(readFileSync(ring, "utf8")) as { role: string }[];
+    expect(entries.map((e) => e.role)).toContain("travel");
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+
+  /**
+   * The keyring must land where the SERVER was told, not where it was started.
+   * `NEAR_VAULT_AGENT_KEYS` is unset in the real `~/.claude.json` entry on this
+   * machine, which is how a key written from one project became invisible from
+   * another; this pins that an explicit path is honoured exactly.
+   */
+  it("writes to the configured keyring, not the working directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-smoke-ring-path-"));
+    const ring = join(dir, "pinned-keys.json");
+
+    await callTool(
+      "vault_add_role",
+      { role: "research", dailyCap: "10", perTxCap: "2" },
+      {
+        NEAR_VAULT_CONTRACT: "vault.testnet",
+        NEAR_VAULT_NETWORK: "testnet",
+        NEAR_VAULT_TOKEN: "usdc.testnet",
+        NEAR_VAULT_AGENT_KEYS: ring,
+      },
+    );
+
+    expect(existsSync(ring)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+});

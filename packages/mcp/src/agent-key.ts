@@ -75,6 +75,22 @@ export function generateAgentKey(opts: {
   vault: string;
   dir?: string;
   /**
+   * The exact keyring file to write, overriding `dir` and the hardcoded
+   * `agent-keys.json` filename.
+   *
+   * WHY IT HAS TO EXIST. The caller configures a keyring by full PATH
+   * (`NEAR_VAULT_AGENT_KEYS`), and this function used to accept only a
+   * directory and append a fixed filename. So pinning the keyring to, say,
+   * `~/keys/fleet.json` meant the server READ `fleet.json` and WROTE
+   * `~/keys/agent-keys.json` — a brand new agent, filed where nothing would
+   * ever look for it, reported as success. Silent, and exactly the "written
+   * somewhere you are not reading" failure this module is supposed to prevent.
+   *
+   * Caught by the smoke test that pins a non-default filename, not by a unit
+   * test: every unit test here passes a directory.
+   */
+  keyringPath?: string;
+  /**
    * The node this agent spends from.
    *
    * `null` means NOT YET KNOWN, and is written as an absent field rather
@@ -103,11 +119,14 @@ export function generateAgentKey(opts: {
    */
   role?: string;
 }): GeneratedAgentKey {
-  const dir = opts.dir ?? ".float";
   // `undefined` -> root (the creation-time agent). `null` -> unknown, and the
   // field is omitted rather than guessed.
   const nodeId = opts.nodeId === null ? undefined : (opts.nodeId ?? AGENT_NODE_ID);
-  const keyringPath = join(dir, "agent-keys.json");
+
+  // An explicit path wins and decides the directory; otherwise the old
+  // dir-plus-fixed-filename behaviour, unchanged.
+  const keyringPath = opts.keyringPath ?? join(opts.dir ?? ".float", "agent-keys.json");
+  const dir = dirname(keyringPath);
   const envPath = join(dir, "agent.env");
 
   const kp = KeyPair.fromRandom("ed25519");
@@ -184,4 +203,67 @@ export function generateAgentKey(opts: {
 /** Where the files would go, without creating anything. */
 export function agentKeyPaths(dir = ".float") {
   return { keyringPath: join(dir, "agent-keys.json"), envPath: join(dir, "agent.env"), dir: dirname(join(dir, "x")) };
+}
+
+/**
+ * Take a role name off a keyring entry that is PROVEN not bound on chain,
+ * without destroying its secret.
+ *
+ * WHY THIS IS NEEDED. `generateAgentKey` appends and never replaces, for the
+ * reason above: overwriting could destroy the only copy of a credential for an
+ * agent that is already bound and funded. But `selectRole` resolves a role with
+ * `entries.find(...)` — FIRST match wins. So an orphaned entry (a key written
+ * by a `vault_add_role` that then failed to land on chain) would permanently
+ * SHADOW the replacement: every future payment under that role would select a
+ * key the contract answers NOT_VIRTUAL_AGENT for, and the working key beside it
+ * would never be reached.
+ *
+ * So the orphan's role is RENAMED rather than deleted. The secret stays on
+ * disk, the entry stays in the file, and the name resolves to exactly one
+ * credential again. Deleting would be tidier and is not worth the risk: the
+ * caller's proof of deadness is a chain read, and a chain read can be wrong
+ * about a vault that is paused, migrating, or being served by a lagging RPC.
+ * A renamed entry survives that mistake; a deleted one does not.
+ *
+ * Identified BY PUBLIC KEY, never by role alone — the whole point is that two
+ * entries can share a role at this moment, and renaming the wrong one would
+ * retire the live agent.
+ *
+ * Returns the new role name, or null if no entry matched (already retired, or
+ * a keyring that moved under us) — which is not an error.
+ */
+export function retireRole(opts: {
+  keyringPath: string;
+  vault: string;
+  publicKey: string;
+}): { retiredTo: string } | null {
+  if (!existsSync(opts.keyringPath)) return null;
+  let entries: unknown[];
+  try {
+    const parsed = JSON.parse(readFileSync(opts.keyringPath, "utf8"));
+    if (!Array.isArray(parsed)) return null;
+    entries = parsed;
+  } catch {
+    // Unreadable is not this function's problem to fix; `generateAgentKey`
+    // already backs such a file aside before writing.
+    return null;
+  }
+
+  let retiredTo: string | undefined;
+  for (const e of entries as Record<string, unknown>[]) {
+    if (!e || typeof e !== "object") continue;
+    if (e.agentId !== opts.vault) continue;
+    if (e.publicKey !== opts.publicKey) continue;
+    if (typeof e.role !== "string") continue;
+    // A short slice of the public key keeps two retirements of the same role
+    // from colliding, and keeps the name traceable back to the exact entry.
+    retiredTo = `${e.role}-retired-${opts.publicKey.slice(8, 16)}`;
+    e.role = retiredTo;
+    // The node id, if any, was never real for an unbound key.
+    delete e.nodeId;
+  }
+  if (!retiredTo) return null;
+
+  writeFileSync(opts.keyringPath, `${JSON.stringify(entries, null, 2)}${String.fromCharCode(10)}`);
+  return { retiredTo };
 }
