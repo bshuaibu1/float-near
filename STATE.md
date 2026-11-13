@@ -177,13 +177,20 @@ state changes, and re-stamp the commit line above.
     ABOVE the old floor (0.10001) and BELOW the new one (0.10126). The contract panicked
     `DEPOSIT_TOO_SMALL`, which only happens if the registration term is in the live floor. Safe
     either way — `begin()` panics before scheduling any receipt. `.demo/probe-registration-floor.mjs`.
-  - **The fix is forward-only, and the next step is blocked on money, not code.**
-    `test015-near.usefloat.near` is still unregistered, and `test015.near` has only **2.31205**
-    free against the **3.66839** a new vault needs — the 3.34839 is locked as that vault's own
-    storage stake. So the end-to-end proof requires tearing it down first, which returns
-    **3.468390** (3.348390 account + 0.120000 gas key; no tokens, nothing stranded) and then
-    recreating through the new factory. That also rebuilds the demo vault, and the recreation
-    IS the proof: a browser-created vault should come out registered on USDC with no extra step.
+  - **The old unregistered vault was TORN DOWN 2026-11-13** to fund the proof and because it
+    could not be funded anyway. `test015-near.usefloat.near` is DELETED; reconciled against the
+    chain, not the script's summary: NEAR **+3.467992** of 3.468390 quoted (0.000398 = gas
+    across the six steps), USDC unchanged, nothing stranded. Storage shrank 300,035 -> 1,229 B
+    before the delete. Owner now holds **5.781862**, so a vault is affordable again.
+  - **AWAITING ONE SIGNATURE: the recreation IS the end-to-end proof.** Link issued with
+    `bindAgent`, agent key `ed25519:EUNSWPmaiHisn2uXDVqDtY5gnE2XXdQB5GMFLs7zYpGu` -> node 1.
+    When it lands, three things get checked and the second is the fix:
+    (1) `get_config.owner` is really `test015.near`, not merely that something exists at the
+    derived id; (2) **`storage_balance_of` is NON-NULL** — a browser-created vault registered on
+    USDC with no extra step, which is what the old factory got wrong; (3) the agent key carries
+    `receiver_id` = the vault and `method_names` = `["request_payment"]`.
+    If (2) comes back null the fix did not work and that must be said plainly rather than
+    handing over a vault that cannot be funded.
 - **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
   version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
   SKILL.md cost fix; make the repo PUBLIC (git history verified clean —
