@@ -1,4 +1,4 @@
-<!-- STAMP commit=pending date=2026-11-13 -->
+<!-- STAMP commit=7253d1c date=2026-11-13 -->
 # NEAR Hackathon submission — ready to paste
 
 **Deadline: 2026-11-14 23:59 UTC.** Form at <https://nearhackathon.com/>.
