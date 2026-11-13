@@ -1,4 +1,4 @@
-<!-- STAMP commit=f8a6b97 date=2026-11-13 -->
+<!-- STAMP commit=5301879 date=2026-11-13 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -223,6 +223,25 @@ state changes, and re-stamp the commit line above.
   BOUND_BUT_NO_GAS_KEY**, plus `onChainWithoutLocalKey` (an agent the vault has and this client
   cannot sign as), `unreadableKeyringEntries` (previously dropped in silence) and a loud warning
   when NOTHING is usable. Verified both ways against mainnet.
+- **`vault_add_role` NO LONGER LEAVES AN ORPHAN, AND NO LONGER MOVES WITH THE WORKING
+  DIRECTORY (2026-11-13).** Three defects, one symptom — a key on disk that nothing could use,
+  and a retry refused because of it. (1) It generated and **wrote** the keypair, then built the
+  payload, which validates the token and can throw; a call that failed validation filed a real key
+  bound to nothing, and the retry was refused citing the wreckage of the attempt that had failed
+  seconds earlier. Validation now runs first against a placeholder, so a failure writes nothing
+  and says so. (2) The keyring default was the **relative** `.float/agent-keys.json`, resolved
+  against the server's CWD — wherever the client was launched. Measured: `NEAR_VAULT_AGENT_KEYS`
+  is unset for the configured `float` server, and `New project/.float` vs `near-vault/.float` hold
+  **different keys for the same vault**. `keyring-path.ts` now resolves by asking which file can
+  sign for THIS vault, falling back to `~/.float`; a project-local ring that already holds a
+  credential still wins, so nothing is stranded. (3) `generateAgentKey` took a **directory** and
+  appended a hardcoded filename while the server read the full configured path — pinning the
+  keyring to any other name meant reading one file and writing another, reported as success.
+  Found by a smoke test pinning a non-default name; every unit test passes a directory, so none
+  could see it. An existing orphan is now **self-healing**: the duplicate guard asks
+  `get_virtual_agent_node` and **retires** (renames, never deletes) a role bound to nothing.
+  Verified against mainnet — the `travel` key reports node `null`, the live one reports node 1.
+  Mutation-verified both ways. **388 MCP tests.**
 - **Gate is 39 checks: `mcp typecheck` was missing.** The most-edited package, and the one that
   ships to npm, was never typechecked here. A `server.ts` with a literal syntax error passed all
   38 checks AND 368 vitest tests, because esbuild is more permissive than tsc. A broken MCP could
