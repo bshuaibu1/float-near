@@ -241,7 +241,13 @@ state changes, and re-stamp the commit line above.
   could see it. An existing orphan is now **self-healing**: the duplicate guard asks
   `get_virtual_agent_node` and **retires** (renames, never deletes) a role bound to nothing.
   Verified against mainnet — the `travel` key reports node `null`, the live one reports node 1.
-  Mutation-verified both ways. **388 MCP tests.**
+  Mutation-verified both ways. **388 MCP tests.** `vault_roles` now also reports **which keyring
+  it read and why** — every status it returns is a claim about one specific file, and the tool had
+  the path and did not say it. Driven from both project directories against the real config: from
+  `New project` it names that ring and reports `travel` **DEAD**; from `near-vault` it names the
+  other and reports node 1 **USABLE**.
+  **NOT LIVE FOR USERS YET** — this ships in mcp **0.10.2**; npm has **0.10.1** and this machine
+  is not authenticated to publish.
 - **Gate is 39 checks: `mcp typecheck` was missing.** The most-edited package, and the one that
   ships to npm, was never typechecked here. A `server.ts` with a literal syntax error passed all
   38 checks AND 368 vitest tests, because esbuild is more permissive than tsc. A broken MCP could

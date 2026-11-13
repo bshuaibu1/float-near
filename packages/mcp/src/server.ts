@@ -1496,6 +1496,27 @@ server.tool(
     return json({
       vault,
       usable,
+      /**
+       * WHICH FILE THIS ANSWER CAME FROM.
+       *
+       * Every status below is a claim about credentials in one specific file,
+       * and that file is CHOSEN (see `keyring-path.ts`) — so an answer that
+       * does not name it cannot be checked. Omitting it is what turned "my
+       * travel agent is missing" into a session of hand-diffing keyrings:
+       * the tool had the path and did not say it.
+       */
+      keyring: {
+        path: cfg.agentKeysPath,
+        chosenBecause: KEYRING.why,
+        ...(KEYRING.alsoFound.length
+          ? {
+              NOT_being_read: KEYRING.alsoFound,
+              warning:
+                `Another keyring also holds keys for this vault. Agents filed there will NOT ` +
+                `appear above. Set NEAR_VAULT_AGENT_KEYS to pin one deliberately.`,
+            }
+          : {}),
+      },
       agents: resolved,
       ...(unheld.length ? { onChainWithoutLocalKey: unheld } : {}),
       // Entries the loader refuses to read. Reported rather than dropped, so
