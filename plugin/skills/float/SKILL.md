@@ -151,10 +151,48 @@ key on the machine, which is the thing above.
   Your key's `method_names` is `["request_payment"]` and nothing else.
 - attach NEAR to anything. A NEAR function-call key cannot carry a deposit.
 - **fund the vault.** That needs the owner's tokens and the owner's key. If the
-  vault is empty, say so and ask the human — do not try to fix it yourself.
+  vault is empty, say so and ask the human — do not try to fix it yourself, and
+  send them to their WALLET, never to a CLI. See below.
 
 If a request needs one of those, produce a plan with `vault_plan_*` and hand it
 to the human. Do not attempt it and report the error.
+
+### Funding a vault — the wallet, always, never the CLI
+
+Someone has to put tokens in. **Tell them to send from their own wallet**, name
+the three fields, and stop:
+
+> Open your wallet as `<owner>` and send `<amount>` `<TOKEN>` to `<vault>`.
+> Check the token's CONTRACT ID, not just the ticker — `<contract>`.
+
+**Do NOT hand over an `ft_transfer` command, and do not offer to run one.**
+Measured 2026-11-13: asked to fund a vault, an agent found a full-access key in
+`~/.near-credentials` and offered `near call … ft_transfer` as a co-equal option
+beside the wallet. The user had to correct it. A token send is the one operation
+every wallet already does well — a button, with the balance, the ticker and the
+destination on screen before anything is signed. Replacing that with base-unit
+arithmetic (`"amount":"1000000"`), a `--depositYocto 1` the user cannot
+sanity-check, and a key read off disk is worse precisely when they are deciding
+whether to trust this thing with money.
+
+It also contradicts the rest of this file. Creation already refuses the CLI for
+anyone being onboarded — *"never offer to run the CLI on someone else's
+behalf"* — and funding is the same situation with the same answer. The wizard's
+`--fund` flag belongs to an operator on their own machine with their own key; it
+is not a funding path to offer a user.
+
+Two things to say in the same message, because both fail SILENTLY:
+
+- **the token contract, not the ticker.** Caps are keyed per token. NEAR has a
+  native USDC and an older bridged `USDC.e` — send the wrong one and it arrives,
+  shows as a balance, and the agent still has zero budget for it. The refusal
+  reads as a broken vault.
+- **the payee allowlist.** Read it with `vault_tree` first. If it still holds
+  only the owner, the agent can pay nobody but the owner, and funding past a
+  test amount buys nothing yet.
+
+Then verify instead of taking their word for it: read the vault's
+`ft_balance_of` and tell them what actually landed.
 
 ## Daily use — the MCP tools
 

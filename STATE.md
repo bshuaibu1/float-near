@@ -204,6 +204,15 @@ state changes, and re-stamp the commit line above.
     unregistered (that one makes a transfer FAIL), else FUND IT with the address and an
     instruction to ASK how much, else bind an agent, else ready. The token is read from the TREE,
     because at creation time `NEAR_VAULT_CONTRACT` is unset and the configured token is empty.
+- **`SUBMISSION.md` is drafted and ready to paste** (track **Agent Economy**, description
+  verified at 1,947 chars inside the 20–2,000 limit, X demo-post draft, and a judge-verifiable
+  claims table). Official requirements confirmed from <https://nearhackathon.com/>: form takes
+  project name / team lead / email / team size / track / NEAR wallet / repo link / demo post link
+  / description / website; **the repo MUST BE PUBLIC**; the demo must be an X post tagging
+  @NEARProtocol with #NEARHackathon and a video or screenshots; judging is technical
+  implementation, design, impact, originality, sustainability — **with an AI screening first to
+  verify the project runs as described**, which is why every figure in the draft is measured and
+  §6 lists what is deliberately NOT claimed.
 - **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
   version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
   SKILL.md cost fix; make the repo PUBLIC (git history verified clean —
