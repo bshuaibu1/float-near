@@ -139,10 +139,47 @@ for (const pkg of PACKAGES) {
     try {
       // --access public: these are SCOPED packages, which npm would otherwise
       // default to restricted on a first publish.
-      run("npm", ["publish", "--access", "public"], join(ROOT, pkg.dir));
+      //
+      // --otp is passed through when given. A code is valid for ~30 seconds,
+      // so with two packages the second publish may need a fresh one; the
+      // EOTP handler below says so rather than leaving it a mystery.
+      const otpArg = (process.argv.find((a) => a.startsWith("--otp=")) ?? "").slice(6);
+      run(
+        "npm",
+        ["publish", "--access", "public", ...(otpArg ? ["--otp", otpArg] : [])],
+        join(ROOT, pkg.dir),
+      );
       console.log(`  publish command returned ok`);
     } catch (e) {
-      console.error(`  PUBLISH FAILED: ${String(e.stderr ?? e.message).slice(0, 400)}`);
+      /**
+       * THE TAIL, NOT THE HEAD.
+       *
+       * npm writes its entire tarball-contents listing to STDERR as `npm
+       * notice` lines, then the actual error last. Slicing the first 400
+       * characters showed nothing but the file list and buried an `EOTP`
+       * completely — the publish looked like it failed for an unknown reason
+       * when npm had said exactly what was wrong.
+       */
+      const err = String(e.stderr ?? e.message);
+      const meaningful = err
+        .split(LF)
+        .filter((l) => l.trim() && !/^npm notice/.test(l))
+        .slice(-12)
+        .join(LF);
+      console.error(`  PUBLISH FAILED:${LF}${meaningful}`);
+
+      if (/EOTP|one-time password/i.test(err)) {
+        console.error(
+          `${LF}  This account has 2FA on publishing, so a one-time code is required and` +
+            `${LF}  no script can generate it for you. Publish this one directly:` +
+            `${LF}` +
+            `${LF}      cd ${join(ROOT, pkg.dir)}` +
+            `${LF}      npm publish --access public --otp=XXXXXX` +
+            `${LF}` +
+            `${LF}  Codes expire in ~30s, so get a FRESH one per package. Then run:` +
+            `${LF}      node scripts/publish-and-verify.mjs --verify`,
+        );
+      }
       problems += 1;
       continue;
     }
