@@ -1419,10 +1419,28 @@ server.tool(
       return text(
         `I will not create a private key on this machine unless you ask me to.${LF}${LF}` +
           `Two ways to give the "${role}" agent its key:${LF}${LF}` +
-          `  1. KEEP THE KEY YOURSELF (most secure). Generate a keypair — in your wallet, ` +
-          `or with \`near generate-key\` — and give me the PUBLIC half ("ed25519:..."). ` +
-          `The secret never touches this computer. Pass it as public_key and the whole ` +
-          `agent is created in ONE approval. Never send me the private key.${LF}${LF}` +
+          `  1. KEEP THE KEY YOURSELF (most secure). Run \`near generate-key\` and give me ` +
+          `the PUBLIC half ("ed25519:..."). The secret never touches this computer. Pass it ` +
+          `as public_key and the whole agent is created in ONE approval. Never send me the ` +
+          `private key.${LF}` +
+          /**
+           * THE LIMITATION OF THIS PATH, SAID BEFORE IT IS CHOSEN.
+           *
+           * An agent key is a NEP-611 gas key installed ON THE VAULT
+           * (`Promise::new(env::current_account_id())`), so paying means
+           * signing AS THE VAULT. Browser wallets IGNORE `signerId` and
+           * silently sign as the connected account instead — measured across
+           * Meteor, Intear and the CLI connector. So a key generated inside a
+           * browser wallet CANNOT make a payment, ever.
+           *
+           * This text used to say "in your wallet, or with near generate-key"
+           * as if they were equivalent. They are not, and the difference only
+           * surfaces after the key is bound and the user tries to pay — at
+           * which point the fix is another approval.
+           */
+          `     Note: payments with this key have to be signed from a terminal. A browser ` +
+          `wallet cannot sign as the vault, so "generate it in my wallet" does not work ` +
+          `for this — the key has to live somewhere the NEAR CLI can reach.${LF}${LF}` +
           `  2. LET THIS MACHINE HOLD IT (convenient). I generate a restricted key here and ` +
           `save it, so I can make payments for you directly, up to the limits you set. The ` +
           `key can only request payments — it cannot withdraw, cannot raise its own limits ` +

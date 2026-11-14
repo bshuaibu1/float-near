@@ -1444,6 +1444,15 @@ describe("a user-supplied key creates the whole agent in one approval", () => {
     expect(out).toMatch(/public_key/);
     expect(out).toMatch(/ONE approval/i);
     expect(out).toMatch(/[Nn]ever send me the private key/);
+    /**
+     * The wallet path's real limitation, stated BEFORE it is chosen. An agent
+     * key is a gas key on the VAULT, so paying means signing as the vault, and
+     * browser wallets ignore signerId. A key made inside a browser wallet can
+     * never pay — and that only surfaces after it is bound, when the fix costs
+     * another approval.
+     */
+    expect(out).toMatch(/signed from a terminal/i);
+    expect(out).toMatch(/browser wallet cannot sign as the vault/i);
     rmSync(dir, { recursive: true, force: true });
   }, 40_000);
 });
