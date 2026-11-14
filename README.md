@@ -14,7 +14,7 @@
 
 [**usefloat.xyz**](https://usefloat.xyz) · factory [`usefloat.near`](https://nearblocks.io/address/usefloat.near) · `npx -y @floatonnear/mcp`
 
-**Mainnet live** · **actively developed** · [limitations stated below](#known-limitations), not buried
+**Mainnet live** · **actively developed** · MIT · [limitations stated below](#known-limitations), not buried
 
 </div>
 
@@ -293,26 +293,29 @@ about each, the teardown ORDER (which decides whether an agent's gas is
 recovered or **burned**), which flows need a human signature, and how to speak
 to a person rather than narrate a contract.
 
-**Paste this into your agent, or save it as a skill:**
+**Point your agent at this URL:**
 
 ```
-https://raw.githubusercontent.com/bshuaibu1/float-near/main/SKILL.md
+https://usefloat.xyz/skill.md
 ```
 
-| Your setup | Where it goes |
+Served as `text/plain`, so an agent fetching it gets the bytes rather than a
+rendered page. Kept byte-identical to this repo by a gate check
+(`scripts/check-live-docs.mjs`), which fails the build if the deployed copy
+drifts — so the short link and the source cannot disagree.
+
+| Your setup | What to do |
 |---|---|
-| **MCP client** | nothing to do — it is served as the resource `float://skill` |
-| **Claude Code / skills** | save to `.claude/skills/float/SKILL.md` |
-| **Any other agent** | paste the file into the system prompt, or fetch the raw URL above |
+| **MCP client** | nothing — it is already served as the resource `float://skill` |
+| **Claude Code / skills** | `curl -o .claude/skills/float/SKILL.md https://usefloat.xyz/skill.md` |
+| **Any other agent** | fetch the URL, or paste the file into the system prompt |
 
-> **Use the raw GitHub URL, not a summariser.** The file is ~43 KB. If you reach
-> it through a tool that summarises web pages you are reading a lossy précis, and
-> the exact commands may be missing or altered — the file says so itself, in its
-> own header.
+> **Fetch it raw; don't read it through a summariser.** The file is ~43 KB. A
+> tool that summarises web pages hands you a lossy précis in which the exact
+> commands may be missing or altered — the file says so in its own header.
 
-A copy is also served at `usefloat.xyz/skill.md` for agents that prefer a plain
-origin. **It can lag behind a release**, because it refreshes on deploy rather
-than on push; the raw GitHub link above is always current.
+Mirrors, if you prefer them: [`app.usefloat.xyz/skill.md`](https://app.usefloat.xyz/skill.md)
+and the [raw file on GitHub](https://raw.githubusercontent.com/bshuaibu1/float-near/main/SKILL.md).
 
 ---
 

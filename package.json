@@ -1,5 +1,6 @@
 {
   "name": "near-vault-workspace",
+  "license": "MIT",
   "private": true,
   "workspaces": [
     "packages/*"
