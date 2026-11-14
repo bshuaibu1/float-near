@@ -91,8 +91,31 @@ state changes, and re-stamp the commit line above.
     to "tokens", never an id) and symbol substitution in `renderPlan`'s `say` only. The smoke test
     now uses mainnet USDC's real id, because the original used `usdc.testnet` — short enough to
     look harmless while the tool printed a hash at users.
-  - **397 tests, 40 gated checks.** All mutation-verified: disabling the substitution, re-planting
+  - **Plan summaries no longer speak TREE vocabulary (2026-11-14).** `planVoice` copies
+    `summary` verbatim into `say`, so every plan tool said "node 1" / "Freeze node 0" — a
+    contract primary key shown to someone who called the budget "news". Fixed at the source:
+    `payloads.ts` gains `budgetName()` + an optional `nodeName` on the eight node-scoped
+    builders, and `resolveNode()` (replacing `assertNode`) returns the label **the same tree
+    read was already fetching and discarding** — no extra view call. Root is always "the main
+    budget" because the contract hardcodes its label to the literal `"root"`.
+    **Degraded case named, not hidden:** `Node.label` is a required `String` on chain, so a
+    missing name means the tree READ failed and two budgets then read identically — real loss of
+    distinguishability, kept safe because `node_id` is still in `args`, which is what the wallet
+    displays and the owner signs.
+    **The first guard was inadequate and a mutation proved it:** it checked one tool driven over
+    stdio, so restoring the leak in `planSetNodeCaps` passed 85 tests. Replaced with a sweep over
+    **all 16 plan builders** (summary *and* warnings) plus a coverage test that fails when a new
+    builder is added without one. No payment logic touched — `contracts/`, `sign.ts`, `amounts.ts`
+    untouched.
+  - **423 tests, 40 gated checks.** All mutation-verified: disabling the substitution, re-planting
     the leak, or removing `say` turns the right test red.
+- **`mcp 0.10.3` IS BUILT, COMMITTED AND *NOT PUBLISHED*.** Carries the UX lock and the
+  node-vocabulary cleanup. Both `package.json` and the server's advertised version are bumped
+  (that string has drifted before; a smoke test guards the pair). **Blocked on a human:** the npm
+  token expires quickly and the account needs 2FA, so `npm publish` returns `EOTP` — or `E404`,
+  which is npm's *unauthorised* answer and reads misleadingly as "package not found".
+  Run `npm login` then `npm publish --access public` in `packages/mcp` (omit `--otp`; npm opens a
+  browser), then `node scripts/publish-and-verify.mjs --verify`.
 - **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
   Measured three times, including `--help`, and once on the real teardown — the vault was
   **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
