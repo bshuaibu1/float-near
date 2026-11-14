@@ -14,6 +14,7 @@ import { DANGER, DANGER_BG, SUCCESS, SUCCESS_BG, WARN, WARN_BG } from "@/lib/col
 import { InfoDot } from "@/components/ui/info-dot";
 import { agentHue, agentSeed } from "@/lib/agent-hue";
 import { BindAgent } from "@/components/bind-agent";
+import { treeConnectors, treeOrderHolds, type TreeConnector } from "@/lib/tree-connectors";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_FLOAT_API_URL?.trim() || "/api/float";
 
@@ -46,6 +47,13 @@ type ApiAgent = {
   status: "active" | "killed";
   /** Depth in the budget tree, root 0. A number, not characters. */
   depth?: number;
+  /**
+   * This node's parent id, or null at root. Supplied by the adapter
+   * (packages/float-adapter/src/map.ts) and used here to NAME the parent on the
+   * phone layout, where a drawn connector cannot work. `depth` alone says a row
+   * sits at level 2 but not WHICH level-1 node it hangs from.
+   */
+  parent?: number | null;
   dailySpent?: string;
   dailyBudgetUsedPercent?: number;
   policy: {
@@ -277,6 +285,39 @@ export default function AgentsPage() {
   // detail the adapter happens to add.
   const root = agents.find((a) => nodeIdOf(a, agents) === 0) ?? null;
   const fleet = agents.filter((a) => nodeIdOf(a, agents) !== 0);
+
+  // CONTAINMENT, not just indentation.
+  //
+  // Indenting by depth alone was reported as unreadable, and the report was
+  // right: `agent / news / headlines` rendered as three peers 18px apart, when
+  // `headlines` actually lives INSIDE `news` and every payment it makes is
+  // checked against both budgets. That relationship is the product; a table
+  // that hides it is describing a different product.
+  //
+  // `filter` above preserves the adapter's tree order, which is the one thing
+  // these connectors depend on. `treeOrderHolds` checks it rather than
+  // assuming it — if it ever fails we fall back to bare indentation, because
+  // drawing a line to the WRONG parent is worse than drawing no line.
+  // The containing budget's NAME, for the phone layout.
+  //
+  // Resolved through `parent` (a node id) rather than by position, so it is a
+  // stated fact rather than an inference — and unlike the table's connector it
+  // stays correct even if the rows were ever reordered. Root is excluded
+  // deliberately: every top-level agent hangs off root, and "in root" on every
+  // card is noise that says nothing the master-budget panel above has not
+  // already said.
+  const nameByNodeId = new Map(agents.map((a) => [nodeIdOf(a, agents), a.displayName ?? a.agentId]));
+  const parentNameOf = (a: ApiAgent): string | null => {
+    if ((a.depth ?? 1) < 2 || a.parent == null) return null;
+    return nameByNodeId.get(a.parent) ?? null;
+  };
+
+  const fleetDepths = fleet.map((a) => a.depth ?? 1);
+  const connectors = useMemo(
+    () => (treeOrderHolds(fleetDepths) ? treeConnectors(fleetDepths) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [fleetDepths.join(",")],
+  );
   // Computed from the RAW spend and cap: the API rounds its percentage to an
   // integer, so a real 0.02-against-25 payment arrives as 0 and the master bar
   // renders empty beside a line saying 0.02 was spent. See lib/utilisation.ts.
@@ -437,6 +478,8 @@ export default function AgentsPage() {
                 // every id by one once root is removed.
                 nodeId={nodeIdOf(a, agents)}
                 isLast={i === fleet.length - 1}
+                connector={connectors?.[i] ?? null}
+                parentName={parentNameOf(a)}
                 onToggleFreeze={() => void buildFreeze(a)}
               />
             ))}
@@ -593,10 +636,128 @@ export default function AgentsPage() {
  *   screen, and it is the destructive control. Here it is a full-width
  *   button at the touch floor, saying "Freeze agent" rather than "freeze".
  */
-function FleetRow({ agent, nodeId, isLast, onToggleFreeze }: {
+/**
+ * The line that says a budget lives INSIDE the one above it.
+ *
+ * DRAWN, NOT WRITTEN. `packages/float-adapter/src/map.ts` records that U+00A0
+ * padding plus a box-drawing glyph is the origin of every invisible-character
+ * bug in this project — regexes silently matching nothing, `btoa` throwing,
+ * names carrying padding into prose. So this is borders and nothing else: no
+ * character here can leak into a name, a URL or a signed payload.
+ *
+ * `-my-3` CANCELS THE ROW'S `py-3`. Without it each line stops at the row's
+ * content box and restarts at the next one, leaving a 12px gap at every row
+ * boundary — a dashed-looking rail that reads as a rendering fault rather than
+ * as structure. The lines have to cross the boundary to connect.
+ *
+ * `aria-hidden`: it is decoration. The containment it depicts has to reach a
+ * screen reader through text, not through a border — see the caller's tooltip,
+ * which names the node id.
+ */
+/**
+ * FULL STRENGTH, DELIBERATELY.
+ *
+ * This was `bg-faint opacity-50` and it shipped invisible: composited on the
+ * white row that is ≈#CFCFCC, a contrast ratio of about 1.27:1, and the
+ * reporter's answer to it was "still nothing is showing". Full `faint` is
+ * ≈2.6:1 — still clearly subordinate to the 13px ink label beside it, but
+ * actually present.
+ *
+ * The reasoning that produced the bug is worth keeping: "a connector should
+ * recede" is true of a table that already reads correctly, and this one did
+ * not. A line nobody can see is not a subtle line, it is the original bug with
+ * extra code. A 1px stroke 9px long also needs far more contrast than a
+ * full-width divider of the same colour — presence scales with length, not
+ * contrast alone.
+ */
+const STROKE = "absolute bg-faint";
+
+/**
+ * SLOT is the width of one level's connector column, and it must match the
+ * caller's base padding exactly or the elbow lands beside the avatar instead
+ * of against it. Desktop keeps the 1.1rem the old indent used; the phone card
+ * is narrower and uses less.
+ */
+const SLOT_DESKTOP = "1.1rem";
+
+function TreeRail({ connector, slot, bleed }: {
+  connector: TreeConnector;
+  slot: string;
+  /** Negative margin cancelling the row's vertical padding; see below. */
+  bleed: string;
+}) {
+  // Depth-1 rows hang off root, and root is rendered above as the master
+  // budget rather than as a row — so there is nothing on screen to connect to.
+  if (!connector.elbow) return null;
+
+  return (
+    <span className={`flex self-stretch shrink-0 ${bleed}`} aria-hidden="true">
+      {/* Ancestors further out: a line only passes through when that branch
+          actually continues below this row. */}
+      {connector.rails.map((continues, i) => (
+        <span key={i} className="relative" style={{ width: slot }}>
+          {continues && <span className={`${STROKE} left-1/2 top-0 bottom-0 w-px -translate-x-1/2`} />}
+        </span>
+      ))}
+
+      {/* The elbow itself. */}
+      <span className="relative" style={{ width: slot }}>
+        {/* Vertical. Stops at the middle on the LAST child; carries on to the
+            next sibling otherwise. A terminator drawn full-height points at a
+            row that does not exist. */}
+        <span
+          className={`${STROKE} left-1/2 top-0 w-px -translate-x-1/2 ${connector.last ? "h-1/2" : "bottom-0"}`}
+        />
+        {/* Horizontal, from the stem across to the avatar. */}
+        <span className={`${STROKE} left-1/2 top-1/2 right-0 h-px`} />
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The parent's half of the join: a stub from this row's middle down to its
+ * bottom edge, sitting in the column the first child's elbow will occupy.
+ *
+ * WHY IT IS SEPARATE FROM TreeRail. The elbow belongs to the CHILD row and can
+ * only start at that row's top edge. Drawn alone it appears to sprout from the
+ * divider rule between the two rows, which still reads as "standalone" — the
+ * original complaint, surviving the first fix. The descender is the half that
+ * makes the line visibly leave the parent.
+ *
+ * ABSOLUTE, so it cannot move the parent's avatar by a pixel. `left` is the
+ * centre of the child's elbow column: the child pads by one SLOT and then
+ * draws `depth` slots, so that centre is `depth * SLOT + SLOT/2` from the
+ * cell's edge. Derived, not measured — a hardcoded offset would silently
+ * decouple the moment SLOT changed, which is exactly what differs on phones.
+ */
+function TreeDescender({ connector, depth, slot, bleed }: {
+  connector: TreeConnector;
+  depth: number;
+  slot: string;
+  bleed: string;
+}) {
+  if (!connector.hasChildren) return null;
+
+  return (
+    <span
+      className={`pointer-events-none absolute top-0 bottom-0 w-px ${bleed}`}
+      style={{ left: `calc(${slot} * ${depth} + ${slot} / 2)` }}
+      aria-hidden="true"
+    >
+      <span className={`${STROKE} left-0 top-1/2 bottom-0 w-px`} />
+    </span>
+  );
+}
+
+function FleetRow({ agent, nodeId, isLast, connector, parentName, onToggleFreeze }: {
   agent: ApiAgent;
   nodeId: number;
   isLast: boolean;
+  /** Tree geometry for this row, or null when tree order could not be trusted. */
+  connector: TreeConnector | null;
+  /** The containing budget's name, for the phone layout. Null at top level. */
+  parentName: string | null;
   onToggleFreeze: () => void;
 }) {
   // Computed once; both layouts read these and neither recomputes.
@@ -656,14 +817,34 @@ function FleetRow({ agent, nodeId, isLast, onToggleFreeze }: {
             and it was crowding the one column that says who a row
             is. */}
         <div
-          className="flex items-center gap-2.5 min-w-0"
-          style={{ paddingLeft: `${(agent.depth ?? 0) * 1.1}rem` }}
+          className="relative flex items-center min-w-0 self-stretch"
+          // SAME TOTAL INDENT AS BEFORE, so no row moves.
+          // Was `depth * 1.1rem` of padding. Now one 1.1rem base plus one
+          // 1.1rem connector slot per level below the top, which comes to the
+          // identical offset at every depth — the lines are the only change.
+          // Without a trustworthy connector we fall back to the old formula.
+          style={{
+            paddingLeft: connector
+              ? SLOT_DESKTOP
+              : `${(agent.depth ?? 0) * 1.1}rem`,
+          }}
         >
-          <div className="relative shrink-0" title={`Budget node ${nodeId}`}>
-            <AgentAvatar seed={agentSeed(agent.agentId)} hue={agentHue(agent.agentId)} size={22} animated />
-          </div>
-          <div className="min-w-0">
-            <p className="text-[13px] font-medium truncate text-ink">{name}</p>
+          {connector && (
+            <TreeDescender
+              connector={connector}
+              depth={agent.depth ?? 1}
+              slot={SLOT_DESKTOP}
+              bleed="-my-3"
+            />
+          )}
+          {connector && <TreeRail connector={connector} slot={SLOT_DESKTOP} bleed="-my-3" />}
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="relative shrink-0" title={`Budget node ${nodeId}`}>
+              <AgentAvatar seed={agentSeed(agent.agentId)} hue={agentHue(agent.agentId)} size={22} animated />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[13px] font-medium truncate text-ink">{name}</p>
+            </div>
           </div>
         </div>
 
@@ -702,6 +883,22 @@ function FleetRow({ agent, nodeId, isLast, onToggleFreeze }: {
               {/* The id, as TEXT. See the note above: on the row it is a
                   `title`, and a phone has no hover to reveal it. */}
               <p className="text-[11px] font-mono text-faint">node {nodeId}</p>
+              {/* CONTAINMENT IN WORDS, because the table's connector CANNOT
+                  work here and trying it was a visible bug.
+                  A tree connector assumes a ROW: a thin band where "half the
+                  height" is a few pixels either side of the label. Below `md`
+                  each agent is a TALL CARD — name, three figures, a meter and
+                  a button — so the same descender ran a vertical line straight
+                  down through "Daily cap", and the child's elbow crossed the
+                  card boundary into its neighbour. Measured at 390px before
+                  this replaced it.
+                  9px of indent cannot carry the relationship either, so the
+                  phone says it instead. It also beats the connector on one
+                  point the table still cannot match: it names WHICH parent,
+                  rather than implying it by position. */}
+              {parentName && (
+                <p className="text-[11px] text-muted truncate">in {parentName}</p>
+              )}
             </div>
           </div>
           <div className="shrink-0 pt-0.5">{stateChip}</div>
