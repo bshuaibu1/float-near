@@ -1353,7 +1353,13 @@ server.tool(
     fundingNear: z
       .string()
       .optional()
-      .describe("NEAR for the agent's gas key. Default 0.12 (~160 payments measured). Minimum 0.06, because NEAR reserves prepaid gas up front."),
+      .describe(
+        "NEAR for the agent's gas key, ALL of it recoverable. Default 0.12 = 0.06 that NEAR " +
+          "holds as a reservation while a call is in flight (unavoidable, never spent) plus " +
+          "0.06 of usable gas, which is ~50 payments at 0.0012 each. Minimum 0.06: a key " +
+          "funded at the expected burn cannot transact at all. 0.09 gives ~24 payments; " +
+          "topping up later is one command.",
+      ),
     /**
      * WHERE THE AGENT'S PRIVATE KEY IS BORN. Secure by default.
      *
@@ -1613,8 +1619,26 @@ server.tool(
         `single payment over ${perTxCap}, bound to the key you generated. One approval does ` +
         `all of it — the budget, the key and its gas. Nothing has changed yet.`;
 
+    /**
+     * THE DEPOSIT, EXPLAINED WHERE IT IS SEEN.
+     *
+     * 0.12 NEAR arrived as a bare number next to a wallet prompt, and the
+     * tool's own description said "~160 payments" when it is 50 — so a user
+     * who checked would find the product contradicting itself. Half of it is
+     * a reservation NEAR holds and never spends; the rest is ~50 payments.
+     * Saying so costs one sentence and removes the only genuinely surprising
+     * figure in the flow.
+     */
+    const fundingNote =
+      `The ${(Number(fundingYocto) / 1e24).toFixed(2)} NEAR is the agent's gas, and you get ` +
+      `all of it back when you wind the agent down. About half is a deposit NEAR holds and ` +
+      `never spends; the rest covers roughly ${Math.floor((Number(fundingYocto) - 6e22) / 1.2e21)} ` +
+      `payments. Topping up later is one command.`;
+
     const roleSay =
       roleOpening +
+      `${LF}${LF}` +
+      fundingNote +
       `${LF}${LF}` +
       /**
        * THE DISCLOSURE, AND IT IS DELIBERATELY BLUNT.

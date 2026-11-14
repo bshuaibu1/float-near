@@ -1415,6 +1415,18 @@ describe("a user-supplied key creates the whole agent in one approval", () => {
     expect(say).toMatch(/secret stays with you/i);
     expect(say).toMatch(/cannot spend/i);
     expect(say).toMatch(/One approval does all of it/i);
+    /**
+     * THE DEPOSIT EXPLAINS ITSELF, with the RIGHT number.
+     *
+     * The tool's own description said 0.12 NEAR was "~160 payments measured".
+     * It is 50: the 0.06 reservation NEAR holds while a call is in flight is
+     * never spendable, and the remaining 0.06 buys 50 payments at 0.0012 each.
+     * A user who checked would have found the product contradicting itself.
+     */
+    expect(say).toMatch(/0\.12 NEAR is the agent's gas/);
+    expect(say).toMatch(/get all of it back/i);
+    expect(say).toMatch(/roughly 50 payments/);
+    expect(say, "must not quote the old wrong count").not.toMatch(/160/);
     // The protocol-level bound still has to be stated.
     expect(say).toMatch(/NEAR enforcing it/i);
 
