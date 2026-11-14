@@ -1,4 +1,4 @@
-<!-- STAMP commit=pending date=2026-11-14 -->
+<!-- STAMP commit=9e40e30 date=2026-11-14 -->
 # Float — the 90-second demo
 
 **The one thing to land:** the agent asks for money, the **contract** decides,
