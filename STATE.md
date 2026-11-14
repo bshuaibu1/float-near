@@ -198,15 +198,32 @@ state changes, and re-stamp the commit line above.
     `FACTORY_BY_NETWORK` in `create.ts`. They cannot share a constant — one is TypeScript in a
     published package, the other a `<script type="module">` served statically — so the value is
     duplicated, and it had already drifted in the worst direction. Positive-controlled both ways.
-  - **⚠ THE LIVE SITE STILL SERVES THE OLD PAGE.** Confirmed by fetching it: no `DEFAULT_FACTORY`
-    in the served bytes. **A human must deploy** — this session had no SSH access
-    (`Permission denied (publickey,password)`). Check the owner first
-    (`stat -c '%U' /srv/float-near-web`) and pull **as that user**, never as root.
-    `web/serve.mjs` reads files per request, so a pull is enough — no restart.
+  - **DEPLOYED AND VERIFIED 2026-11-14.** `usefloat.xyz` serves `DEFAULT_FACTORY`, so a bare
+    link now resolves the live factory instead of refusing. **`usefloat.xyz/skill.md` was also
+    stale and is now current** — it served **34,333** bytes against 43,623 in the repo, missing
+    the whole voice section; `check-live-docs.mjs` passes on both targets.
+    - The pull was blocked by two **generated** artifacts drifting on the box
+      (`package-lock.json`, `apps/dashboard/next-env.d.ts`). The diff was inspected before
+      discarding, not reset reflexively: the lockfile pinned `0.8.0`, *older* than the repo's
+      `0.10.5`, which is what confirmed them leftovers rather than work.
+    - Every git command ran as **`float`**, the tree's owner, never root.
+      Verified after: `find /srv/float-near-web -user root | wc -l` → **0**.
+    - Deploys now use an installed **ed25519 key**, so they no longer need an interactive
+      password. `web/serve.mjs` reads per request, so a pull is enough — no restart.
   - Also corrected the deploy command `check-live-docs.mjs` prints: it said
     `ssh root@… 'cd /srv/float-near-web && git pull'`, which runs git as **root** in a
     service-owned tree and leaves root-owned `.git` files the service cannot write — silent
     degradation later rather than a failure now.
+- **`usefloat.xyz/skill.md` IS NOW THE CANONICAL GUIDE LINK, and the repo has a LICENSE.**
+  The README pointed at `raw.githubusercontent.com` only because the hosted copy was stale;
+  it is deployed and gate-guarded now, so the short branded URL is the one to publish. Served
+  as `text/plain` so an agent gets bytes rather than a rendered page; GitHub raw and
+  `app.usefloat.xyz` kept as mirrors.
+  - **LICENSE (MIT) added.** All three published packages have declared `"license": "MIT"` on
+    npm for weeks while the repository itself said nothing — npm was asserting a licence the
+    repo did not carry. The file and the root `package.json` now match that existing public
+    declaration. **Aligning with it, not choosing it**; one commit to revert if a different
+    licence was intended.
 - **README REWRITTEN for the now-public repo (2026-11-14).** It leads with the PROBLEM — every
   agent wallet hands the agent the key and asks you to trust it — because the design only looks
   interesting once you see what it refuses to do. **Four mermaid diagrams** (GitHub renders
