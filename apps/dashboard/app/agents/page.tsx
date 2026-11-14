@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { utilisation } from "@/lib/utilisation";
 import Link from "next/link";
 import { Check, Copy, ExternalLink } from "lucide-react";
 import AgentAvatar from "@/components/smoothui/agent-avatar";
@@ -276,7 +277,11 @@ export default function AgentsPage() {
   // detail the adapter happens to add.
   const root = agents.find((a) => nodeIdOf(a, agents) === 0) ?? null;
   const fleet = agents.filter((a) => nodeIdOf(a, agents) !== 0);
-  const rootPct = Math.min(root?.dailyBudgetUsedPercent ?? 0, 100);
+  // Computed from the RAW spend and cap: the API rounds its percentage to an
+  // integer, so a real 0.02-against-25 payment arrives as 0 and the master bar
+  // renders empty beside a line saying 0.02 was spent. See lib/utilisation.ts.
+  const rootUse = utilisation(root?.dailySpent, root?.policy?.dailyBudget, root?.dailyBudgetUsedPercent);
+  const rootPct = rootUse.pct;
 
   return (
     <div className="px-8 py-8 max-w-6xl mx-auto">
@@ -370,13 +375,13 @@ export default function AgentsPage() {
                 <div className="min-w-[12rem] flex-1 max-w-xs">
                   <div className="flex items-center justify-between text-[11px] text-muted mb-1.5">
                     <span>Used today</span>
-                    <span className="font-mono tabular-nums">{rootPct}%</span>
+                    <span className="font-mono tabular-nums">{rootUse.label}</span>
                   </div>
                   <div className="h-2 rounded-full overflow-hidden bg-chip">
                     <div
                       className="h-full rounded-full"
                       style={{
-                        width: `${rootPct}%`,
+                        width: `${rootUse.barWidth}%`,
                         background: rootPct >= 100 ? DANGER : rootPct >= 75 ? WARN : SUCCESS,
                         transition: "width 400ms ease",
                       }}
@@ -595,7 +600,8 @@ function FleetRow({ agent, nodeId, isLast, onToggleFreeze }: {
   onToggleFreeze: () => void;
 }) {
   // Computed once; both layouts read these and neither recomputes.
-  const pct = Math.min(agent.dailyBudgetUsedPercent ?? 0, 100);
+  const use = utilisation(agent.dailySpent, agent.policy?.dailyBudget, agent.dailyBudgetUsedPercent);
+  const pct = use.pct;
   const frozen = agent.status === "killed";
   const name = agent.displayName ?? agent.agentId;
   const barColor = pct >= 100 ? DANGER : pct >= 75 ? WARN : SUCCESS;
@@ -618,10 +624,10 @@ function FleetRow({ agent, nodeId, isLast, onToggleFreeze }: {
       <div className="h-1.5 flex-1 rounded-full overflow-hidden bg-chip">
         <div
           className="h-full rounded-full"
-          style={{ width: `${pct}%`, background: barColor, transition: "width 400ms ease" }}
+          style={{ width: `${use.barWidth}%`, background: barColor, transition: "width 400ms ease" }}
         />
       </div>
-      <span className="text-[10px] font-mono tabular-nums w-8 text-right text-muted">{pct}%</span>
+      <span className="text-[10px] font-mono tabular-nums w-8 text-right text-muted">{use.label}</span>
     </div>
   );
 

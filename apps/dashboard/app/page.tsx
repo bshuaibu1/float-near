@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { utilisation } from "@/lib/utilisation";
 import { ownershipVerdict } from "@/lib/ownership";
 import { floatFetch } from "@/lib/float-fetch";
 import { CANVAS, CARD, DANGER, DANGER_BG, INK, LINE, MUTED, SUCCESS, SUCCESS_BG, SUCCESS_SOFT, WARN, WARN_BG } from "@/lib/colors";
@@ -244,7 +245,8 @@ function ExactFigure({ compact, exact, loading }: { compact: string; exact: stri
 function AgentSpendRow({ agent, isLast }: { agent: ApiAgent; isLast: boolean }) {
   // Computed once. Both layouts below read these and never recompute.
   const spentToday = parseFloat(agent.dailySpent || "0");
-  const pct = Math.min(agent.dailyBudgetUsedPercent ?? 0, 100);
+  const use = utilisation(agent.dailySpent, agent.policy?.dailyBudget, agent.dailyBudgetUsedPercent);
+  const pct = use.pct;
   const col = utilColor(pct);
   const trk = utilTrack(pct);
   const name = agent.displayName ?? agent.agentId;
@@ -266,7 +268,7 @@ function AgentSpendRow({ agent, isLast }: { agent: ApiAgent; isLast: boolean }) 
   const meter = (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: trk }}>
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: col }} />
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${use.barWidth}%`, background: col }} />
       </div>
       <span className="text-[11px] font-medium w-8 text-right shrink-0" style={{ color: col }}>
         {percent(pct, { decimals: 0 })}
@@ -601,7 +603,8 @@ export default function Overview() {
    */
   const root       = agents.find((a) => nodeIndexOf(a.agentId) === 0) ?? null;
   const fleet      = agents.filter((a) => nodeIndexOf(a.agentId) !== 0);
-  const rootPct    = Math.min(root?.dailyBudgetUsedPercent ?? 0, 100);
+  const rootUse    = utilisation(root?.dailySpent, root?.policy?.dailyBudget, root?.dailyBudgetUsedPercent);
+  const rootPct    = rootUse.pct;
   const rootCap    = parseFloat(root?.policy?.dailyBudget ?? "0");
   const rootSpent  = parseFloat(root?.dailySpent ?? "0");
 
@@ -1028,7 +1031,7 @@ export default function Overview() {
             <div className="flex items-center gap-2 mt-2.5">
               <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: utilTrack(rootPct) }}>
                 <div className="h-full rounded-full transition-all duration-500"
-                     style={{ width: `${rootPct}%`, background: utilColor(rootPct) }}/>
+                     style={{ width: `${rootUse.barWidth}%`, background: utilColor(rootPct) }}/>
               </div>
               <span className="text-[11px] font-medium w-8 text-right shrink-0" style={{ color: utilColor(rootPct) }}>
                 {percent(rootPct, { decimals: 0 })}
