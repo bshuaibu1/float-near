@@ -1260,11 +1260,34 @@ describe("agent keys are local only when explicitly asked for", () => {
 
     expect(existsSync(ring), "the opt-in path must write the key").toBe(true);
 
-    // The disclosure, and the bound, in the same breath.
-    expect(say).toMatch(/created on THIS computer/i);
-    expect(say).toMatch(/without asking you again/i);
-    expect(say).toMatch(/cannot move money out/i);
-    expect(say).toMatch(/cannot/i);
+    /**
+     * THE DISCLOSURE, pinned claim by claim rather than by one phrase.
+     *
+     * Each assertion is a different question a person has: what can it do,
+     * without my involvement, what can it NOT do, and who is stopping it. A
+     * single regex on "restricted" would pass on a sentence that reassures
+     * without disclosing, which is the failure mode here.
+     */
+    expect(say, "must state the machine holds a spending key").toMatch(
+      /this machine will now hold a spending key/i,
+    );
+    expect(say, "must state it acts without asking again").toMatch(/without asking you again/i);
+    // The three separate fears.
+    expect(say, "must rule out withdrawal").toMatch(/cannot withdraw/i);
+    expect(say, "must rule out raising its own limit").toMatch(/cannot change any limit/i);
+    expect(say, "must rule out owner powers").toMatch(/anything else an owner can/i);
+    // And the limits restated in the numbers the caller chose.
+    expect(say).toContain("1");
+    expect(say).toContain("0.10");
+    /**
+     * THE PROTOCOL/POLICY DISTINCTION. An AI saying it has voluntarily
+     * limited itself is worth nothing; the sentence must name who actually
+     * enforces it.
+     */
+    expect(say, "must say NEAR enforces it, not the agent").toMatch(/NEAR enforcing it/i);
+    expect(say).toMatch(/not a rule I follow/i);
+    // No raw method identifier in user-facing text.
+    expect(say).not.toContain("request_payment");
     expect(r.money_moved).toBe(false);
 
     rmSync(dir, { recursive: true, force: true });

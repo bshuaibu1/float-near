@@ -1542,10 +1542,37 @@ server.tool(
       `I'll set up a ${role} budget: ${dailyCap} ${displaySymbol(roleMeta)} a day, and no ` +
       `single payment over ${perTxCap}. You approve it once in your wallet, and after that ` +
       `I can pay within those limits — I can't raise them myself. Nothing has changed yet.` +
-      `${LF}${LF}Heads up: the agent's key was created on THIS computer, so once you approve, ` +
-      `this machine can make those payments without asking you again. It can only request ` +
-      `payments inside those limits — it cannot move money out, change any limit, or reach ` +
-      `anything the owner controls.`;
+      `${LF}${LF}` +
+      /**
+       * THE DISCLOSURE, AND IT IS DELIBERATELY BLUNT.
+       *
+       * The first version opened "Heads up: the agent's key was created on THIS
+       * computer" — accurate, and it buries the consequence in the middle of a
+       * sentence about where a file went. What a person needs first is the
+       * CAPABILITY they are granting, in the numbers they just chose.
+       *
+       * THE THREE "CANNOT"s ARE NAMED SEPARATELY rather than summarised as
+       * "it's restricted", because each answers a different fear: can it empty
+       * the vault, can it give itself a bigger allowance, can it act as me.
+       *
+       * The last clause is the one that makes this Float rather than a policy
+       * promise: NEAR itself refuses anything else, because the key is a
+       * function-call key scoped to one method on one contract. "Not a rule I
+       * follow" is the distinction, and an AI telling a user it has
+       * voluntarily limited itself is worth nothing — so the sentence says who
+       * is really doing the enforcing.
+       *
+       * The method NAME is kept out. SKILL.md forbids identifiers in
+       * user-facing text, and "one payment-request call on this one contract"
+       * is the same fact in words a non-developer can check in their wallet,
+       * where `add_role` and the public key are what they will actually see.
+       */
+      `WORTH BEING CLEAR: this machine will now hold a spending key for your vault. Once you ` +
+      `approve, it can spend up to ${dailyCap} ${displaySymbol(roleMeta)} a day, ${perTxCap} ` +
+      `at a time, WITHOUT asking you again. It cannot withdraw your money. It cannot change ` +
+      `any limit, including its own. It cannot do anything else an owner can. That is NEAR ` +
+      `enforcing it, not a rule I follow — the key is locked to a single payment request on ` +
+      `this one contract, and anything else it tried would simply be refused.`;
 
     return json({
       say: roleSay,

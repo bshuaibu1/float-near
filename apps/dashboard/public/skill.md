@@ -329,9 +329,25 @@ so if they have not said, ask, in these terms:
 > it cannot move money out, change a limit, or touch anything the owner controls.
 
 When a local key IS created, **say so in the same message** — the tool's `say`
-already does; relay it. "A key is on your laptop" without the limits is
-alarming, and the limits without the disclosure is reassurance that hides
-something. Both, or neither.
+already does. **Relay it whole; do not summarise it into "the key is
+restricted".** It reads:
+
+> WORTH BEING CLEAR: this machine will now hold a spending key for your vault.
+> Once you approve, it can spend up to 5 USDC a day, 1 at a time, **WITHOUT
+> asking you again.** It cannot withdraw your money. It cannot change any
+> limit, including its own. It cannot do anything else an owner can. That is
+> **NEAR enforcing it, not a rule I follow** — the key is locked to a single
+> payment request on this one contract, and anything else it tried would simply
+> be refused.
+
+Each clause answers a different question and none of them is decoration:
+*what can it do*, *without my involvement*, *what can it NOT do* (three
+distinct fears — emptying the vault, raising its own allowance, acting as the
+owner), and *who is actually stopping it*. **That last one carries the most
+weight and is the easiest to drop.** You telling a user you have voluntarily
+limited yourself is worth nothing; the protocol refusing is a fact they can
+check. "A key is on your laptop" without the limits is alarming, and the limits
+without the disclosure is reassurance that hides something. Both, or neither.
 
 For the wallet path, the user generates a keypair (`near generate-key`, or in
 their wallet) and gives you the **public** half; `vault_plan_bind_agent` builds
