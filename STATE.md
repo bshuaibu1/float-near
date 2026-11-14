@@ -185,6 +185,23 @@ state changes, and re-stamp the commit line above.
     substring in the emitted JS even though the runtime output contains it. Grepping for it
     reports MISSING for a good build, identical to the feature being absent. Markers must be
     single identifiers, never sentences.
+- **CREATING AN AGENT IS NOW ONE APPROVAL, EVEN WHEN YOU KEEP YOUR OWN KEY (2026-11-14).**
+  `add_role` creates the node, binds the key and installs the funded gas key in a **single
+  contract call** — the chain could always do it in one. The wallet path degraded into
+  `add_node` + `bind_virtual_agent`, two wallet signatures, only because `vault_add_role` had
+  nowhere to accept a user-generated key. It now takes **`publicKey`**; supply the public half
+  and the whole agent is created in one approval. **Key generation is local-path-only** — making
+  one "just in case" would put a live spending key on disk for someone who asked to keep their own.
+  - **`vault_add_role` also returns `approve_here` now.** The link was added to `renderPlan`,
+    which covers the thirteen `vault_plan_*` tools — and `vault_add_role` has its **own return
+    block**, so the one tool people reach for to create an agent still handed back a raw payload.
+    Found only because Bashir asked twice whether the link also binds. Verified by decoding a live
+    link: one `add_role` call carrying `label`, `public_key` and the 0.12 NEAR gas deposit.
+  - **The disclosure branches by path.** On the wallet path this machine *cannot* spend, so
+    claiming "this machine will now hold a spending key" would have been the most misleading
+    sentence in the response. It now says the secret stays with you; the protocol-level bound is
+    stated either way, and `credentialWrittenTo` is omitted rather than naming a file never written.
+  - **Ships in mcp 0.10.6** — npm has 0.10.5. **439 tests, 42 gated checks.**
 - **PLAN TOOLS NOW RETURN AN APPROVAL LINK, not just a CLI command (2026-11-14).** Asked for a
   news budget, the agent handed back a 300-character `near contract call-function as-transaction
   … sign-with-keychain send` line. The create page has accepted owner-action links all along
