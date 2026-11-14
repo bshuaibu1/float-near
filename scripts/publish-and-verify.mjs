@@ -51,7 +51,23 @@ const PACKAGES = [
      *
      * Each entry names the thing it proves, so the next person knows whether
      * to add to it or replace it.
+     *
+     * PICK MARKERS THAT SURVIVE COMPILATION. `tsc` preserves source-level
+     * string concatenation, so a phrase split across a `+` — e.g.
+     * `` `That is NEAR ` + `enforcing it` `` — NEVER appears as a contiguous
+     * substring in the emitted JS, even though the runtime output contains it.
+     * Grepping for it reports MISSING for a perfectly good build, which is
+     * indistinguishable from the real thing being absent. Single identifiers
+     * (`planVoice`, `displaySymbol`) are safe; sentences are not.
+     *
+     * This is the weaker check. `builtIdentical` above is the real one.
      */
+    /**
+     * The whole compiled server, compared byte for byte. Supersedes the marker
+     * list below, which is kept only as a human-readable summary of what each
+     * release added.
+     */
+    builtIdentical: "dist/server.js",
     builtProof: {
       file: "dist/server.js",
       mustContain: [
@@ -173,7 +189,61 @@ let problems = 0;
 /** Checks that could not RUN. Reported separately from real staleness. */
 let unverified = 0;
 
-if (!VERIFY_ONLY) requireAuth();
+/**
+ * REFUSE TO PUBLISH FROM A TREE THAT IS NOT WHAT IS COMMITTED AND PUSHED.
+ *
+ * This is the root cause of three same-version divergences. The version gets
+ * bumped, work continues, and a publish in between takes the number with the
+ * half-finished source — then npm will not let the number be reused, so the
+ * release is permanently wrong and has to be abandoned.
+ *
+ * A dirty tree is the tell, and it is cheap to check. Not applied to
+ * --verify, which is read-only and legitimately run mid-work.
+ */
+function requireCleanTree() {
+  let status = "";
+  try {
+    status = run("git", ["status", "--porcelain"]).trim();
+  } catch {
+    console.error("  (could not run git status — skipping the clean-tree check)");
+    return;
+  }
+  if (status) {
+    console.error(
+      `WORKING TREE IS NOT CLEAN. Refusing to publish.${LF}${LF}` +
+        status
+          .split(LF)
+          .slice(0, 12)
+          .map((l) => `  ${l}`)
+          .join(LF) +
+        `${LF}${LF}  A version published from an edited tree is permanently wrong: npm will not` +
+        `${LF}  let you reuse the number. Commit (or stash) first, then publish.`,
+    );
+    process.exit(1);
+  }
+  try {
+    const unpushed = run("git", ["log", "--oneline", "@{u}..HEAD"]).trim();
+    if (unpushed) {
+      console.error(
+        `COMMITS NOT PUSHED. Refusing to publish.${LF}${LF}` +
+          unpushed
+            .split(LF)
+            .map((l) => `  ${l}`)
+            .join(LF) +
+          `${LF}${LF}  Publishing from an unpushed tree means the registry carries code no` +
+          `${LF}  reviewer can see. Push first.`,
+      );
+      process.exit(1);
+    }
+  } catch {
+    // No upstream configured is not a reason to block a publish.
+  }
+}
+
+if (!VERIFY_ONLY) {
+  requireAuth();
+  requireCleanTree();
+}
 
 for (const pkg of PACKAGES) {
   const version = localVersion(pkg.dir);
@@ -361,6 +431,55 @@ for (const pkg of PACKAGES) {
           problems += 1;
         } else {
           console.log(`  ok  published ${spec.file} is free of "${pat}"`);
+        }
+      }
+    }
+
+    /**
+     * THE BUILT ARTIFACT, BYTE FOR BYTE — the check that cannot rot.
+     *
+     * The marker list below was extended at 0.10.3 and was ALREADY out of date
+     * by 0.10.4: it printed "VERIFIED" for a tarball missing that release's
+     * headline change, because nobody had added the new strings. A proof that
+     * must be hand-extended every release will be stale every release.
+     *
+     * `tsc` output is byte-deterministic here — verified by two clean rebuilds
+     * producing identical 127,119-byte files — so comparing the published
+     * `dist/server.js` against a FRESH local build proves the whole artifact,
+     * not a sample of it. This is what catches the real failure: a version
+     * published from a tree that was then edited further.
+     *
+     * If this ever false-reds because a toolchain version moved, the marker
+     * list is still there as the weaker fallback — but fix the toolchain
+     * rather than deleting this.
+     */
+    if (pkg.builtIdentical) {
+      let fresh = null;
+      try {
+        run("npm", ["run", "build"], join(ROOT, pkg.dir));
+        fresh = readFileSync(join(ROOT, pkg.dir, pkg.builtIdentical), "utf8");
+      } catch (e) {
+        console.error(`  COULD NOT build locally to compare: ${String(e.message).slice(0, 160)}`);
+        unverified += 1;
+      }
+      if (fresh !== null) {
+        const theirs = existsSync(join(got.dir, pkg.builtIdentical))
+          ? readFileSync(join(got.dir, pkg.builtIdentical), "utf8")
+          : null;
+        if (theirs === null) {
+          console.error(`  MISSING from the published tarball: ${pkg.builtIdentical}`);
+          problems += 1;
+        } else if (theirs !== fresh) {
+          console.error(
+            `  STALE BUILD: published ${pkg.builtIdentical} is not this source.` +
+              `${LF}      published ${theirs.length} bytes, a fresh local build is ${fresh.length}` +
+              `${LF}      This is the "published mid-edit" failure: the version was taken, then` +
+              `${LF}      the source changed. npm will not let you overwrite it — BUMP and publish` +
+              `${LF}      again.`,
+          );
+          problems += 1;
+        } else {
+          console.log(`  ok  published ${pkg.builtIdentical} is byte-identical to a fresh build`);
         }
       }
     }
