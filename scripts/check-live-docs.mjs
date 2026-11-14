@@ -98,7 +98,11 @@ if (problems) {
       `${LF}  web/serve.mjs reads SKILL.md per request (readFileSync in the handler,` +
       `${LF}  cache-control: no-store), so a PULL is enough — no restart, no redeploy:` +
       `${LF}` +
-      `${LF}      ssh root@154.12.117.17 'cd /srv/float-near-web && git pull --ff-only origin main'` +
+      `${LF}      ssh root@154.12.117.17 'sudo -u float git -C /srv/float-near-web pull --ff-only origin main'` +
+      `${LF}` +
+      `${LF}  AS THE SERVICE USER, not root. A root 'git pull' in a float-owned tree leaves` +
+      `${LF}  root-owned .git/index and object files the service can no longer write, and the` +
+      `${LF}  symptom is silent degradation later, not a failure now.` +
       `${LF}` +
       `${LF}  Then re-run this. A doc fix that is committed but not served has not shipped.`,
   );

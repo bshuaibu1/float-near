@@ -995,7 +995,34 @@
           ? "https://free.rpc.fastnear.com"
           : "https://test.rpc.fastnear.com";
 
-      const FACTORY = q.get("factory");
+      /**
+       * THE FACTORY DEFAULTS TO THE DEPLOYED ONE FOR THIS NETWORK.
+       *
+       * This was `q.get("factory")` with no fallback, so the BARE URL —
+       * https://usefloat.xyz with no query string — showed "This link has no
+       * factory, so there is nothing to create the vault." That is the link in
+       * the README, in the npm pages and in anything anyone shares, and it is
+       * the first thing a new user or a judge sees.
+       *
+       * WHY THERE WAS NO DEFAULT. There genuinely was no mainnet factory for
+       * most of this project's life, and a GUESSED id would send a real ~3.5
+       * NEAR deposit to an unverified account — so refusing was correct while
+       * `FACTORY_BY_NETWORK.mainnet` was undefined. That condition no longer
+       * holds: `usefloat.near` is deployed, owned by the project, not paused,
+       * and probe-verified against its own panic. Defaulting to it is no
+       * longer a guess.
+       *
+       * MUST MATCH `FACTORY_BY_NETWORK` in `packages/mcp/src/create.ts`, which
+       * is the canonical list. `scripts/check-create-factory-default.mjs`
+       * fails the gate if the two drift — the page and the MCP disagreeing
+       * about where vaults come from is exactly the kind of split this repo
+       * keeps paying for.
+       *
+       * An explicit `?factory=` still wins, so a testnet or a private factory
+       * is unaffected.
+       */
+      const DEFAULT_FACTORY = NETWORK === "mainnet" ? "usefloat.near" : "fac.floatv4.testnet";
+      const FACTORY = q.get("factory") ?? DEFAULT_FACTORY;
 
       /**
        * The agent to bind at creation, if the link carries one.

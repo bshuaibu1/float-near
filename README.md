@@ -12,7 +12,7 @@ restrictions are the protocol's, not a prompt it might argue with.
 [![npm](https://img.shields.io/npm/v/%40floatonnear%2Fmcp?label=%40floatonnear%2Fmcp)](https://www.npmjs.com/package/@floatonnear/mcp)
 [![npm](https://img.shields.io/npm/v/%40floatonnear%2Fcreate-float?label=create-float)](https://www.npmjs.com/package/@floatonnear/create-float)
 ![tests](https://img.shields.io/badge/tests-1%2C120-blue)
-![gate](https://img.shields.io/badge/gated%20checks-40-blue)
+![gate](https://img.shields.io/badge/gated%20checks-41-blue)
 
 [**usefloat.xyz**](https://usefloat.xyz) · factory [`usefloat.near`](https://nearblocks.io/address/usefloat.near) · `npx -y @floatonnear/mcp`
 
@@ -234,7 +234,8 @@ job, permanently.
 `NEAR_VAULT_CONTRACT` is unknown until step 2 — leave it empty. `vault_create`
 needs no vault and no key.
 
-**2 — Create a vault.** Ask the agent, or open [usefloat.xyz](https://usefloat.xyz).
+**2 — Create a vault.** Ask the agent — `vault_create` builds the link for you —
+or open [usefloat.xyz](https://usefloat.xyz) directly.
 One wallet signature; the factory creates the account, deploys the contract,
 installs your key as full-access on the vault, binds the agent's gas key,
 initialises the budget tree, **and registers the vault on the token so you can
@@ -276,7 +277,7 @@ npx -p @floatonnear/create-float float-exit --owner <you> --vault <vault> --dry-
 | **The agent key is restricted** | its access key shows `receiver_id` = the vault and `method_names: ["request_payment"]` |
 | Vault is registered on USDC | `storage_balance_of` is non-null — the factory does this in the creation transaction |
 | Packages published | [`@floatonnear/mcp`](https://www.npmjs.com/package/@floatonnear/mcp) · [`create-float`](https://www.npmjs.com/package/@floatonnear/create-float) · [`float-adapter`](https://www.npmjs.com/package/@floatonnear/float-adapter) |
-| It is tested | **1,120 tests** — 427 MCP + 262 CLI + 230 adapter + 165 vault + 36 factory; `node scripts/verify-all.mjs` runs **40** gated checks |
+| It is tested | **1,120 tests** — 427 MCP + 262 CLI + 230 adapter + 165 vault + 36 factory; `node scripts/verify-all.mjs` runs **41** gated checks |
 | Teardown really refunds | `float-exit --dry-run` on any vault, then compare against the chain |
 
 A real 0.25 USDC payment has settled on mainnet and charged both the agent's node
@@ -325,7 +326,7 @@ We would rather you read these here than discover them.
 ## Development
 
 ```bash
-node scripts/verify-all.mjs     # THE gate: 40 checks
+node scripts/verify-all.mjs     # THE gate: 41 checks
 ```
 
 Not `npm test`. Every check asserts an exit code **and** a must-appear pattern

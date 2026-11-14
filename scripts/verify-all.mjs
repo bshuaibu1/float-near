@@ -494,6 +494,21 @@ const steps = [
      * doc telling agents to "relay say" is worse than nothing when half the
      * tools have none — the agent falls back to inventing a technical story.
      */
+    /**
+     * The create page and the MCP must name the SAME factory. They cannot
+     * share a constant — one is TypeScript in a published package, the other
+     * a `<script type="module">` served as a static file — so the value is
+     * duplicated, and a duplicated constant drifts. It already had: the page
+     * refused to create anything from a bare URL while a live mainnet factory
+     * was deployed.
+     */
+    name: "create factory",
+    cmd: "node scripts/check-create-factory-default.mjs",
+    cwd: ".",
+    mustMatch: /create factory: page and MCP agree/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "ux voice",
     cmd: "node scripts/check-ux-voice.mjs",
     cwd: ".",
