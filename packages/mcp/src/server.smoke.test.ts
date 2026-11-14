@@ -1137,6 +1137,19 @@ describe("user-facing tools return the plain-English UX fields", () => {
     ).toBe(false);
     expect(r.say as string).toMatch(/USDC/);
 
+    /**
+     * NO TREE VOCABULARY IN THE SENTENCE.
+     *
+     * "node 1" is the contract's primary key. It is correct in `args`, in
+     * `technical`, and in the payload a wallet signs, and it means nothing to
+     * someone who called the budget "news". This is the assertion that stops
+     * it coming back the next time a summary is edited in `payloads.ts`.
+     */
+    expect(
+      r.say as string,
+      `say contains tree vocabulary: ${r.say as string}`,
+    ).not.toMatch(/node\s*\d+/i);
+
     // The id is still exact where it is USEFUL, rather than deleted.
     expect(JSON.stringify(r.technical)).toContain(MAINNET_USDC);
   }, 40_000);

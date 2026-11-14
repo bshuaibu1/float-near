@@ -1,18 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
-import {
-  ONE_YOCTO,
-  OWNER_PLANNERS,
-  planSetNodeCaps,
-  planAddNode,
-  planFreezeNode,
-  planPurgeSettled,
-  planSetPaused,
-  planSetApprovalThreshold,
-  planWithdraw,
-  toCliCommand,
-} from "./payloads.js";
+import * as payloads from "./payloads.js";
+import { ONE_YOCTO, OWNER_PLANNERS, planAddNode, planAddRole, planApprovePayment, planBindAgent, planBindVirtualAgent, planFreezeNode, planPurgeSettled, planRejectPayment, planSetApprovalThreshold, planSetCooldown, planSetNodeCaps, planSetPaused, planSetRecipients, planSetStrictAllocation, planUnbindVirtualAgent, planWithdraw, toCliCommand, type OwnerPayload } from "./payloads.js";
 
 const VAULT = "vault.testnet";
 const TOK = "usdc.testnet";
@@ -67,14 +57,53 @@ describe("owner payloads", () => {
 });
 
 describe("summaries", () => {
-  // The human approves on the strength of the summary. A summary that does not
-  // move with the args is worse than none: it invites a signature for
-  // something other than what was described.
-  it("reflects the node id", () => {
-    const a = planFreezeNode(VAULT, 1, true).summary;
-    const b = planFreezeNode(VAULT, 7, true).summary;
+  /**
+   * The human approves on the strength of the summary. A summary that does not
+   * move with the args is worse than none: it invites a signature for
+   * something other than what was described.
+   *
+   * THIS TEST USED TO REQUIRE THE NODE ID IN THE TEXT ("expect(b).toContain
+   * ('7')"). It no longer does, because a node id is the contract's primary
+   * key and reads as a stranger's filing reference to someone who called the
+   * thing "news" — see `budgetName`. The PROPERTY it was protecting is kept:
+   * the summary must still distinguish one budget from another. It now does
+   * that by NAME, which is what the person actually recognises.
+   */
+  it("distinguishes one budget from another by name", () => {
+    const a = planFreezeNode(VAULT, 1, true, "news").summary;
+    const b = planFreezeNode(VAULT, 7, true, "marketing").summary;
     expect(a).not.toBe(b);
-    expect(b).toContain("7");
+    expect(a).toContain("news");
+    expect(b).toContain("marketing");
+    // And the id is gone from what a person reads.
+    expect(a).not.toMatch(/node\s*\d+/i);
+  });
+
+  it("calls the root the main budget, not its stored label", () => {
+    // The contract hardcodes root's label to the literal "root", which is the
+    // tree's vocabulary rather than a person's.
+    const s = planFreezeNode(VAULT, 0, true, "root").summary;
+    expect(s).toContain("the main budget");
+    expect(s).not.toContain('"root"');
+  });
+
+  /**
+   * THE DEGRADED CASE, NAMED RATHER THAN HIDDEN.
+   *
+   * `Node.label` is a required String on chain, so a missing name means the
+   * tree READ failed. Two budgets then read identically — a real loss of
+   * distinguishability, and the reason this test exists is to state where the
+   * safety actually comes from: the node id is still in `args.node_id`, which
+   * is what the wallet displays and what the owner signs. The sentence can be
+   * vague; the signature cannot.
+   */
+  it("is ambiguous without a label, but the args still are not", () => {
+    const a = planFreezeNode(VAULT, 1, true);
+    const b = planFreezeNode(VAULT, 7, true);
+    expect(a.summary).toBe(b.summary);
+    expect(a.summary).toContain("this budget");
+    expect(a.args.node_id).toBe(1);
+    expect(b.args.node_id).toBe(7);
   });
 
   it("reflects the direction of a boolean", () => {
@@ -98,7 +127,11 @@ describe("summaries", () => {
   it("warns on the destructive operations", () => {
     expect(planPurgeSettled(VAULT, 1, 1).warnings.join(" ")).toMatch(/delete|irreversible/i);
     expect(planSetPaused(VAULT, true).warnings.join(" ")).toMatch(/halt|block|stop/i);
-    expect(planFreezeNode(VAULT, 1, true).warnings.join(" ")).toMatch(/subtree|descendant|child/i);
+    // The cascading warning is the point; the WORDING moved from "subtree" to
+    // "every budget under it" when summaries stopped speaking tree vocabulary.
+    expect(planFreezeNode(VAULT, 1, true).warnings.join(" ")).toMatch(
+      /subtree|descendant|child|under it/i,
+    );
   });
 
   it("does not warn when the operation is not destructive", () => {
@@ -375,5 +408,98 @@ describe("planWithdraw's summary and warnings", () => {
     // read rather than given. If this were a string that would silently
     // concatenate instead.
     expect(Array.isArray(planWithdraw("v.near", "usdc.near", "1", "a.near", 6).warnings)).toBe(true);
+  });
+});
+
+/**
+ * NO TREE VOCABULARY IN ANY USER-FACING STRING, ACROSS EVERY PLAN BUILDER.
+ *
+ * WHY A SWEEP AND NOT A SPOT CHECK. The first version of this guard asserted
+ * on one tool driven over stdio (`vault_plan_add_node`). Putting the node id
+ * back into `planSetNodeCaps` then passed 85 tests — the leak was simply in a
+ * builder nothing checked. A per-tool assertion cannot defend a property that
+ * has to hold for all sixteen of them.
+ *
+ * `summary` and `warnings` are BOTH checked, because `planVoice` folds the
+ * first warning into the `say` a user reads.
+ *
+ * Every builder is listed explicitly rather than reflected over the module, so
+ * adding a new plan builder and forgetting it here is caught by the count
+ * assertion at the end — a reflective sweep would silently cover nothing if
+ * the export shape changed.
+ */
+describe("no plan builder leaks tree vocabulary into user-facing text", () => {
+  const TREE_WORDS = /\bnode\s*\d+\b/i;
+  const LIMITS = [{ token: TOK, dailyCap: "1", perTxCap: "0.10", decimals: 6 }];
+  /** 0.12 NEAR in yocto — the gas-key funding `add_role` attaches. Anything
+   *  below MIN_AGENT_GAS_FUNDING (0.06) is rejected by the builder itself. */
+  const FUND = (120000n * 10n ** 18n).toString();
+
+  /**
+   * Called with a NAME where one is accepted, because that is the real path —
+   * `Node.label` is a required String on chain, so a plan handler always has
+   * one unless the tree read failed. The no-name degraded case is covered
+   * separately above.
+   */
+  const built: [string, OwnerPayload][] = [
+    ["planAddNode (root)", planAddNode(VAULT, null, "news", LIMITS, 0, null)],
+    ["planAddNode (child)", planAddNode(VAULT, 1, "sub", LIMITS, 30, ["a.near"], "news")],
+    ["planSetNodeCaps", planSetNodeCaps(VAULT, 1, LIMITS, "news")],
+    ["planBindAgent", planBindAgent(VAULT, 1, "agent.near", "news")],
+    ["planBindVirtualAgent", planBindVirtualAgent(VAULT, 1, `ed25519:${"1".repeat(44)}`, "news")],
+    ["planUnbindVirtualAgent", planUnbindVirtualAgent(VAULT, `ed25519:${"1".repeat(44)}`)],
+    ["planFreezeNode (freeze)", planFreezeNode(VAULT, 1, true, "news")],
+    ["planFreezeNode (unfreeze)", planFreezeNode(VAULT, 1, false, "news")],
+    ["planSetRecipients (list)", planSetRecipients(VAULT, 1, ["a.near"], "news")],
+    ["planSetRecipients (inherit)", planSetRecipients(VAULT, 1, null, "news")],
+    ["planSetCooldown (set)", planSetCooldown(VAULT, 1, 30, "news")],
+    ["planSetCooldown (clear)", planSetCooldown(VAULT, 1, 0, "news")],
+    ["planSetApprovalThreshold (set)", planSetApprovalThreshold(VAULT, 1, "5", 6, "news")],
+    ["planSetApprovalThreshold (clear)", planSetApprovalThreshold(VAULT, 1, null, 6, "news")],
+    ["planSetPaused (pause)", planSetPaused(VAULT, true)],
+    ["planSetPaused (resume)", planSetPaused(VAULT, false)],
+    ["planSetStrictAllocation", planSetStrictAllocation(VAULT, true)],
+    ["planPurgeSettled", planPurgeSettled(VAULT, 1, 10)],
+    ["planWithdraw", planWithdraw(VAULT, TOK, "1", "owner.near", 6)],
+    ["planApprovePayment", planApprovePayment(VAULT, "req-1")],
+    ["planRejectPayment", planRejectPayment(VAULT, "req-1")],
+    ["planAddRole", planAddRole(VAULT, "news", LIMITS, 0, null, `ed25519:${"1".repeat(44)}`, FUND)],
+  ];
+
+  for (const [name, p] of built) {
+    it(`${name}: summary and warnings say no "node N"`, () => {
+      expect(p.summary, `${name} summary: ${p.summary}`).not.toMatch(TREE_WORDS);
+      for (const w of p.warnings) {
+        expect(w, `${name} warning: ${w}`).not.toMatch(TREE_WORDS);
+      }
+    });
+  }
+
+  /**
+   * The id must still be in the ARGS of anything node-scoped — that is what
+   * the wallet shows and the contract keys on. Removing "node 1" from prose
+   * must not have removed it from the payload.
+   */
+  it("keeps the node id in args, where the wallet and contract need it", () => {
+    expect(planSetNodeCaps(VAULT, 7, LIMITS, "news").args.node_id).toBe(7);
+    expect(planFreezeNode(VAULT, 7, true, "news").args.node_id).toBe(7);
+    expect(planSetCooldown(VAULT, 7, 30, "news").args.node_id).toBe(7);
+    expect(planSetRecipients(VAULT, 7, null, "news").args.node_id).toBe(7);
+    expect(planSetApprovalThreshold(VAULT, 7, "5", 6, "news").args.node_id).toBe(7);
+    expect(planBindVirtualAgent(VAULT, 7, `ed25519:${"1".repeat(44)}`, "news").args.node_id).toBe(7);
+  });
+
+  /**
+   * A NEW BUILDER MUST BE ADDED ABOVE. If this count drifts, the sweep has
+   * stopped being a sweep — which is exactly the hole that let a node id back
+   * into `planSetNodeCaps` while 85 tests passed.
+   */
+  it("covers every exported plan builder", () => {
+    const exported = Object.keys(payloads).filter((k) => /^plan[A-Z]/.test(k));
+    const covered = new Set(built.map(([n]) => n.replace(/ \(.*\)$/, "")));
+    const uncovered = exported.filter((e) => !covered.has(e));
+    expect(uncovered, `plan builders with no node-vocabulary test: ${uncovered.join(", ")}`).toEqual(
+      [],
+    );
   });
 });

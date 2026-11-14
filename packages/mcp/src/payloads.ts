@@ -146,6 +146,8 @@ export function planAddNode(
   limits: HumanTokenLimit[],
   cooldownSec: number,
   recipients: string[] | null,
+  /** The PARENT's human label, so the summary can say "under news". */
+  parentName?: string | null,
 ): OwnerPayload {
   if (!label || label.length > MAX_LABEL_LEN) {
     throw new Error(`label must be 1..=${MAX_LABEL_LEN} characters (MAX_LABEL_LEN)`);
@@ -165,7 +167,11 @@ export function planAddNode(
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: ONE_YOCTO,
     summary:
-      `Create budget node "${label}" ${parent === null ? "as the ROOT" : `under node ${parent}`}` +
+      // "the main budget" for a root, and the PARENT's name otherwise — a new
+      // child is described by where it hangs, which is the one thing the
+      // person choosing it cares about.
+      `Create a "${label}" budget ` +
+      `${parent === null ? "as the main budget" : `under ${budgetName(parent, parentName)}`}` +
       ` with ${describeLimits(limits)}` +
       (cooldownSec ? `, ${cooldownSec}s cooldown between payments` : "") +
       (recipients ? `, paying only: ${recipients.join(", ")}` : `, inheriting the payee allowlist`),
@@ -173,10 +179,72 @@ export function planAddNode(
   };
 }
 
+/**
+ * How a budget is NAMED to a person.
+ *
+ * WHY THIS EXISTS. Every plan summary said "node 1", and `planVoice` copies
+ * the summary verbatim into the `say` a user reads — so the product spoke the
+ * tree's internal vocabulary: "Set node 1 caps to 1/day", "Freeze node 0".
+ * A node id is the contract's primary key. It is exactly right in `args`, in
+ * `technical`, and in the unsigned payload a wallet signs, and it is a
+ * stranger's filing reference to the person who called the thing "news".
+ *
+ * The label is NOT derivable here — it lives on chain, and this module is pure
+ * and synchronously testable, which is worth keeping. So the caller resolves
+ * it and passes it in; `server.ts` already fetches the tree to check the node
+ * exists, so this costs no extra call.
+ *
+ * FALLBACKS, in order of how much they can honestly claim:
+ *   a label        -> `the "news" budget`
+ *   node 0, no label -> "the main budget"   (root is the only id with a meaning)
+ *   anything else  -> "this budget"         (true, and says nothing false)
+ *
+ * "this budget" is deliberately vague rather than wrong. The alternative was
+ * falling back to the id, which is the bug.
+ */
+/**
+ * Sentence-case a budget name for the start of a summary.
+ *
+ * `budgetName` returns a lowercase noun phrase because most of its uses sit
+ * mid-sentence ("Freeze the main budget"). A few lead the sentence, and
+ * "the main budget must wait 30s" reads like a fragment.
+ */
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function budgetName(nodeId: number, label?: string | null): string {
+  /**
+   * ROOT IS ALWAYS "the main budget", whatever its stored label.
+   *
+   * The contract hardcodes root's label to the literal string "root"
+   * (`lib.rs`: `label: "root".to_string()`), which is the tree's word, not a
+   * person's. `the "root" budget` would just be "node 0" wearing a hat.
+   */
+  if (nodeId === 0) return "the main budget";
+
+  const clean = typeof label === "string" ? label.trim() : "";
+  if (clean) return `the "${clean}" budget`;
+
+  /**
+   * NO LABEL means the tree read FAILED — `Node.label` is a required `String`
+   * on chain (`types.rs`), so every real node has one. "this budget" is
+   * deliberately vague rather than wrong; the alternative was falling back to
+   * the id, which is the thing being removed.
+   *
+   * It does cost distinguishability in that degraded case: two different
+   * budgets read the same. The node id is still in `args.node_id`, which is
+   * what the WALLET displays and what the owner actually signs, so the
+   * signature is never ambiguous even when the sentence is. Pinned by a test.
+   */
+  return "this budget";
+}
+
 export function planSetNodeCaps(
   vault: string,
   nodeId: number,
   limits: HumanTokenLimit[],
+  nodeName?: string | null,
 ): OwnerPayload {
   return {
     receiverId: vault,
@@ -184,22 +252,27 @@ export function planSetNodeCaps(
     args: { node_id: nodeId, limits: limitsToArgs(limits) },
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: ONE_YOCTO,
-    summary: `Set node ${nodeId} caps to ${describeLimits(limits)}`,
+    summary: `Update ${budgetName(nodeId, nodeName)} to ${describeLimits(limits)}`,
     warnings: [],
   };
 }
 
-export function planBindAgent(vault: string, nodeId: number, accountId: string): OwnerPayload {
+export function planBindAgent(
+  vault: string,
+  nodeId: number,
+  accountId: string,
+  nodeName?: string | null,
+): OwnerPayload {
   return {
     receiverId: vault,
     methodName: "bind_agent",
     args: { node_id: nodeId, account_id: accountId },
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: ONE_YOCTO,
-    summary: `Let ${accountId} spend from node ${nodeId}`,
+    summary: `Let ${accountId} spend from ${budgetName(nodeId, nodeName)}`,
     warnings: [
       `${accountId} is an EXISTING account whose keys you do not control. ` +
-        `It can call request_payment with the full authority of node ${nodeId}.`,
+        `It can spend with the full authority of ${budgetName(nodeId, nodeName)}.`,
       `Prefer a VIRTUAL agent (bind_virtual_agent): it binds one key you generate ` +
         `rather than a whole account, costs ~168 bytes, and strands nothing.`,
     ],
@@ -282,6 +355,7 @@ export function planBindVirtualAgent(
   vault: string,
   nodeId: number,
   publicKey: string,
+  nodeName?: string | null,
 ): OwnerPayload {
   assertNodeId(nodeId);
   assertPublicKey(publicKey);
@@ -294,7 +368,7 @@ export function planBindVirtualAgent(
     // `assert_owner()` -> `assert_one_yocto()`. Nothing is funded here, which
     // is the whole point of moving off sub-accounts.
     depositYocto: ONE_YOCTO,
-    summary: `Let the key ${publicKey.slice(0, 22)}… spend from node ${nodeId}`,
+    summary: `Let a new agent key spend from ${budgetName(nodeId, nodeName)}`,
     warnings: [
       `A node may hold more than one key — binding another does not replace this one.`,
       `This grants spending authority only. The key still needs gas: install it as ` +
@@ -335,6 +409,7 @@ export function planSetRecipients(
   vault: string,
   nodeId: number,
   recipients: string[] | null,
+  nodeName?: string | null,
 ): OwnerPayload {
   assertRecipients(recipients);
   return {
@@ -344,18 +419,24 @@ export function planSetRecipients(
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: ONE_YOCTO,
     summary: recipients
-      ? `Node ${nodeId} may pay only: ${recipients.join(", ")}`
-      : `Node ${nodeId} inherits its payee allowlist from the nearest ancestor that sets one`,
+      ? `${capitalise(budgetName(nodeId, nodeName))} may pay only: ${recipients.join(", ")}`
+      : `${capitalise(budgetName(nodeId, nodeName))} takes its list of allowed payees from the budget above it`,
     warnings: recipients
       ? [
-          `This REPLACES the inherited allowlist for node ${nodeId} and its descendants; ` +
-            `it does not add to it. Payees it currently inherits will stop being payable.`,
+          `This REPLACES the inherited payee list for ${budgetName(nodeId, nodeName)} and ` +
+            `everything under it; it does not add to it. Payees it currently inherits will ` +
+            `stop being payable.`,
         ]
       : [],
   };
 }
 
-export function planSetCooldown(vault: string, nodeId: number, cooldownSec: number): OwnerPayload {
+export function planSetCooldown(
+  vault: string,
+  nodeId: number,
+  cooldownSec: number,
+  nodeName?: string | null,
+): OwnerPayload {
   assertCooldown(cooldownSec);
   return {
     receiverId: vault,
@@ -364,22 +445,29 @@ export function planSetCooldown(vault: string, nodeId: number, cooldownSec: numb
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: ONE_YOCTO,
     summary: cooldownSec
-      ? `Node ${nodeId} must wait ${cooldownSec}s between payments`
-      : `Remove the cooldown on node ${nodeId}`,
+      ? `${capitalise(budgetName(nodeId, nodeName))} must wait ${cooldownSec}s between payments`
+      : `Remove the waiting time between payments on ${budgetName(nodeId, nodeName)}`,
     warnings: [],
   };
 }
 
-export function planFreezeNode(vault: string, nodeId: number, frozen: boolean): OwnerPayload {
+export function planFreezeNode(
+  vault: string,
+  nodeId: number,
+  frozen: boolean,
+  nodeName?: string | null,
+): OwnerPayload {
   return {
     receiverId: vault,
     methodName: "freeze_node",
     args: { node_id: nodeId, frozen },
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: ONE_YOCTO,
-    summary: frozen ? `Freeze node ${nodeId}` : `Unfreeze node ${nodeId}`,
+    summary: frozen
+      ? `Freeze ${budgetName(nodeId, nodeName)} so nothing under it can pay until you unfreeze it`
+      : `Unfreeze ${budgetName(nodeId, nodeName)} so it can pay again`,
     warnings: frozen
-      ? [`This blocks payments from node ${nodeId} AND every node in its subtree.`]
+      ? [`This stops payments from ${budgetName(nodeId, nodeName)} and every budget under it.`]
       : [],
   };
 }
@@ -560,6 +648,7 @@ export function planSetApprovalThreshold(
   nodeId: number,
   amount: string | null,
   decimals: number,
+  nodeName?: string | null,
 ): OwnerPayload {
   const base = amount === null ? null : toBaseUnits(amount, decimals).toString();
   return {
@@ -572,8 +661,8 @@ export function planSetApprovalThreshold(
     // 1000000 (base units)", which is unreadable in precisely the moment the
     // owner is checking the plan before signing it.
     summary: amount
-      ? `Payments above ${amount} from node ${nodeId} will need your approval`
-      : `Remove the approval threshold on node ${nodeId} — payments up to the caps run unattended`,
+      ? `Payments above ${amount} from ${budgetName(nodeId, nodeName)} will need your approval`
+      : `Stop requiring your approval on ${budgetName(nodeId, nodeName)} — payments inside the limits run unattended`,
     warnings: amount
       ? []
       : ["After this, nothing at this node waits for a human: only the caps apply."],

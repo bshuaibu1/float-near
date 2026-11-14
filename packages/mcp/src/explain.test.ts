@@ -218,11 +218,11 @@ describe("an unknown code is handled honestly", () => {
  */
 describe("planVoice", () => {
   it("says the human must act, and that nothing has changed yet", () => {
-    const v = planVoice({ summary: 'Set node 1 caps to 25/day, 10/tx USDC' });
+    const v = planVoice({ summary: 'Update the "news" budget to 25/day, 10/tx USDC' });
     expect(v.say).toMatch(/needs you/i);
     expect(v.say).toMatch(/can't make this change myself/i);
     expect(v.say).toMatch(/Nothing has changed yet/i);
-    expect(v.say).toContain("Set node 1 caps to 25/day, 10/tx USDC");
+    expect(v.say).toContain('Update the "news" budget to 25/day, 10/tx USDC');
     expect(v.next).toMatch(/approve it in your wallet/i);
   });
 
@@ -266,7 +266,7 @@ describe("planVoice", () => {
    */
   it("leaks no jargon into the user-facing sentence", () => {
     const v = planVoice({
-      summary: "Set node 1 caps to 25/day",
+      summary: 'Update the "news" budget to 25/day',
       depositYocto: "120000000000000000000000",
       warnings: ["Careful."],
     });

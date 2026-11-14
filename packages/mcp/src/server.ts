@@ -2101,8 +2101,14 @@ server.tool(
     cooldownSec: z.number().int().min(0).default(0),
     recipients: z.array(z.string()).nullable().default(null),
   },
-  async ({ parent, label, limits, cooldownSec, recipients }) =>
-    renderPlan(planAddNode(requireVault(), parent, label, limits, cooldownSec, recipients)),
+  async ({ parent, label, limits, cooldownSec, recipients }) => {
+    // The PARENT's name, so the summary reads "under news" not "under node 1".
+    // Only looked up when there IS a parent.
+    const parentName = parent === null ? null : (await resolveNode(parent)).label;
+    return renderPlan(
+      planAddNode(requireVault(), parent, label, limits, cooldownSec, recipients, parentName),
+    );
+  },
 );
 
 /**
@@ -2126,19 +2132,43 @@ server.tool(
  * them just prompts another guess.
  */
 async function assertNode(nodeId: number): Promise<{ known: string } | null> {
+  return (await resolveNode(nodeId)).missing;
+}
+
+/**
+ * One tree read, answering BOTH questions a plan handler has: does this node
+ * exist, and what do humans call it?
+ *
+ * THE LABEL WAS ALREADY BEING FETCHED AND THROWN AWAY. `assertNode` read
+ * `label` purely to list it in a "no such node" message, so every plan summary
+ * said "node 1" while the word "news" sat in the same response. Returning it
+ * costs nothing and is what lets `budgetName` do its job.
+ *
+ * A FAILED READ RETURNS NO LABEL AND NO COMPLAINT. The chain being briefly
+ * unreachable is not evidence the node is missing — refusing here would turn a
+ * blip into "your node does not exist" — and it is not evidence the node is
+ * unnamed either, so the summary falls back to "this budget" rather than
+ * inventing one.
+ */
+async function resolveNode(
+  nodeId: number,
+): Promise<{ missing: { known: string } | null; label: string | null }> {
   const tree = (await viewFunction(cfg.rpcUrl, requireVault(), "get_tree", {}).catch(
     () => null,
   )) as { id: number; label?: string }[] | null;
-  // A failed READ must not block a plan: the chain being briefly unreachable
-  // is not evidence the node is missing, and refusing here would turn a blip
-  // into "your node does not exist".
-  if (!Array.isArray(tree)) return null;
-  if (tree.some((n) => n.id === nodeId)) return null;
+  if (!Array.isArray(tree)) return { missing: null, label: null };
+
+  const hit = tree.find((n) => n.id === nodeId);
+  if (hit) return { missing: null, label: hit.label ?? null };
+
   // RETURNS THE FACTS, NOT A SENTENCE. The first version returned prose and
   // the read path tried to reuse it by regex-stripping the signing clause,
   // which left "no node 999, Nodes: ...". Composing at the call site costs two
   // lines and cannot produce a mangled sentence.
-  return { known: tree.map((n) => `${n.id}${n.label ? ` (${n.label})` : ""}`).join(", ") };
+  return {
+    missing: { known: tree.map((n) => `${n.id}${n.label ? ` (${n.label})` : ""}`).join(", ") },
+    label: null,
+  };
 }
 
 /** For a PLAN: the cost of getting this wrong is a wasted signature. */
@@ -2155,10 +2185,10 @@ server.tool(
   "Build an UNSIGNED payload to change a node's daily and per-payment caps. Not signed by this server.",
   { nodeId: z.number().int().min(0), limits: limitShape },
   async ({ nodeId, limits }) => {
-    const bad = await assertNode(nodeId);
-    return bad
-      ? text(noNodeForPlan(nodeId, bad.known))
-      : renderPlan(planSetNodeCaps(requireVault(), nodeId, limits));
+    const n = await resolveNode(nodeId);
+    return n.missing
+      ? text(noNodeForPlan(nodeId, n.missing.known))
+      : renderPlan(planSetNodeCaps(requireVault(), nodeId, limits, n.label));
   },
 );
 
@@ -2170,7 +2200,9 @@ server.tool(
     publicKey: z.string().describe("ed25519:..."),
   },
   async ({ nodeId, publicKey }) =>
-    renderPlan(planBindVirtualAgent(requireVault(), nodeId, publicKey)),
+    renderPlan(
+      planBindVirtualAgent(requireVault(), nodeId, publicKey, (await resolveNode(nodeId)).label),
+    ),
 );
 
 server.tool(
@@ -2185,10 +2217,10 @@ server.tool(
   "Build an UNSIGNED payload to freeze or unfreeze a node. Freezing blocks the node AND its whole subtree. Not signed by this server.",
   { nodeId: z.number().int().min(0), frozen: z.boolean() },
   async ({ nodeId, frozen }) => {
-    const bad = await assertNode(nodeId);
-    return bad
-      ? text(noNodeForPlan(nodeId, bad.known))
-      : renderPlan(planFreezeNode(requireVault(), nodeId, frozen));
+    const n = await resolveNode(nodeId);
+    return n.missing
+      ? text(noNodeForPlan(nodeId, n.missing.known))
+      : renderPlan(planFreezeNode(requireVault(), nodeId, frozen, n.label));
   },
 );
 
@@ -2198,10 +2230,10 @@ server.tool(
   { nodeId: z.number().int().min(0), recipients: z.array(z.string()).nullable() },
   async ({ nodeId, recipients }) =>
     (async () => {
-      const bad = await assertNode(nodeId);
-      return bad
-        ? text(noNodeForPlan(nodeId, bad.known))
-        : renderPlan(planSetRecipients(requireVault(), nodeId, recipients));
+      const n = await resolveNode(nodeId);
+      return n.missing
+        ? text(noNodeForPlan(nodeId, n.missing.known))
+        : renderPlan(planSetRecipients(requireVault(), nodeId, recipients, n.label));
     })(),
 );
 
@@ -2210,10 +2242,10 @@ server.tool(
   "Build an UNSIGNED payload to set the minimum seconds between a node's payments. Not signed by this server.",
   { nodeId: z.number().int().min(0), cooldownSec: z.number().int().min(0) },
   async ({ nodeId, cooldownSec }) => {
-    const bad = await assertNode(nodeId);
-    return bad
-      ? text(noNodeForPlan(nodeId, bad.known))
-      : renderPlan(planSetCooldown(requireVault(), nodeId, cooldownSec));
+    const n = await resolveNode(nodeId);
+    return n.missing
+      ? text(noNodeForPlan(nodeId, n.missing.known))
+      : renderPlan(planSetCooldown(requireVault(), nodeId, cooldownSec, n.label));
   },
 );
 
@@ -2242,7 +2274,15 @@ server.tool(
     decimals: z.number().int().min(0).max(38).default(6),
   },
   async ({ nodeId, amount, decimals }) =>
-    renderPlan(planSetApprovalThreshold(requireVault(), nodeId, amount, decimals)),
+    renderPlan(
+      planSetApprovalThreshold(
+        requireVault(),
+        nodeId,
+        amount,
+        decimals,
+        (await resolveNode(nodeId)).label,
+      ),
+    ),
 );
 
 server.tool(

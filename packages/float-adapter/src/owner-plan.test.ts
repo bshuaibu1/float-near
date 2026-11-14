@@ -346,9 +346,16 @@ describe("owner-plan: a node-scoped action without a node", () => {
   it("accepts nodeId 0 — ROOT is a real node, not a missing value", () => {
     // The bug this guards against: `if (!b.nodeId) throw`, which rejects the
     // root node because 0 is falsy. Root is the node most likely to be frozen.
+    //
+    // THE ARGS ARE THE PROOF that 0 was accepted rather than treated as
+    // missing. This also asserted `summary` matched /node 0/, which was only
+    // ever a proxy for the same thing — and user-facing summaries deliberately
+    // stopped speaking tree vocabulary, so root now reads as "the main
+    // budget". The property is unchanged; the wording is not.
     const p = planOwnerAction({ action: "freeze", nodeId: 0, frozen: true } as never, ENV);
     expect(p.args).toMatchObject({ node_id: 0, frozen: true });
-    expect(p.summary).toMatch(/node 0/);
+    expect(p.summary).toMatch(/main budget/i);
+    expect(p.summary).not.toMatch(/node\s*\d+/i);
   });
 
   it("never emits an args object containing an undefined value", () => {
