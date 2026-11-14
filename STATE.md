@@ -185,6 +185,20 @@ state changes, and re-stamp the commit line above.
     substring in the emitted JS even though the runtime output contains it. Grepping for it
     reports MISSING for a good build, identical to the feature being absent. Markers must be
     single identifiers, never sentences.
+- **BUDGET-TREE BARS FIXED AND DEPLOYED (2026-11-14).** The master "Used today" bar never moved.
+  The numbers were right: the API rounds `dailyBudgetUsedPercent` to an integer, so a real
+  **0.02 USDC against the 25 USDC master = 0.080%** arrived as `0`, and the card printed
+  *"0.02 spent today"* above *"0%"* and an empty track. Measured live: root **0.080%**, news
+  **0.667%**, headlines **4.000%** — only the last survives rounding, exactly what was reported.
+  `apps/dashboard/lib/utilisation.ts` now computes from the raw spend and cap the page already
+  receives, returning a **label** (`<1%` — never overstates) and a **barWidth** (minimum sliver —
+  signals that something moved). Mutation-verified; 227 dashboard tests.
+  - **LIVE at <https://app.usefloat.xyz/agents>.** The dashboard is a Next.js service
+    (`float-near-dash`, `npm run start`, `WorkingDirectory=/srv/float-near-web/apps/dashboard`),
+    so **a git pull alone does nothing** — it serves a pre-built `.next`. Deploy is: pull, then
+    `sudo -u float npm run build` in `apps/dashboard`, then `systemctl restart float-near-dash`.
+    Verified by fetching the served chunk and finding `<1%` in it, not by trusting the restart.
+    `find /srv/float-near-web -user root` → **0**.
 - **`bind_virtual_agent` DOES NOT INSTALL A GAS KEY — `add_role` is the only contract function
   that does.** Measured 2026-11-14 while building a bind link for the `news` node: binding only
   inserts into `pubkey_to_node`, which grants AUTHORITY and no ability to submit. The key would
