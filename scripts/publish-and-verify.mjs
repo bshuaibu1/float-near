@@ -193,6 +193,27 @@ for (const pkg of PACKAGES) {
         .join(LF);
       console.error(`  PUBLISH FAILED:${LF}${meaningful}`);
 
+      /**
+       * E404 ON A PUBLISH MEANS "NOT AUTHORISED", NOT "NOT FOUND".
+       *
+       * npm answers an unauthorised PUT with
+       * `404 Not Found - PUT .../@floatonnear%2fmcp`, and the body says "could
+       * not be found OR you do not have permission". Read literally it looks
+       * like the package was deleted or the name is wrong, which sends you to
+       * check the registry instead of your login. Measured 2026-11-14: an
+       * expired token produced exactly this while the package was live and the
+       * account owned it.
+       */
+      if (/E404|404 Not Found - PUT/.test(err)) {
+        console.error(
+          `${LF}  That E404 is almost certainly an AUTH failure, not a missing package.` +
+            `${LF}  npm answers an unauthorised publish with 404. Confirm with:` +
+            `${LF}      npm whoami        (a 401 here means the token is expired)` +
+            `${LF}  then:` +
+            `${LF}      npm login`,
+        );
+      }
+
       if (/EOTP|one-time password/i.test(err)) {
         /**
          * NO PLACEHOLDER IN A COPY-PASTEABLE COMMAND.
