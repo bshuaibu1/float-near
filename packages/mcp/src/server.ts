@@ -1395,6 +1395,16 @@ server.tool(
      * Only the PUBLIC half is ever accepted. Nothing in this flow needs the
      * secret, and a tool that takes one invites it being pasted.
      */
+    parent: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe(
+        "the node id this agent hangs under, e.g. a department. Omit for a top-level " +
+          "agent under root. One approval either way — it creates the budget, binds the " +
+          "key and funds its gas.",
+      ),
     publicKey: z
       .string()
       .optional()
@@ -1404,7 +1414,7 @@ server.tool(
           "NEVER pass a private key or seed phrase.",
       ),
   },
-  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear, keyLocation, publicKey }) => {
+  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear, keyLocation, publicKey, parent }) => {
     const vault = requireVault();
 
     /**
@@ -1531,6 +1541,20 @@ server.tool(
      */
     const fundingYocto = toYoctoNear(fundingNear ?? "0.12");
 
+    /**
+     * A PARENT THAT DOES NOT EXIST IS CAUGHT BEFORE THE SIGNATURE.
+     *
+     * The contract refuses it ("no such parent"), but only after the owner has
+     * approved and paid for the transaction — and `add_role` carries a 0.12
+     * NEAR deposit, so the cost of finding out late is real. One view call.
+     */
+    let parentLabel: string | null = null;
+    if (typeof parent === "number" && parent !== 0) {
+      const p = await resolveNode(parent);
+      if (p.missing) return text(noNodeForPlan(parent, p.missing.known));
+      parentLabel = p.label;
+    }
+
     let limits;
     try {
       limits = [{ token: tokenFor(token), dailyCap, perTxCap, decimals: cfg.decimals }];
@@ -1544,6 +1568,8 @@ server.tool(
         recipients ?? null,
         PLACEHOLDER_PUBLIC_KEY,
         fundingYocto,
+        parent,
+        parentLabel,
       );
     } catch (e) {
       return text(
@@ -1586,6 +1612,8 @@ server.tool(
       recipients ?? null,
       agentPk,
       fundingYocto,
+      parent,
+      parentLabel,
     );
 
     /**

@@ -3856,7 +3856,7 @@ fn binding_at_init_matches_binding_afterwards() {
     // Same limits and recipients `vault_from_factory` gives root, so the only
     // thing being compared is WHERE the agent lands.
     testing_env!(ctx(owner(), NearToken::from_near(1), 0).build());
-    afterwards.add_role("agent".into(), limit(1000, 500), 0, None, va_pubkey(&sk));
+    afterwards.add_role("agent".into(), limit(1000, 500), 0, None, va_pubkey(&sk), None);
 
     assert_eq!(
         at_init.get_virtual_agent_node(va_pubkey(&sk)),
@@ -3943,7 +3943,7 @@ fn with_role_capped(
     limits: Vec<TokenLimit>,
 ) -> NodeId {
     testing_env!(ctx(owner(), fund, 0).build());
-    v.add_role(label.to_string(), limits, 0, Some(vec![payee()]), va_pubkey(sk))
+    v.add_role(label.to_string(), limits, 0, Some(vec![payee()]), va_pubkey(sk), None)
 }
 
 /// Spend `n` payments of `each` from one role.
@@ -4068,7 +4068,7 @@ fn roles_share_the_roots_daily_cap() {
 fn a_stranger_cannot_add_a_role() {
     let mut v = vault_from_factory(None);
     testing_env!(ctx(stranger(), FUND, 0).build());
-    v.add_role("intruder".into(), limit(500, 100), 0, Some(vec![payee()]), va_pubkey(&va_signing_key()));
+    v.add_role("intruder".into(), limit(500, 100), 0, Some(vec![payee()]), va_pubkey(&va_signing_key()), None);
 }
 
 /// An underfunded gas key cannot transact at all — NEAR reserves
@@ -4079,7 +4079,7 @@ fn a_stranger_cannot_add_a_role() {
 fn a_role_cannot_be_added_with_too_little_gas_funding() {
     let mut v = vault_from_factory(None);
     testing_env!(ctx(owner(), NearToken::from_yoctonear(1), 0).build());
-    v.add_role("broke".into(), limit(500, 100), 0, Some(vec![payee()]), va_pubkey(&va_signing_key()));
+    v.add_role("broke".into(), limit(500, 100), 0, Some(vec![payee()]), va_pubkey(&va_signing_key()), None);
 }
 
 /// Rebinding a key that already drives another node would give one agent two
@@ -4214,4 +4214,107 @@ fn vl2_a_zero_per_tx_cap_is_rejected_even_with_a_positive_daily() {
     let mut v = new_vault(true);
     testing_env!(ctx(owner(), YOCTO, 0).build());
     v.set_node_caps(0, limit(100, 0));
+}
+
+// ---------------------------------------------------------------------------
+// add_role(parent): a NESTED agent in one owner signature
+//
+// `add_role` is the only method that composes the three things a working agent
+// needs -- create the node, bind the key, install and FUND the gas key --
+// atomically. It hardcoded root, so wanting an agent under a department meant
+// falling off it onto `add_node` + `bind_virtual_agent`, NEITHER of which
+// touches gas keys. The result was a key that could authorise a payment and
+// never submit one, repairable only from a terminal, because installing a key
+// on the vault must be signed BY the vault.
+//
+// These pin that nesting now costs exactly what a flat agent costs.
+// ---------------------------------------------------------------------------
+
+/// A role created under a DEPARTMENT lands there, not at root.
+#[test]
+fn add_role_hangs_the_agent_off_the_given_parent() {
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), YOCTO, 0).build());
+    let dept = v.add_node(Some(ROOT_NODE), "news".into(), limit(3_000, 100), 0, None);
+
+    testing_env!(ctx(owner(), NearToken::from_millinear(120), 0).build());
+    let sk = va_signing_key();
+    let id = v.add_role("digest".into(), limit(1_000, 20), 0, None, va_pubkey(&sk), Some(dept));
+
+    let n = v.get_node(id);
+    assert_eq!(n.parent, Some(dept), "the role must hang off the department");
+    assert_eq!(n.path, vec![ROOT_NODE, dept], "its path must run root -> dept");
+    // THE WHOLE POINT: the key is bound AND the node exists, in one call.
+    assert_eq!(v.get_virtual_agent_node(va_pubkey(&sk)), Some(id));
+}
+
+/// Omitting the parent is still root, so every published client keeps working.
+#[test]
+fn add_role_without_a_parent_is_still_root() {
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), NearToken::from_millinear(120), 0).build());
+    let id = v.add_role("flat".into(), limit(1_000, 20), 0, None, va_pubkey(&va_signing_key()), None);
+    assert_eq!(v.get_node(id).parent, Some(ROOT_NODE));
+}
+
+/// The parent's own guards still apply -- `insert_node` owns them, and routing
+/// through it is what makes this safe rather than a new way to break the tree.
+#[test]
+fn add_role_rejects_a_parent_that_does_not_exist() {
+    let mut v = new_vault(false);
+    testing_env!(ctx(owner(), NearToken::from_millinear(120), 0).build());
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.add_role("x".into(), limit(1_000, 20), 0, None, va_pubkey(&va_signing_key()), Some(999))
+    }));
+    assert!(r.is_err(), "a nonexistent parent must be refused");
+}
+
+/// Depth is still bounded. A nested role cannot smuggle the tree past
+/// MAX_DEPTH just because it arrived through a different method.
+#[test]
+fn add_role_still_respects_max_depth() {
+    let mut v = new_vault(false);
+    let mut parent = ROOT_NODE;
+    // Build down to the deepest legal node. Each add_node is an owner call and
+    // needs its one yoctoNEAR.
+    for i in 1..(MAX_DEPTH as u64) {
+        testing_env!(ctx(owner(), YOCTO, 0).build());
+        parent = v.add_node(Some(parent), format!("d{i}"), limit(3_000, 100), 0, None);
+    }
+    testing_env!(ctx(owner(), NearToken::from_millinear(120), 0).build());
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        v.add_role("deep".into(), limit(100, 10), 0, None, va_pubkey(&va_signing_key()), Some(parent))
+    }));
+    assert!(r.is_err(), "a role must not push the tree past MAX_DEPTH");
+}
+
+/// THE BACKWARD-COMPATIBILITY CLAIM, tested at the layer that can actually
+/// break it.
+///
+/// Every already-published client calls `add_role` WITHOUT a `parent` field.
+/// Whether that still works is decided by serde, in the args struct near-sdk
+/// generates -- not by the Rust signature, which a unit test calls directly
+/// and so can never exercise. This repo has paid for that distinction once
+/// already: `#[payable]` + `assert_one_yocto` had to pair, 10/10 unit tests
+/// passed before and after the fix, because they never crossed the wrapper.
+///
+/// So this asserts the MECHANISM the generated wrapper relies on: a missing
+/// `Option<T>` field deserialises to `None` rather than erroring.
+#[test]
+fn a_missing_optional_arg_deserialises_to_none() {
+    #[derive(near_sdk::serde::Deserialize)]
+    #[serde(crate = "near_sdk::serde")]
+    struct AddRoleArgs {
+        label: String,
+        parent: Option<NodeId>,
+    }
+    // Exactly the shape an OLD client sends: no `parent` key at all.
+    let old: AddRoleArgs = near_sdk::serde_json::from_str(r#"{"label":"news"}"#)
+        .expect("an old client's args must still deserialise");
+    assert_eq!(old.label, "news");
+    assert_eq!(old.parent, None, "a missing parent must mean root, not an error");
+
+    // And a new client's explicit value survives.
+    let new: AddRoleArgs = near_sdk::serde_json::from_str(r#"{"label":"digest","parent":2}"#).unwrap();
+    assert_eq!(new.parent, Some(2));
 }
