@@ -1,4 +1,4 @@
-<!-- STAMP commit=1f10d3b date=2026-11-14 -->
+<!-- STAMP commit=9054eb5 date=2026-11-14 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -10,6 +10,37 @@ state changes, and re-stamp the commit line above.
 ## Hackathon status — 2026-11-12
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
+
+- **LIVE STATE, 2026-11-14 ~21:00 UTC — the vault is fully working and the demo is unblocked.**
+  `test015-near.usefloat.near`: **4.63 USDC**, 3.107 NEAR (only ~0.06 free — the rest is storage
+  stake, which is why a 5th agent could not be funded until the vault was topped up).
+  **Six nodes, five funded gas keys:** root 0 · agent 1 · news 2 (no key) · headlines 3 ·
+  digest 4 · marketing 5. From this machine **4 are usable**.
+  - **A REAL REFUSAL IS PROVEN ON MAINNET** — tx
+    [`22NyhaHRianC8zrnNK7ujZkRLdB4kYztFfFFSSQUgba9`](https://nearblocks.io/txns/22NyhaHRianC8zrnNK7ujZkRLdB4kYztFfFFSSQUgba9),
+    `reason_code: PARENT_PER_TX_LIMIT`, vault USDC **4.63 before and after**. Produced with
+    `scripts/prove-refusal.mjs`, which reads the cap from the chain and refuses to sign unless
+    the amount provably exceeds it — a transfer is not reachable on that path.
+  - **`float-agent` WRITES A KEYRING THE MCP CANNOT READ.** It saves `privateKey`; `roles.ts`
+    `loadable()` requires a string **`secret`**, so two funded, bound agents were invisible
+    (`usable: 0`) while working perfectly on chain. **This contradicts the line further down
+    saying both spellings "are read"** — that is true of the ADAPTER's `loadKeyring`, and false
+    of the MCP's role selection. Worked around by copying `privateKey` → `secret`; the code fix
+    belongs in `float-agent`.
+  - **`float-agent --node` DEFAULTS TO 0 (root).** Running it without `--node` minted an agent
+    with the vault's WIDEST authority (25/day · 10/tx) and consumed 0.12 NEAR —
+    `ed25519:AhYaJsfUxyjWnj4h…`, still bound and funded. A tool that funds a spending agent
+    should not silently default to the most privileged node.
+  - **It also writes to a RELATIVE `.float/`**, so keys landed in `near-vault/.float` while the
+    MCP read `~/.float` — the same split-keyring failure 0.10.2 was meant to end. Merged into
+    `~/.float/agent-keys.json`, dead keys renamed `*-retired-*` so they cannot shadow working
+    ones (`selectRole` takes the FIRST match).
+  - **Circle's native USDC emits NO NEP-297 `ft_transfer` event** (its receipt carries 0 logs),
+    so explorer *Token Transfer* views are empty for both sender and recipient even though the
+    money moved. Payments appear under **Transactions** only. Do not promise a transfers shot.
+  - **Pending, none blocking the video:** approve digest's cap change to 0.05/payment (still
+    0.02); retire the stray root agent (`float-retire`, which withdraws BEFORE unbinding —
+    `DeleteKey` would burn the 0.12); fix `float-agent`'s key field and `--node` default.
 
 - **THE MAINNET VAULT IS LIVE AGAIN — recreated by Bashir in the browser, 2026-11-14.**
   `test015-near.usefloat.near`: owner `test015.near`, mainnet, not paused, 2 nodes, **registered
@@ -242,7 +273,10 @@ state changes, and re-stamp the commit line above.
     claiming "this machine will now hold a spending key" would have been the most misleading
     sentence in the response. It now says the secret stays with you; the protocol-level bound is
     stated either way, and `credentialWrittenTo` is omitted rather than naming a file never written.
-  - **Ships in mcp 0.10.6** — npm has 0.10.5. **439 tests, 42 gated checks.**
+  - **Shipped in mcp 0.10.6, and 0.10.6 IS PUBLISHED** — `npm view @floatonnear/mcp version`
+    returns **0.10.6** (measured 2026-11-14 20:45 UTC; the registry lists 0.10.0–0.10.6). An
+    earlier revision of this line said "npm has 0.10.5", which was true when written and is
+    not now. **442 tests, 42 gated checks.**
 - **PLAN TOOLS NOW RETURN AN APPROVAL LINK, not just a CLI command (2026-11-14).** Asked for a
   news budget, the agent handed back a 300-character `near contract call-function as-transaction
   … sign-with-keychain send` line. The create page has accepted owner-action links all along
@@ -261,8 +295,10 @@ state changes, and re-stamp the commit line above.
     the page's in BOTH directions, plus a third list of what the builders actually emit, so a new
     CLI-only method cannot appear unnoticed. Controlled both ways. Tests decode the way the PAGE
     does, reimplemented from the page rather than from the encoder.
-  - **NOT PUBLISHED.** Ships in **mcp 0.10.6**; npm has 0.10.5. The link handed to Bashir for the
-    `news` budget was built by hand with the same encoder and is valid.
+  - **PUBLISHED after all** — this shipped in **mcp 0.10.6**, which the registry now serves as
+    latest (measured 2026-11-14). The "NOT PUBLISHED" that stood here was correct when written
+    and went stale. The link handed to Bashir for the `news` budget was built by hand with the
+    same encoder and is valid.
 - **THE CREATE PAGE REFUSED TO WORK FROM ITS OWN PUBLISHED LINK — fixed in the repo, NOT YET
   DEPLOYED (2026-11-14).** A bare <https://usefloat.xyz> answered *"This link has no factory, so
   there is nothing to create the vault."* That is the link in the README, on npm, and in anything
@@ -1218,12 +1254,99 @@ so drift fails two suites.
       code change is implicated and no test can see it. A refusal costs **0.000866 NEAR for a
       settled payment, less for a blocked one** — so "pre-checking saves gas" defends a fifth
       of a cent against the product's central claim.
-    - **The fix is in the MCP's GUIDANCE, not its code.** "Look before acting" must read as
-      *for planning*, never as *for gatekeeping*, with the contract named as the only gate.
-      Not yet written.
+    - **The fix is in the MCP's GUIDANCE, not its code — WRITTEN 2026-11-14, NOT PUBLISHED.**
+      `INSTRUCTIONS` in `packages/mcp/src/server.ts` now scopes WORKFLOW step 2 to "for
+      PLANNING, never for GATEKEEPING" and adds a block headed **ONLY THE CONTRACT MAY REFUSE
+      A PAYMENT. NEVER REFUSE ONE YOURSELF**, which tells the agent to submit even when it is
+      confident the payment will be refused, and explicitly permits saying what it expects
+      first. Pinned by `server.smoke.test.ts` → *"the server instructions forbid refusing a
+      payment on the agent's own judgement"*. `verify-all` green, 42/42.
+      - **PROVEN ON MAINNET, END TO END, 2026-11-14 18:46–18:58 — THE FIX WORKS.** After the
+        client restart the agent **submitted instead of declining**, twice, and the CONTRACT
+        refused both. Verified on chain, not from the agent's wording:
+        `8PK89mGwF5tv…` block **224554884** returns
+        `{"status":"BLOCKED","reason_code":"PER_TX_LIMIT"}` and logs the `request_blocked`
+        event for `node_id 3` (headlines, 0.05 against a 0.01 cap); `22NyhaHRianC…` block
+        **224553737** is `PARENT_PER_TX_LIMIT` on node 5 (marketing). **The tell that these
+        are policy refusals and not failed transfers:** neither receipt contains an
+        `ft_transfer`, where the 17:08 `TRANSFER_FAILED` one does — refused before any value
+        moved. Contrast with the pre-fix behaviour at 17:16–18:46, where the agent declined
+        articulately and the chain recorded **nothing at all**.
+      - **BOTH REFUSALS NOW RENDER ON `app.usefloat.xyz`**, with the two codes producing
+        deliberately DIFFERENT sentences — "Over this agent's own per-payment cap" vs "Over a
+        per-payment cap set higher up the tree". That is the hierarchy differentiator visible
+        on one screen, next to a `failed` row and two `success` rows. Recovered by two ~20-block
+        scans (`--from 224553730` and `--from 224554875`) into
+        `/srv/float-near-web/.demo/blocked-log.mainnet.json`, run as `float`; the adapter
+        re-reads the store per request so **no restart was needed**. Coverage is honestly
+        partial: `224553730..224554894` with a **1,125-block hole** between the two windows,
+        and the dashboard says so rather than implying the range is clean.
+      - **PUBLISHED AND VERIFIED FROM THE REGISTRY, 2026-11-14.** `@floatonnear/mcp` **0.11.0**
+        and `@floatonnear/float-adapter` **0.3.2** are live. Verified by **downloading the
+        tarball and diffing it**, not from a publish message: the published
+        `dist/server.js` is **byte-identical** to the local build that passed the gate,
+        reports `version: 0.11.0`, and carries the guidance block. **Positive-controlled
+        against 0.10.6**, whose tarball has the block **0 times** — so the detector can tell
+        the versions apart and the green is not vacuous. A cold `npx -y @floatonnear/mcp`
+        serves `0.11.0` with the block present, and the published adapter's dependency reads
+        `^0.11.0`, which now resolves.
+        - **`npm view` LIED FOR A WHILE and nearly caused a wrong fix.** Straight after the
+          publish it returned `0.10.6` for mcp while already returning `0.3.2` for the
+          adapter — which reads exactly like the dangerous half-published state (an adapter
+          requiring `^0.11.0` that cannot resolve). It was a **stale local cache**: a direct
+          `registry.npmjs.org` fetch showed `dist-tags.latest = 0.11.0` all along. Check the
+          registry URL directly before acting on a version mismatch.
+      - *(Superseded, kept for the shape of the staging that got here:)* **0.11.0 was bumped
+        and built before being published.** Gate green
+        42/42: `packages/mcp/package.json` and the **hardcoded `version:` string in
+        `server.ts`** both at `0.11.0` (the version lives in TWO places — a bump that edits
+        only the manifest ships a server that misreports itself), and
+        `packages/float-adapter` at `0.3.2` with its dependency moved `^0.10.0` → **`^0.11.0`**.
+        That range fix is load-bearing: **a caret on a `0.x` range pins the MINOR**, so an
+        adapter still declaring `^0.10.0` resolves the OLD mcp and silently ships the old
+        guidance — the identical bug `DECISIONS.md` records from the 0.9.0 release.
+        **Publish order is mcp first, then adapter**, because `^0.11.0` must exist before the
+        adapter that requires it. Publishing needs a human (npm 2FA → `EOTP`); verify by
+        diffing the downloaded tarball, never by the publish message.
+      - **MINOR, not patch, and that was a decision.** `0.10.7` was asked for and rejected:
+        agents now SUBMIT over-cap payments they previously declined, burning ~0.0009 NEAR of
+        agent gas each, and a patch bump hides a behaviour change behind a number people skim.
+      - **`~/.claude.json` now launches the LOCAL build** (`node .../packages/mcp/dist/
+        server.js`, forward slashes — a backslash path was mangled by shell escaping on the
+        first attempt). Verified by SPAWNING it and reading the initialize response:
+        `version: 0.11.0`, `ONLY THE CONTRACT MAY REFUSE A PAYMENT` present. Original config
+        backed up to `~/.claude.json.bak-1794681402`; switch back to `npx` once published.
+        **A client restart is required before any agent sees it.**
+      - **The first version of the test had a VACUOUS clause**, kept here because it is the
+        reusable lesson: `/planning|plan/i` was green before the change existed, since "plan"
+        already occurred 101 times via the `vault_plan_*` lane. Replaced with
+        `/submit it even when|…/`. All four surviving clauses occur **zero** times in the
+        pre-change file, so each one carries weight.
+      - **The suite spawns `dist/server.js`, not the source.** A source-only edit is invisible
+        to it — the first red was red for the wrong reason. Rebuild (`npm run build -w
+        @floatonnear/mcp`) before believing any result.
     - **To produce one on demand**, the agent must be told explicitly to submit without
       pre-checking. `scripts/prove-refusal.mjs <amount> <recipient>` exists for exactly this
       and refuses to sign any amount that could actually settle.
+13. **A CRASHED MUTATION RUN LEAVES DISARMED GUARDS IN THE WORKING TREE** (found 2026-11-14).
+    `verify-all`'s mutation stage edits source **in place** and reverts after each case, so an
+    interrupted run strands the mutation. Four were found live this session —
+    `key-file.ts` (`secret: inline`, making an unreadable key file fall back to the inline
+    secret), `owner-plan.ts` (`env.vault` → `"someone.else"`), `teardown.ts` (the
+    `/^\d+$/` base-unit guard deleted), `keyring.ts` (`keyFileNote` dropped from the
+    ambiguous-agent error) — plus **`info-dot.tsx`, which was already stranded at session
+    start and had therefore survived at least one prior session**. Any `git commit -a` would
+    have shipped them.
+    - **How to recognise one:** a diff that DELETES a guard, a bounds check, or a message
+      clause and nothing else, and — the sharpest tell — **a change that contradicts the
+      comment directly above it**. `info-dot.tsx` dropped a `max-md:` prefix two lines under a
+      comment explaining why extending that hit-target past mobile "would swallow clicks meant
+      for the text beside it for no benefit". The comment is the oracle.
+    - **Never run anything alongside `verify-all.mjs`.** Tests run concurrently read a tree
+      that is mutating under them. That is what produced this session's phantom `mcp tests`
+      and `key-file` failures; run alone, the same gate is **42/42, exit 0**.
+    - **Check `git status` for unexpected source files before every commit.** The strays never
+      look like work: they are one-line deletions in files nobody touched.
 
 ## Next 3 steps
 
