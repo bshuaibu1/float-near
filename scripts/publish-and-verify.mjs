@@ -22,7 +22,7 @@
  * and it fails for reasons a working tree cannot fix.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -108,8 +108,31 @@ function fetchPublished(name, version) {
   const tmp = mkdtempSync(join(tmpdir(), "float-pub-"));
   try {
     run("npm", ["pack", `${name}@${version}`, "--pack-destination", tmp], tmp);
-    const tgz = run("node", ["-e", `console.log(require('fs').readdirSync(${JSON.stringify(tmp)})[0])`]).trim();
-    run("tar", ["-xzf", join(tmp, tgz), "-C", tmp]);
+    /**
+     * READ THE DIRECTORY IN PROCESS.
+     *
+     * This shelled out to `node -e "...readdirSync(<path>)..."`, which fails on
+     * Windows: the command goes through a shell (needed for npm.cmd), the shell
+     * eats the quotes around the embedded path, and node then parses
+     * `C:\Users\...` as code. It reported "could not download the tarball" for
+     * two packages that had downloaded perfectly — a broken CHECK masquerading
+     * as a broken subject, which is worse than no check at all.
+     *
+     * There was never a reason to leave the process to list a directory.
+     */
+    const tgz = readdirSync(tmp).find((f) => f.endsWith(".tgz"));
+    if (!tgz) throw new Error(`npm pack wrote no .tgz into ${tmp}`);
+    /**
+     * RELATIVE FILENAME, WITH cwd SET — never an absolute Windows path.
+     *
+     * `tar -xzf C:\Users\...` fails under git-bash's GNU tar with "Cannot
+     * connect to C: resolve": it reads everything before the colon as a REMOTE
+     * HOST. Passing `--force-local` fixes GNU tar but is not accepted by the
+     * bsdtar shipped in System32, and which one is on PATH varies — so neither
+     * flag is portable. A bare filename with `cwd` has no colon to misread and
+     * works under both.
+     */
+    run("tar", ["-xzf", tgz], tmp);
     return { dir: join(tmp, "package"), cleanup: () => rmSync(tmp, { recursive: true, force: true }) };
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true });
@@ -118,6 +141,8 @@ function fetchPublished(name, version) {
 }
 
 let problems = 0;
+/** Checks that could not RUN. Reported separately from real staleness. */
+let unverified = 0;
 
 if (!VERIFY_ONLY) requireAuth();
 
@@ -227,8 +252,16 @@ for (const pkg of PACKAGES) {
   try {
     got = fetchPublished(pkg.name, version);
   } catch (e) {
-    console.error(`  could not download the tarball: ${String(e.message).slice(0, 200)}`);
-    problems += 1;
+    /**
+     * A CHECK THAT COULD NOT RUN IS NOT A FINDING.
+     *
+     * This counted a download failure as a `problem`, so the summary said
+     * "the registry does not serve this repo's code" — a staleness verdict —
+     * when the truth was that the verifier broke. Those need different
+     * counters and different words, or a tooling bug reads as a shipped bug.
+     */
+    console.error(`  COULD NOT VERIFY (the check failed, not the package): ${String(e.message).slice(0, 200)}`);
+    unverified += 1;
     continue;
   }
 
@@ -276,6 +309,14 @@ for (const pkg of PACKAGES) {
 console.log("");
 if (problems) {
   console.error(`BROKEN: ${problems} problem(s). The registry does not serve this repo's code.`);
+  process.exit(1);
+}
+if (unverified) {
+  console.error(
+    `INCONCLUSIVE: ${unverified} package(s) could not be checked — the verifier itself failed.` +
+      `${LF}  This is NOT a statement that the packages are wrong, and NOT a pass. Fix the` +
+      `${LF}  check and re-run before believing anything about what the registry serves.`,
+  );
   process.exit(1);
 }
 console.log(`All packages published and VERIFIED from the registry — not from a success message.`);
