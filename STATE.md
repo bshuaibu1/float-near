@@ -11,14 +11,30 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
-- **THERE IS NO MAINNET VAULT RIGHT NOW — torn down 2026-11-13 to re-test as a new user.**
-  `test015-near.usefloat.near` is **deleted** (`UNKNOWN_ACCOUNT`). Reconciled against a
-  *settled* owner baseline: **+3.467730 NEAR** back to `test015.near` of the **3.468390**
-  quoted — the 0.000660 difference is gas. USDC unchanged at 8.857652 (the vault held 0).
-  Owner went 2.297912 → **5.765642 NEAR**. Teardown order held: the agent gas key was
-  **withdrawn (0.120000) before** the delete, so nothing was burned; the USDC storage deposit
-  (~0.001250) was unregistered and refunded; storage went 300,035 → 1,229 B. Nothing stranded.
-  - **ALL LOCAL FLOAT STATE WAS REMOVED** in the same pass, deliberately, so the next run is a
+- **THE MAINNET VAULT IS LIVE AGAIN — recreated by Bashir in the browser, 2026-11-14.**
+  `test015-near.usefloat.near`: owner `test015.near`, mainnet, not paused, 2 nodes, **registered
+  on USDC**. Root `root` 25/day · 10/tx, allowlist `["test015.near"]`; node 1 `agent` inherits
+  25/day · 10/tx. Agent gas key **0.12 NEAR**, `receiver_id` = the vault, `method_names`
+  `["request_payment"]` — verified at the protocol level, so it cannot withdraw, cannot call
+  `set_node_caps`, cannot reach owner functions. Owner holds **2.28 NEAR + 8.857652 USDC**.
+  - **TWO THINGS BLOCK A DEMO VIDEO.** (1) **The vault holds 0 USDC.** (2) **This machine does
+    not hold the live agent's secret** — key `ed25519:Aa8pyxNS49uJ…` was generated in the
+    browser, so `vault_pay` cannot sign at all, funded or not. `vault_roles` reports it
+    correctly: `usable: 0`, `key: "wallet-only (this machine does NOT hold the secret)"`.
+    **`STAGED-DEMO-SETUP.ps1`** (untracked, repo root) holds the two round-trip-validated
+    mainnet commands: bind a `demo` agent (5/day · 1/tx, key already generated locally at
+    `~/.float/agent-keys.json`, public half `ed25519:EJmg2Te2zLnbCZC4wGcV2LE4dkQfPD1ddiYqjSvRG1re`)
+    and send 2 USDC in. **Human-run.**
+  - **The `float` MCP server was restored to `~/.claude.json`** pointing at this vault with
+    `NEAR_VAULT_AGENT_KEYS` pinned ABSOLUTE. **Needs a client restart to appear.**
+  - **Pre-video checklist: 4 of 6 pass.** Tools list (27, incl. 14 `vault_plan_*`), reads
+    (`vault_config`/`vault_tree`/`vault_budget` all return real chain data), plans-don't-execute,
+    and the key restriction. Items 3 and 4 (settle + refuse) are blocked on the two above.
+  - *(Historic: the previous vault at this derived id was torn down 2026-11-13; **+3.467730
+    NEAR** of the **3.468390** quoted came back, the 0.000660 difference being gas, with the
+    agent gas key withdrawn BEFORE the delete so nothing burned; measured against a **settled**
+    owner baseline, storage 300,035 → 1,229 B, nothing stranded.)*
+  - **ALL LOCAL FLOAT STATE WAS REMOVED** during that teardown, deliberately, so the next run was a
     true cold start: both MCP servers (`float` = `@floatonnear/mcp`, `float-agent` =
     `@usefloat/mcp`, the Solana/Colosseum one), all three `.float/` directories (home,
     `near-vault`, `New project`), `~/.claude/skills/float`, and 8 npx cache entries across
@@ -109,13 +125,36 @@ state changes, and re-stamp the commit line above.
     untouched.
   - **423 tests, 40 gated checks.** All mutation-verified: disabling the substitution, re-planting
     the leak, or removing `say` turns the right test red.
-- **`mcp 0.10.3` IS BUILT, COMMITTED AND *NOT PUBLISHED*.** Carries the UX lock and the
-  node-vocabulary cleanup. Both `package.json` and the server's advertised version are bumped
-  (that string has drifted before; a smoke test guards the pair). **Blocked on a human:** the npm
-  token expires quickly and the account needs 2FA, so `npm publish` returns `EOTP` — or `E404`,
-  which is npm's *unauthorised* answer and reads misleadingly as "package not found".
-  Run `npm login` then `npm publish --access public` in `packages/mcp` (omit `--otp`; npm opens a
-  browser), then `node scripts/publish-and-verify.mjs --verify`.
+- **AGENT KEYS ARE NOW SECURE BY DEFAULT — `vault_add_role` writes NOTHING unless asked
+  (2026-11-14).** It used to generate a keypair on this machine **always**, writing a live
+  spending key to disk as a side effect of asking for a budget — no opt-in, no disclosure.
+  New `key_location`, default **`wallet`**: nothing is written and the refusal *is* the
+  instructions (keep the key yourself → hand over the public half → `vault_plan_bind_agent`,
+  or ask again with `local`). `local` generates here and **discloses it in the same breath as
+  the bound**: "created on THIS computer… can make those payments without asking you again…
+  cannot move money out, change any limit, or reach anything the owner controls."
+  - `vault_roles` now names WHERE the secret lives — `key: "local (this machine holds the
+    secret)"` vs `key: "wallet-only (this machine does NOT hold the secret)"`. It reported
+    `status` alone, so "usable" and "the secret is on this disk" were one label.
+  - `vault_pay` with no local key no longer throws a keyring stack trace: it says the machine
+    holds no key, that this is **usually on purpose**, and offers both paths. The env-var
+    detail moved under `technical` — the first version appended `(technical: …)` to the
+    sentence and put `NEAR_VAULT_AGENT_ID` in front of someone asking to pay a vendor, which
+    is exactly what SKILL.md's Never list forbids. Pinned by a test.
+  - **Mutation-verified:** disabling the wallet branch turns *"the DEFAULT writes no key"* and
+    *"the two paths differ ONLY by the parameter"* red. The differ-test exists because
+    otherwise both halves could pass for the wrong reason. **427 tests, 40 gated checks.**
+  - **DEFERRED:** `create-float --agent-key local` and the `add-local-agent` migration command.
+    They touch a separately published CLI and would add a second publish to the critical path
+    with ~14h to the deadline. `DECISIONS.md` records why.
+- **`mcp 0.10.4` IS BUILT, COMMITTED AND *NOT PUBLISHED*.** Carries the secure-key-default work.
+  **Published 0.10.3 and the repo's 0.10.3 had DIVERGED** — the same-version-different-bytes
+  defect corrected earlier in this very session, caught by checking the published tarball for
+  `keyLocation` (absent). Hence 0.10.4. Both `package.json` and the server's advertised version
+  are bumped; a smoke test guards the pair. **Blocked on a human:** 2FA. Run `npm login` then
+  `npm publish --access public` in `packages/mcp` (omit `--otp`; npm opens a browser), then
+  `node scripts/publish-and-verify.mjs --verify`. An `E404` there means *unauthorised*, not
+  *missing*.
 - **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
   Measured three times, including `--help`, and once on the real teardown — the vault was
   **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
