@@ -1,4 +1,4 @@
-<!-- STAMP commit=d78ca84 date=2026-11-14 -->
+<!-- STAMP commit=69152af date=2026-11-14 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -185,6 +185,25 @@ state changes, and re-stamp the commit line above.
     substring in the emitted JS even though the runtime output contains it. Grepping for it
     reports MISSING for a good build, identical to the feature being absent. Markers must be
     single identifiers, never sentences.
+- **NESTED AGENTS ARE NOW ONE APPROVAL — COMMITTED, *NOT RELEASED* (2026-11-14).** `add_role`
+  takes an optional **`parent`**. It is the only method that composes node + key + **funded gas
+  key** atomically, and it hardcoded root — so an agent under a department fell onto
+  `add_node` + `bind_virtual_agent`, **neither of which touches gas keys**, producing a key that
+  could authorise a payment and never submit one (`BOUND_BUT_NO_GAS_KEY`), repairable only via
+  `float-agent` from a terminal. Hit live: `digest` under `news` cost 2 approvals + a CLI step;
+  `marketing` under root cost 1. Routes through `insert_node`, which already owns parent-exists,
+  `MAX_DEPTH`, `MAX_CHILDREN` and strict allocation. Omitting the argument still means root, and a
+  root-level payload carries **no `parent` key at all** — byte-identical to previous releases.
+  Backward compatibility is tested **at the serde layer**, because a unit test calls the Rust fn
+  directly and can never see the generated wrapper (the `#[payable]` lesson). Mutation-verified.
+  **170 contract tests (+5), 441 MCP tests, 42 gated checks.**
+  - **⚠ THE BUNDLED WASM IS DELIBERATELY STALE.** Shipping means new bytes reach *every future
+    vault*, and the change is unexercised on any chain. It cannot help the existing vault (which
+    runs deployed code) or the demo. **Release AFTER submission**, and create a testnet vault and
+    nest on it first. `create-float`'s prepack already refuses to publish until someone rebuilds
+    on purpose: `cd contracts/vault && cargo near build non-reproducible-wasm --no-abi`, then
+    from `packages/create-float`, `BUNDLE_WASM_RERECORD=1 node scripts/bundle-wasm.mjs` — the
+    path is package-relative, not repo-root.
 - **BUDGET-TREE BARS FIXED AND DEPLOYED (2026-11-14).** The master "Used today" bar never moved.
   The numbers were right: the API rounds `dailyBudgetUsedPercent` to an integer, so a real
   **0.02 USDC against the 25 USDC master = 0.080%** arrived as `0`, and the card printed
@@ -1132,6 +1151,45 @@ so drift fails two suites.
    mainnet namespace (every vault is its sub-account), and it has exactly ONE full-access
    key. Losing that file loses the namespace permanently.
 10. ~~Inert Solana pages in the dashboard.~~ **DONE** — `app/auth`, `app/link` and `app/setup` are deleted, no `@solana`/wallet-adapter package remains, and every surviving mention is a COMMENT recording what was removed. Verified 2026-11-09.
+11. **NO USER BUT THE OPERATOR CAN EVER SEE A REFUSAL** (found 2026-11-14, the "tier 2" gap).
+    Three separate things have to be true for a blocked payment to render, and for anyone
+    other than the adapter's own configured vault the FIRST one is false by construction:
+    - **The multi-tenant emptying.** [`server.ts:359`](packages/float-adapter/src/server.ts)
+      does `isDefault ? cfg : { ...cfg, vault, blockedRing: [], chainBlocked: {} }`. A
+      visitor's vault gets an empty refusal set *before the handler runs*, so scanning more
+      would change nothing for them. The comment's reasoning is right (never attribute the
+      operator's refusals to a visitor) but the remedy is too blunt: the store is keyed by
+      vault AND carries a `vault` provenance field, so the fix is to **filter**, not to empty.
+    - **The scan is per-vault and does not scale.**
+      [`blocked-scan.ts:272`](packages/float-adapter/src/blocked-scan.ts) filters
+      `tx.receiver_id !== vault` — exact match, one vault per pass. But the expensive part is
+      the block/chunk walk, which is IDENTICAL no matter who you filter for, and every Float
+      vault is a sub-account of the factory. Make that a suffix predicate (`*.usefloat.near`)
+      and **one** follower covers every vault anyone ever creates at zero marginal RPC cost:
+      O(blocks) instead of O(vaults × blocks). This is the single highest-leverage line in
+      the feature.
+    - **`BlockedRecord` does not carry which vault it came from** (`requestId`, `nodeId`,
+      `reasonCode`, `agent`, `txHash`, `blockHeight`, `blockTimestampNs`), and
+      `BlockedStore.vault` is a SCALAR. Going factory-wide means reshaping the store from
+      one-vault to many-vault and updating the provenance checks — which exist precisely
+      because cross-vault contamination already happened here once (six refusals from
+      `v3.floatvault-12329.testnet` rendered on a one-node vault). That reshape is the bulk
+      of the work and the reason this was not attempted before the deadline.
+    - **Measured 2026-11-14 on the live mainnet vault**, via the hosted API
+      (`?owner=test015.near`): `blockedCoverage: null`, note `scanned: false`. The vault has
+      never had a refusal scan run against it, so **every refusal ever made on it is
+      invisible** — and the dashboard says so only in the muted coverage note. The reason
+      TEXT is not missing: `REASONS` ([`map.ts:385`](packages/float-adapter/src/map.ts))
+      covers every hot-path code and both the row and the detail modal render it. The missing
+      thing is the ROW.
+    - **Tier 3, for later and worth it:** `KNOWN-TRADEOFFS.md` §2 rejects storing refusals
+      on-chain because an agent could inflate the vault's storage bill by spamming rejects.
+      That objection is about **unbounded** growth. A fixed-size circular buffer of ~32
+      entries is constant storage (~3 KB, ~0.03 NEAR of stake) and an agent spamming rejects
+      only overwrites its own entries — the griefing vector closes by construction. Then
+      `list_blocked` is a plain view call: no scanner, no coverage caveat, no "UNKNOWN rather
+      than absent" banner, correct for every vault the instant it is created. Contract change
+      + republish, so it was never a same-day option.
 
 ## Next 3 steps
 
