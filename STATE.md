@@ -1,4 +1,4 @@
-<!-- STAMP commit=69152af date=2026-11-14 -->
+<!-- STAMP commit=5bdfe1d date=2026-11-14 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
