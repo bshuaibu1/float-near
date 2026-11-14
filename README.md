@@ -5,8 +5,6 @@
 ### A spending budget an AI agent cannot talk its way out of
 
 **Give an agent money without giving it your wallet.**
-A NEAR smart contract holds the funds and enforces the limits — so the agent's
-restrictions are the protocol's, not a prompt it might argue with.
 
 [![mainnet](https://img.shields.io/badge/mainnet-live-success)](https://usefloat.xyz)
 [![npm](https://img.shields.io/npm/v/%40floatonnear%2Fmcp?label=%40floatonnear%2Fmcp)](https://www.npmjs.com/package/@floatonnear/mcp)
@@ -16,19 +14,28 @@ restrictions are the protocol's, not a prompt it might argue with.
 
 [**usefloat.xyz**](https://usefloat.xyz) · factory [`usefloat.near`](https://nearblocks.io/address/usefloat.near) · `npx -y @floatonnear/mcp`
 
+**Mainnet live** · **actively developed** · [limitations stated below](#known-limitations), not buried
+
 </div>
 
 ---
 
 ## The problem
 
-Every "AI agent wallet" hands the agent a key and a config file, then asks you to
-trust that the agent respects it. The agent holds the key. The limit is a
-suggestion.
+Agent frameworks hand the agent a wallet key and a budget in a config file, then
+hope it behaves. Both halves are weak. **A budget the agent can read is a budget
+it can rationalise around** — it is text in a context window, subject to every
+instruction that arrives after it. And **a key the agent holds is a key it can
+spend**, on anything, to anyone, however the limit was worded.
 
-Float inverts that. The agent gets a NEAR **function-call key scoped to one
-method on one contract**. The money lives in the contract. The limits live in the
-contract. The agent cannot reach either.
+So the limit is a suggestion, and the only thing enforcing it is the model's
+good behaviour on a bad day.
+
+Float moves both out of reach. The agent gets a NEAR **function-call key scoped
+to one method on one contract**. The money lives in the contract. The limits live
+in the contract. The agent cannot reach either — and no prompt, jailbreak or
+confused-deputy trick changes that, because the refusal happens in the protocol
+before any contract code runs.
 
 ```mermaid
 flowchart LR
@@ -192,8 +199,8 @@ Browser wallets **ignore `signerId`** and silently sign as the connected account
 **vault** as signer can never be a browser action — which is why teardown is a CLI
 job, permanently.
 
-| | Create | Pay | Change policy | Sign *as the vault* |
-|---|---|---|---|---|
+| Door | Create | Pay | Change policy | Sign *as the vault* |
+|---|:---:|:---:|:---:|:---:|
 | **Browser** `usefloat.xyz` | ✅ | — | ✅ approve | ✗ *ever* |
 | **MCP** (the agent) | ✅ link | ✅ | ✗ propose only | ✗ |
 | **CLI** (key on disk) | ✅ | — | ✅ | ✅ |
@@ -202,7 +209,9 @@ job, permanently.
 
 ## Try it
 
-**1 — Install the MCP server.** 27 tools; reads and planning need no key at all.
+**1 — Install the MCP server.** Copy this into your MCP client's config and
+restart it. Leave `NEAR_VAULT_CONTRACT` empty — you get the value in step 2.
+27 tools; reads and planning need no key at all.
 
 ```json
 {
@@ -223,16 +232,25 @@ job, permanently.
 }
 ```
 
-> **Use an absolute path for `NEAR_VAULT_AGENT_KEYS`.** A relative one resolves
-> against whatever directory your client was launched from, so one config becomes
-> a different keyring per project.
->
-> **The network must match your vault.** A mainnet vault read by a testnet client
-> does not error — it reports your vault as *missing*, which reads as a broken
-> product. Don't set `NEAR_VAULT_RPC_URL` unless you mean it.
+<details>
+<summary><b>Three settings that bite — worth 30 seconds before you start</b></summary>
 
-`NEAR_VAULT_CONTRACT` is unknown until step 2 — leave it empty. `vault_create`
-needs no vault and no key.
+<br/>
+
+**Use an absolute path for `NEAR_VAULT_AGENT_KEYS`.** A relative one resolves
+against whatever directory your client was launched from, so one config silently
+becomes a different keyring per project — and an agent you created in one
+folder is invisible from another.
+
+**The network must match your vault.** A mainnet vault read by a testnet client
+does not error. It reports your vault as *missing*, which reads as a broken
+product rather than a wrong setting.
+
+**Don't set `NEAR_VAULT_RPC_URL` unless you mean it.** It overrides the endpoint
+for the network you configured, so a leftover testnet URL sends mainnet
+questions to testnet and the answers come back *wrong* rather than failing.
+
+</details>
 
 **2 — Create a vault.** Ask the agent — `vault_create` builds the link for you —
 or open [usefloat.xyz](https://usefloat.xyz) directly.
@@ -265,6 +283,36 @@ storage deposit. The dry run prints exactly what comes back, first:
 ```bash
 npx -p @floatonnear/create-float float-exit --owner <you> --vault <vault> --dry-run
 ```
+
+---
+
+## Not using MCP? Copy the guide.
+
+Everything the agent is told lives in one file — refusal codes and what to do
+about each, the teardown ORDER (which decides whether an agent's gas is
+recovered or **burned**), which flows need a human signature, and how to speak
+to a person rather than narrate a contract.
+
+**Paste this into your agent, or save it as a skill:**
+
+```
+https://raw.githubusercontent.com/bshuaibu1/float-near/main/SKILL.md
+```
+
+| Your setup | Where it goes |
+|---|---|
+| **MCP client** | nothing to do — it is served as the resource `float://skill` |
+| **Claude Code / skills** | save to `.claude/skills/float/SKILL.md` |
+| **Any other agent** | paste the file into the system prompt, or fetch the raw URL above |
+
+> **Use the raw GitHub URL, not a summariser.** The file is ~43 KB. If you reach
+> it through a tool that summarises web pages you are reading a lossy précis, and
+> the exact commands may be missing or altered — the file says so itself, in its
+> own header.
+
+A copy is also served at `usefloat.xyz/skill.md` for agents that prefer a plain
+origin. **It can lag behind a release**, because it refreshes on deploy rather
+than on push; the raw GitHub link above is always current.
 
 ---
 
@@ -314,14 +362,18 @@ We would rather you read these here than discover them.
 
 ## Docs
 
-| | |
-|---|---|
-| [`STATE.md`](STATE.md) | what is true right now — **wins over any doc in `docs/`** |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | the parts, the trust boundaries, what is missing |
-| [`FLOAT.md`](FLOAT.md) | every capability and the lifecycle end to end |
-| [`DECISIONS.md`](DECISIONS.md) | settled calls, each with **the rejected alternative** |
-| [`SKILL.md`](SKILL.md) | what the agent itself is told, including how to speak |
-| [`DEMO.md`](DEMO.md) | 90-second demo script, exact commands |
+Read them in this order. **If any two disagree, `STATE.md` wins** — it is the
+only one re-stamped against a commit, and the build fails when that stamp goes
+stale.
+
+| File | What it is for | Read it when |
+|---|---|---|
+| [`STATE.md`](STATE.md) | What is true *right now*: live addresses, balances, what is broken. **Authoritative over every other doc.** | Always first |
+| [`DECISIONS.md`](DECISIONS.md) | Settled calls, each naming **the rejected alternative** and why | Before proposing a change — it may already be a rejected row |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The parts, the trust boundaries, where the vault's code comes from | You want to know how it fits together |
+| [`FLOAT.md`](FLOAT.md) | Every capability and the full lifecycle, create to teardown | You want the exhaustive list |
+| [`SKILL.md`](SKILL.md) | What the agent itself is told — refusal codes, teardown order, how to speak | You are wiring up an agent |
+| [`DEMO.md`](DEMO.md) | 90-second demo script with exact commands | You want to see it work |
 
 ## Development
 
