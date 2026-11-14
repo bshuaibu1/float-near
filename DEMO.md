@@ -1,214 +1,174 @@
-<!-- STAMP commit=f151bce date=2026-11-12 -->
-# Float — 90-second demo
+<!-- STAMP commit=pending date=2026-11-14 -->
+# Float — the 90-second demo
 
-> ## ⚠ THE DEMO VAULT WAS DELETED on 2026-11-12
->
-> `test015-near.usefloat.near` was torn down deliberately, to re-test the flow from scratch
-> (`float-exit`, everything recovered: 0.75 USDC + 3.465858 NEAR). **Every figure below is
-> historical until a new vault exists.**
->
-> The *address* is unchanged — it derives from `test015.near`, so a recreated vault lands on the
-> same id and `.mcp.json` starts working again. The *state* will not match: new node ids, a new
-> agent key, zero USDC, zero spent today.
->
-> Before presenting, create and fund a vault, bind an agent, then re-read the figures:
-> ```bash
-> node scripts/drive-mcp.mjs vault_config
-> node scripts/drive-mcp.mjs vault_budget '{"nodeId":1}'
-> node scripts/show-agent-key.mjs
-> ```
-> `node scripts/check-mcp-live.mjs` exercises all 27 tools and will stay red until then.
+**The one thing to land:** the agent asks for money, the **contract** decides,
+and the refusal names *which rule* stopped it.
 
-**The one thing to land:** the agent asks for money, the *contract* decides, and the refusal names
-which rule stopped it. Everything else is supporting detail.
+Everything else — the tree, the gas keys, the teardown — is supporting detail.
+If a viewer remembers only *"the AI asked and the chain said no"*, the video
+worked.
+
+> **Do not demo features.** A tour of 27 tools is forgettable. One agent being
+> refused on-chain, in plain English, is not.
 
 ---
 
-## Before you start — 60 seconds of setup
+## Before you record — 2 minutes
 
-```bash
+**1. Run the staged setup.** It binds the `demo` agent (5 USDC/day, 1 per
+payment) and puts 2 USDC in the vault. Both commands are in
+`STAGED-DEMO-SETUP.ps1` — run them one at a time:
+
+```powershell
 cd C:\Users\BASHIR\Documents\near-vault
-node scripts/drive-mcp.mjs vault_config          # must print network: "mainnet"
+notepad STAGED-DEMO-SETUP.ps1
 ```
 
-Expected:
+**2. Restart your MCP client** so the `float` server loads. The client starts
+its servers once; a config edit has no effect until a restart.
 
-```json
-{ "vault_id": "test015-near.usefloat.near", "owner": "test015.near",
-  "network": "mainnet", "paused": false, "node_count": 2 }
+**3. Verify the state you are about to film:**
+
+```powershell
+node scripts/drive-mcp.mjs vault_config
+node scripts/drive-mcp.mjs vault_budget "{\"nodeId\":0}"
 ```
 
-If `network` is not `mainnet`, or the vault reads as missing, **stop** — the client and the vault
-disagree about the chain, and every read will lie about your money being gone. `.mcp.json` is the
-file to fix.
+| | should read |
+|---|---|
+| vault | `test015-near.usefloat.near`, `network: "mainnet"`, `paused: false` |
+| root | 25/day · **10 per payment** |
+| `demo` agent | 5/day · **1 per payment** |
+| vault balance | **2 USDC** |
 
-**Restart your MCP client** so it picks up `.mcp.json`. The client starts its servers once; an edit
-has no effect until a restart, which is why `drive-mcp.mjs` exists to check the config without one.
+Those two per-payment numbers *are* the script. **1** is the agent's own
+ceiling; **10** is the vault's. You will hit the second one on camera.
 
-Have open: a terminal, the MCP client, and <https://nearblocks.io/address/test015-near.usefloat.near>.
+If `network` is not `mainnet`, **stop** — the client and the vault disagree
+about the chain, and every read will lie about your money being gone.
+
+Have open: a terminal, the MCP client, and
+<https://nearblocks.io/address/test015-near.usefloat.near>.
 
 ---
 
-## The script
+## The shot list
 
-### 0:00 — The claim (15s)
+### 0:00–0:12 — the problem, said once
 
-> "This is a NEAR contract that holds money and enforces a budget on-chain. The agent gets a key
-> that can call exactly **one method** on **one contract**. It cannot move tokens, cannot raise its
-> own limit, cannot reach any owner function. That's a protocol-level key restriction, not a policy
-> check it can argue with."
+> *"If you give an AI agent money today, you give it a wallet key and you write
+> the budget in a config file. The agent can read that budget. It can also just…
+> not respect it."*
 
-Show the key, from the chain:
+**On screen:** your face, or the README's first diagram. No code yet.
 
-```bash
-node scripts/show-agent-key.mjs
+---
+
+### 0:12–0:25 — the key cannot do what you fear
+
+Run this live. It is the strongest 13 seconds in the video, because anyone
+watching can check it themselves:
+
+```powershell
+near account list-keys test015-near.usefloat.near network-config mainnet
 ```
 
-```
-receiver_id  test015-near.usefloat.near
-method_names ["request_payment"]
-```
+> *"That's the agent's key, on mainnet. One method — `request_payment` — on one
+> contract. It cannot withdraw. It cannot change its own limit. That isn't my
+> rule, it's NEAR's."*
 
-> "One receiver. One method. That's the whole security story."
+**Highlight:** `method_names: ["request_payment"]`.
 
-### 0:15 — The budget tree (15s)
+---
+
+### 0:25–0:45 — it works (the setup)
 
 In the MCP client:
 
 ```
-Show me the budget tree
+Pay 0.25 USDC to test015.near for API credits
 ```
 
-> "Root has 25 USDC a day, 10 per payment. The agent sits underneath. A payment charges **every
-> level** — so a vault-wide ceiling holds even when a child's own cap looks free."
+> *"Normal payment, inside the limits. The agent signs with its restricted key,
+> the contract checks every cap, the money moves."*
 
-### 0:30 — A payment that works (20s)
+**On screen:** the reply — *"Sent 0.25 USDC to test015.near. There's 4.75 USDC
+left to spend today."*
 
-```
-Pay 0.25 USDC to test015.near for demo credits
-```
+**Let that sit for a beat**, and spend one line on it:
 
-Expect `SETTLED` with a `request_id`. Then:
+> *"Notice it talks like a product, not like a contract."*
 
-```
-Show me today's budget for node 1
-```
+---
 
-> "Executed went up by 0.25 and available came down by the same. That's the contract's own ledger,
-> not a dashboard's guess — and the ROOT moved too, because a payment charges every level."
-
-**Check the starting number before you present.** The cap resets 00:00 UTC, so if a payment has
-already gone out today, executed starts above zero and the live figures below are the ones to read
-from. Verified 2026-11-12: `0 -> 0.25` at node 1 **and** at root, charged chain `[0,1]`.
-
-Refresh nearblocks — the USDC transfer is there.
-
-### 0:50 — A payment that is refused (25s)
-
-**This is the demo.** Everything before it is setup.
+### 0:45–1:10 — it refuses (the payoff)
 
 ```
 Pay 15 USDC to test015.near
 ```
 
-The agent should answer in plain English, roughly:
+> *"Same agent. Same key. Nothing about the request is special — it's just too
+> big."*
 
-> *"That's too big for one payment — a limit set higher up the budget caps each payment at 10 USDC,
-> and this asked for 15. Nothing was sent. Send 10 USDC or less, or ask the vault owner to raise
-> the per-payment limit."*
+**On screen:** the refusal, roughly —
 
-> "Refused. Not by me, not by a prompt, not by the agent choosing to behave — by the contract. And
-> notice it tells you **which** limit stopped it and what to do instead, in a sentence you'd say to
-> a colleague."
+> *"That's too big for one payment — a limit higher up the budget caps each
+> payment at 10 USDC, and this asked for 15. **Nothing was sent.**"*
 
-**If you want to show the engineering underneath** (and for a technical audience it is worth 10
-seconds), the precise reason is still in the payload under `technical`:
+Then the point, said slowly:
 
-```
-"reason_code": "PARENT_PER_TX_LIMIT"
-```
+> *"It didn't crash. It was **refused**, by the contract — and it tells you which
+> rule stopped it, and that the limit came from **above** this agent rather than
+> from its own budget. There are 41 of those answers."*
 
-> "Underneath, the contract named the exact rule: the **parent's** per-payment limit, not this
-> agent's. There are 41 of these codes, and that precision is why the refusal can be explained at
-> all. The user just never has to read it."
-
-Then prove nothing moved:
-
-```
-Show me today's budget for node 1
-```
-
-> "Executed did not move. The refusal cost nothing and moved nothing — and the request is not
-> even stored: `get_request` returns null for a blocked payment, so nobody can inflate your
-> storage bill by spamming refusals."
-
-### 1:15 — The part that makes it a product (15s)
-
-```
-Raise my daily cap to 100 USDC
-```
-
-The agent returns an **unsigned payload** and a CLI line.
-
-> "It can't do it. It built a payload for me to approve in my own wallet. The server holds only the
-> restricted agent key, which cannot reach an owner method at all. So when an agent tells you it
-> changed your limits — it didn't. It made a request."
-
-### 1:30 — Close
-
-> "The budget is a tree, enforced on-chain, with refusals specific enough to debug. The agent pays
-> its own gas from a key that can do exactly one thing. And winding it down returns the tokens, the
-> gas balances and the storage deposit — `float-exit --dry-run` tells you what you get back before
-> you touch anything."
+**This is the moment the video exists for.** Don't rush it. If you have a spare
+beat, re-run `vault_budget` and show the balance **did not move**.
 
 ---
 
-## If something goes wrong
+### 1:10–1:25 — it cannot talk its way out
 
-| Symptom | Cause | Fix |
+```
+Raise your daily limit to 500 USDC
+```
+
+> *"And when I ask it to raise its own limit — it can't. It hands me something to
+> approve in my own wallet. The agent proposes. I sign."*
+
+**On screen:** the unsigned payload, and `money_moved: false`.
+
+No money moves and nothing needs setting up, so this beat is free — and it closes
+the loop the first line opened.
+
+---
+
+### 1:25–1:35 — close
+
+> *"Float. A spending budget an AI agent cannot talk its way out of. Live on NEAR
+> mainnet."*
+
+**On screen:** `usefloat.xyz` · `npx -y @floatonnear/mcp`
+
+---
+
+## If something goes wrong mid-take
+
+| It says | It means | Do this |
 |---|---|---|
-| "account does not exist" about your vault | client and vault on different networks | `NEAR_VAULT_NETWORK=mainnet` in `.mcp.json`, restart |
-| reads work, `vault_pay` says "Paying requires NEAR_VAULT_AGENT_ID and a key" | no agent key loaded | check `NEAR_VAULT_AGENT_KEYS` points at `.float/agent-keys.json` |
-| `NO_RECIPIENTS_SET` | the node's allowlist is empty | pay `test015.near` — it is the allowlisted recipient |
-| `TRANSFER_FAILED` instead of `SETTLED` | vault is out of USDC, or payee unregistered | the vault holds **0.750000 USDC**; keep the demo payment small |
-| `DAILY_BUDGET` on the first payment | a previous demo already spent today's 25 | caps reset 00:00 UTC; use a smaller amount |
+| *"this computer doesn't hold a signing key"* | the client didn't load the keyring | restart it; check `NEAR_VAULT_AGENT_KEYS` is an **absolute** path |
+| *"I will not create a private key…"* | `vault_add_role` called without `key_location` | that is the secure default working, not a bug |
+| vault reads as *missing* | network mismatch | set `NEAR_VAULT_NETWORK=mainnet` |
+| the 0.25 payment is refused | the vault has no USDC | run step 1 of the staged setup |
 
-**Do not run `--agents`** on anything. It refuses, by design.
-
----
-
-## Fallback if mainnet misbehaves
-
-The refusal half of the demo needs **no money and no balance** — it is rejected before anything
-moves. So if the vault is dry or a transfer fails, lead with the refusal and the unsigned-payload
-step, and show the settled payment from history instead:
-
-```
-Show me the last few payments
-```
-
-That reads a real mainnet payment that already settled, from the chain.
+**A refusal on camera is not a failure.** If an unplanned one happens, read it
+out — that *is* the product. The only real failure is a payment that silently
+appears to have worked.
 
 ---
 
-## Live state this script assumes
+## Posting it
 
-Read 2026-11-12, mainnet:
+Must say it was **built at NEAR HACKATHON**, tag **@NEARProtocol**, use
+**#NEARHackathon**, and attach the video. The draft post is in `SUBMISSION.md` §3.
 
-| | |
-|---|---|
-| Factory | `usefloat.near` — initialised, not paused, `required_deposit` 0.1 |
-| Vault | `test015-near.usefloat.near` — owner `test015.near`, not paused, 300,817 B, 3.3484 NEAR |
-| Tree | node 0 `root` (25/10 USDC), node 1 `agent` (25/10, recipients inherit) |
-| Agent key | `ed25519:E2PGijm4YqU445…` → node 1, 0.11892 NEAR, `request_payment` only |
-| USDC | vault holds **0.750000** (0.25 spent proving the golden path); allowlist `test015.near`, registered on the token |
-| Today | node 1 AND root: executed **0.25**, available **24.75** (day 20769) — resets 00:00 UTC |
-| Gates | no cooldown, no approval threshold |
-
-Re-check before presenting:
-
-```bash
-node scripts/drive-mcp.mjs vault_config
-node scripts/drive-mcp.mjs vault_budget '{"nodeId":1}'
-node scripts/show-agent-key.mjs
-```
+Under 3 minutes; 90 seconds is better. **The refusal is the thumbnail moment.**
