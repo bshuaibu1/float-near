@@ -21,7 +21,7 @@
 | Team lead | *(you)* |
 | Email | *(you)* |
 | Team size | *(you — solo?)* |
-| **Track** | **Agent Economy** |
+| **Tracks** | `agents`, `swarms`, `security`, `business` — **`security` is the closest fit**: its description is "Give AI money without giving it the keys to everything" and its hint is FUNCTION CALL KEYS |
 | NEAR wallet address | `test015.near` |
 | Repository link | `https://github.com/bshuaibu1/float-near` — **MUST BE PUBLIC FIRST** |
 | Demo post link | *(the X post — draft in §3)* |
