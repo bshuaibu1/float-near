@@ -216,6 +216,17 @@ const KEYRING = resolveKeyringPath({
   vault: process.env.NEAR_VAULT_CONTRACT,
 });
 
+/**
+ * A newline, built rather than written literally.
+ *
+ * This file's multi-line user-facing strings use `String.fromCharCode(10)`
+ * throughout, because an escaped "
+" has been mangled more than once by the
+ * tooling that edits this file. One named constant is the same trick, read
+ * once.
+ */
+const LF = String.fromCharCode(10);
+
 const PLACEHOLDER_PUBLIC_KEY = `ed25519:${"1".repeat(44)}`;
 
 const cfg = {
@@ -1317,9 +1328,54 @@ server.tool(
       .string()
       .optional()
       .describe("NEAR for the agent's gas key. Default 0.12 (~160 payments measured). Minimum 0.06, because NEAR reserves prepaid gas up front."),
+    /**
+     * WHERE THE AGENT'S PRIVATE KEY IS BORN. Secure by default.
+     *
+     * This tool used to generate a keypair on this machine ALWAYS, writing a
+     * live secret to disk as a side effect of asking for a budget. Nobody
+     * opted in, and nothing said it had happened. A spending key appearing on
+     * a developer's laptop is a decision, not an implementation detail.
+     *
+     * "wallet" (the default) keeps the secret off this machine entirely: the
+     * human generates it in their own wallet and only the PUBLIC half is ever
+     * bound. "local" is the convenient path and must be asked for by name.
+     */
+    keyLocation: z
+      .enum(["wallet", "local"])
+      .default("wallet")
+      .describe(
+        "where the agent's private key is created. \"wallet\" (default, most secure) — you " +
+          "generate it yourself and this machine never sees the secret. \"local\" — generate " +
+          "it on THIS machine so this client can sign payments itself. Only pass \"local\" " +
+          "if the user has agreed to that.",
+      ),
   },
-  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear }) => {
+  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear, keyLocation }) => {
     const vault = requireVault();
+
+    /**
+     * THE WALLET PATH REFUSES, AND THE REFUSAL IS THE INSTRUCTIONS.
+     *
+     * There is nothing to build: binding a key requires the public half, and
+     * on this path the keypair does not exist yet. So rather than inventing
+     * one — which is exactly the silent behaviour being removed — it names the
+     * two ways forward and stops. Nothing is written.
+     */
+    if (keyLocation === "wallet") {
+      return text(
+        `I will not create a private key on this machine unless you ask me to.${LF}${LF}` +
+          `Two ways to give the "${role}" agent its key:${LF}${LF}` +
+          `  1. KEEP THE KEY YOURSELF (most secure). Generate a keypair in your wallet or ` +
+          `with \`near generate-key\`, then give me the PUBLIC half and I will build the ` +
+          `payload that binds it — the secret never touches this computer. The agent then ` +
+          `signs from wherever that key lives.${LF}${LF}` +
+          `  2. LET THIS MACHINE HOLD IT (convenient). I generate a restricted key here and ` +
+          `save it, so I can make payments for you directly, up to the limits you set. The ` +
+          `key can only request payments — it cannot withdraw, cannot raise its own limits ` +
+          `and cannot reach owner functions. Ask again with key_location "local".${LF}${LF}` +
+          `Nothing has been created or changed.`,
+      );
+    }
 
     /**
      * A DUPLICATE ROLE IS REFUSED — BUT "IN THE KEYRING" IS NOT "ALIVE".
@@ -1473,10 +1529,23 @@ server.tool(
       viewFunction(rpc, t, "ft_metadata", {}),
     ).catch(() => null);
 
+    /**
+     * THE LOCAL-KEY DISCLOSURE LEADS, because it is the part the user cannot
+     * see and cannot undo by deleting a file: once the binding is approved,
+     * this machine can move money up to those limits.
+     *
+     * It is paired with what the key CANNOT do, in the same breath. "A key is
+     * on your laptop" alone is alarming without the bound; the bound alone is
+     * reassurance without the disclosure. Both or neither.
+     */
     const roleSay =
       `I'll set up a ${role} budget: ${dailyCap} ${displaySymbol(roleMeta)} a day, and no ` +
       `single payment over ${perTxCap}. You approve it once in your wallet, and after that ` +
-      `I can pay within those limits — I can't raise them myself. Nothing has changed yet.`;
+      `I can pay within those limits — I can't raise them myself. Nothing has changed yet.` +
+      `${LF}${LF}Heads up: the agent's key was created on THIS computer, so once you approve, ` +
+      `this machine can make those payments without asking you again. It can only request ` +
+      `payments inside those limits — it cannot move money out, change any limit, or reach ` +
+      `anything the owner controls.`;
 
     return json({
       say: roleSay,
@@ -1613,6 +1682,13 @@ server.tool(
         return {
           role: r.role,
           agentId: r.agentId,
+          /**
+           * WHERE THE SECRET LIVES, said plainly. This listed `status` only,
+           * so "usable" and "the secret is on this disk" were the same fact
+           * wearing one label — and the second is the one with a security
+           * consequence worth stating every time it is true.
+           */
+          key: "local (this machine holds the secret)",
           nodeId: node,
           // The LOCAL nodeId is reported only when it disagrees, because a
           // disagreement means the file is stale and that is worth saying.
@@ -1637,6 +1713,7 @@ server.tool(
       .filter((k) => !heldKeys.has(k.publicKey))
       .map((k) => ({
         publicKey: k.publicKey,
+        key: "wallet-only (this machine does NOT hold the secret)",
         status: "ON_CHAIN_BUT_NO_LOCAL_KEY",
         detail:
           "The vault has this agent installed, but this client does not hold its private key, " +
@@ -1915,7 +1992,48 @@ server.tool(
     // spending node from the signer, not from anything in the request body,
     // so picking the wrong key does not fail — it succeeds against someone
     // else's budget and surfaces later as a confusing balance.
-    const creds = role === undefined ? requireAgentKey(cfg) : selectRole(cfg, role);
+    /**
+     * NO LOCAL KEY IS A CONFIGURATION STATE, NOT AN EXCEPTION.
+     *
+     * Both `requireAgentKey` and `selectRole` throw, and the raw message is
+     * about keyring files and role indexes — which tells someone who asked to
+     * pay a vendor nothing they can act on. Worse, the commonest cause is now
+     * a DELIBERATE one: the vault's agent key was generated in a wallet, so
+     * this machine was never meant to hold it. That is the secure default
+     * working, not a fault, and the answer is a choice between two paths
+     * rather than a stack trace.
+     *
+     * Caught here rather than widened inside `roles.ts`: the thrown errors are
+     * right for a caller that can handle them, and this is the one caller that
+     * has to speak to a person.
+     */
+    let creds;
+    try {
+      creds = role === undefined ? requireAgentKey(cfg) : selectRole(cfg, role);
+    } catch (e) {
+      /**
+       * SAME SHAPE AS EVERY OTHER vault_pay OUTCOME, and the env-var detail
+       * goes UNDER `technical`.
+       *
+       * The first version appended "(technical: ...)" to the sentence, which
+       * put NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY_FILE in front of a
+       * person who had asked to pay someone — the exact thing SKILL.md's
+       * Never list forbids. The underlying message is good and belongs to the
+       * operator debugging a config, not to the user.
+       */
+      return json({
+        say:
+          `I can't make that payment from here: this computer doesn't hold a signing key for ` +
+          `this vault. That is usually on purpose — if the agent's key was created in your ` +
+          `wallet, the secret never came to this machine, which is the safer setup. ` +
+          `Nothing was sent.`,
+        next_step:
+          `Either sign it yourself from wherever that key lives, or let me create a ` +
+          `restricted agent key on this machine — that takes one approval in your wallet.`,
+        money_moved: false,
+        technical: { error: String((e as Error).message) },
+      });
+    }
     const id = requestId ?? newRequestId();
     const vault = requireVault();
 

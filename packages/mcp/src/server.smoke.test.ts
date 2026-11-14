@@ -974,7 +974,7 @@ describe("a vault_add_role that fails validation writes nothing", () => {
     // exactly that at first and passed for the wrong reason.
     const out = await callTool(
       "vault_add_role",
-      { role: "travel", dailyCap: "10", perTxCap: "2" },
+      { role: "travel", dailyCap: "10", perTxCap: "2", keyLocation: "local" },
       {
         NEAR_VAULT_CONTRACT: "vault.testnet",
         NEAR_VAULT_NETWORK: "testnet",
@@ -1003,7 +1003,7 @@ describe("a vault_add_role that fails validation writes nothing", () => {
 
     const out = await callTool(
       "vault_add_role",
-      { role: "travel", dailyCap: "10", perTxCap: "2" },
+      { role: "travel", dailyCap: "10", perTxCap: "2", keyLocation: "local" },
       {
         NEAR_VAULT_CONTRACT: "vault.testnet",
         NEAR_VAULT_NETWORK: "testnet",
@@ -1031,7 +1031,7 @@ describe("a vault_add_role that fails validation writes nothing", () => {
 
     await callTool(
       "vault_add_role",
-      { role: "research", dailyCap: "10", perTxCap: "2" },
+      { role: "research", dailyCap: "10", perTxCap: "2", keyLocation: "local" },
       {
         NEAR_VAULT_CONTRACT: "vault.testnet",
         NEAR_VAULT_NETWORK: "testnet",
@@ -1158,7 +1158,7 @@ describe("user-facing tools return the plain-English UX fields", () => {
     const dir = mkdtempSync(join(tmpdir(), "float-ux-ring-"));
     const out = await callTool(
       "vault_add_role",
-      { role: "news", dailyCap: "1", perTxCap: "0.10" },
+      { role: "news", dailyCap: "1", perTxCap: "0.10", keyLocation: "local" },
       { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "agent-keys.json") },
     );
     const r = JSON.parse(out) as Record<string, unknown>;
@@ -1202,4 +1202,134 @@ describe("user-facing tools return the plain-English UX fields", () => {
     // And it must forbid showing the code.
     expect(instructions).toMatch(/NEVER SHOW A REASON CODE|reason code/i);
   });
+});
+
+/**
+ * SECURE BY DEFAULT: a private key is never created without being asked for.
+ *
+ * `vault_add_role` used to generate a keypair and write it to disk ALWAYS, as
+ * a side effect of asking for a budget. Nobody opted in and nothing said it
+ * had happened — a spending key appearing on a developer's laptop is a
+ * decision, not an implementation detail.
+ *
+ * These drive the real tools over stdio because the property is about what
+ * lands on DISK, which no unit test of the formatter can see.
+ */
+describe("agent keys are local only when explicitly asked for", () => {
+  const BASE = {
+    NEAR_VAULT_CONTRACT: "vault.testnet",
+    NEAR_VAULT_NETWORK: "testnet",
+    NEAR_VAULT_TOKEN: "usdc.testnet",
+  };
+
+  it("the DEFAULT writes no key, and explains both paths", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-kl-default-"));
+    const ring = join(dir, "agent-keys.json");
+
+    const out = await callTool(
+      "vault_add_role",
+      { role: "news", dailyCap: "1", perTxCap: "0.10" },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: ring },
+    );
+
+    // THE POINT: nothing on disk.
+    expect(existsSync(ring), "the default must not write a private key").toBe(false);
+
+    // And the refusal has to be the instructions, not a complaint.
+    expect(out).toMatch(/will not create a private key/i);
+    expect(out).toMatch(/KEEP THE KEY YOURSELF/);
+    expect(out).toMatch(/LET THIS MACHINE HOLD IT/);
+    expect(out).toMatch(/key_location/);
+    expect(out).toMatch(/local/);
+    expect(out).toMatch(/Nothing has been created or changed/i);
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+
+  it('key_location "local" writes the key AND discloses what that means', async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-kl-local-"));
+    const ring = join(dir, "agent-keys.json");
+
+    const out = await callTool(
+      "vault_add_role",
+      { role: "news", dailyCap: "1", perTxCap: "0.10", keyLocation: "local" },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: ring },
+    );
+    const r = JSON.parse(out) as Record<string, unknown>;
+    const say = r.say as string;
+
+    expect(existsSync(ring), "the opt-in path must write the key").toBe(true);
+
+    // The disclosure, and the bound, in the same breath.
+    expect(say).toMatch(/created on THIS computer/i);
+    expect(say).toMatch(/without asking you again/i);
+    expect(say).toMatch(/cannot move money out/i);
+    expect(say).toMatch(/cannot/i);
+    expect(r.money_moved).toBe(false);
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+
+  /**
+   * THE CONTROL. If the default also wrote a key, the first test would pass
+   * for the wrong reason; if neither wrote one, the second would. They have to
+   * differ, and the only difference is the parameter.
+   */
+  it("the two paths differ ONLY by the parameter", async () => {
+    const a = mkdtempSync(join(tmpdir(), "float-kl-a-"));
+    const b = mkdtempSync(join(tmpdir(), "float-kl-b-"));
+    const args = { role: "news", dailyCap: "1", perTxCap: "0.10" };
+
+    await callTool("vault_add_role", args, {
+      ...BASE,
+      NEAR_VAULT_AGENT_KEYS: join(a, "agent-keys.json"),
+    });
+    await callTool(
+      "vault_add_role",
+      { ...args, keyLocation: "local" },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: join(b, "agent-keys.json") },
+    );
+
+    expect(existsSync(join(a, "agent-keys.json")), "default wrote a key").toBe(false);
+    expect(existsSync(join(b, "agent-keys.json")), "opt-in wrote no key").toBe(true);
+
+    rmSync(a, { recursive: true, force: true });
+    rmSync(b, { recursive: true, force: true });
+  }, 60_000);
+
+  /**
+   * `vault_pay` with no local key is the state the secure default CREATES, so
+   * its message has to be a choice rather than a keyring stack trace.
+   */
+  it("vault_pay with no local key names the two ways forward", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-kl-pay-"));
+    const out = await callTool(
+      "vault_pay",
+      { amount: "0.25", recipient: "someone.testnet" },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "agent-keys.json") },
+    );
+
+    const r = JSON.parse(out) as Record<string, unknown>;
+    const say = r.say as string;
+    expect(say).toMatch(/doesn't hold a signing key/i);
+    expect(say).toMatch(/usually on purpose/i);
+    expect(say).toMatch(/Nothing was sent/i);
+    expect(r.next_step as string).toMatch(/sign it yourself/i);
+    expect(r.next_step as string).toMatch(/restricted agent key/i);
+    expect(r.money_moved).toBe(false);
+    // It must NOT look like it worked.
+    expect(say).not.toMatch(/SETTLED/);
+    /**
+     * AND NO ENV VARS IN THE SENTENCE. The first version appended
+     * "(technical: ...)" to the user-facing text, which named
+     * NEAR_VAULT_AGENT_ID and NEAR_VAULT_AGENT_KEY_FILE — the exact thing
+     * SKILL.md's Never list forbids. It belongs under `technical`.
+     */
+    for (const bad of ["NEAR_VAULT", "AGENT_KEY_FILE", "~/.near-credentials"]) {
+      expect(say, `say leaked "${bad}"`).not.toContain(bad);
+    }
+    expect(JSON.stringify(r.technical)).toContain("NEAR_VAULT");
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
 });

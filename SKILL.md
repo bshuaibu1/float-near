@@ -304,7 +304,49 @@ spend.
 | `vault_pending_approval` | payments waiting on a human, when a threshold is set |
 | `vault_teardown_report` | what closing this vault would return, and what it would strand |
 | `vault_plan_*` | unsigned owner actions: add node, set caps, freeze, set recipients, set cooldown, pause, purge, withdraw, bind/unbind an agent, approve/reject a payment, set the approval threshold |
-| `vault_add_role` | add an agent with its own node and funded gas key |
+| `vault_add_role` | add an agent with its own node and funded gas key — **see the key choice below** |
+
+### Where the agent's private key is born — ASK, don't assume
+
+`vault_add_role` takes **`key_location`**, and the default is the safe one.
+
+| value | what happens | when |
+| --- | --- | --- |
+| **`wallet`** *(default)* | **No key is created.** You are told the two options and nothing is written. | the user has not said where the key should live |
+| `local` | A restricted key is generated **on this machine** and saved, so this client can pay by itself | the user has explicitly agreed to that |
+
+**Never pass `local` on your own initiative.** It puts a live spending key on the
+user's computer. That is a decision they make, not a default you pick for them —
+so if they have not said, ask, in these terms:
+
+> Do you want to keep the agent's key yourself, or let this computer hold it?
+>
+> **Keep it yourself** — most secure. You generate it in your wallet, I never see
+> the secret, and you sign each payment from wherever that key lives.
+>
+> **Let this computer hold it** — more convenient. I can then pay within the
+> limits you set without asking you again. The key can only request payments —
+> it cannot move money out, change a limit, or touch anything the owner controls.
+
+When a local key IS created, **say so in the same message** — the tool's `say`
+already does; relay it. "A key is on your laptop" without the limits is
+alarming, and the limits without the disclosure is reassurance that hides
+something. Both, or neither.
+
+For the wallet path, the user generates a keypair (`near generate-key`, or in
+their wallet) and gives you the **public** half; `vault_plan_bind_agent` builds
+the payload that binds it.
+
+`vault_roles` tells you which kind each agent is:
+
+```
+key: "local (this machine holds the secret)"        -> vault_pay can sign
+key: "wallet-only (this machine does NOT hold the secret)" -> it cannot
+```
+
+A `wallet-only` agent is **not broken**. It is the secure setup working, and
+`vault_pay` will say so and offer the two paths rather than failing obscurely.
+
 
 ### Check before you pay
 
