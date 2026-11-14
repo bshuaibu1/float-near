@@ -1,4 +1,4 @@
-<!-- STAMP commit=97b649c date=2026-11-14 -->
+<!-- STAMP commit=0195a9c date=2026-11-14 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -11,11 +11,40 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
+- **✅ SUBMITTED — 2026-11-14, HTTP 201.** The hackathon API accepted it; the submission is saved.
+  **Do NOT submit again** — a second POST of the same repository is rejected 409, and corrections
+  go through <https://nearhackathon.com/request-changes>, reviewed by hand.
+  | field | value |
+  |---|---|
+  | requestId | `a4ac5cfe-579f-4e14-9465-b84c9843c093` *(reuse on any retry)* |
+  | tracks | `security`, `agents`, `swarms`, `business` |
+  | repo | <https://github.com/bshuaibu1/float-near> (PUBLIC, MIT) |
+  | demo post | <https://x.com/Float_xyz/status/2121703018311876774> |
+  | payout | `biggoat7381.near` — **verified to exist on mainnet** before sending |
+  | lead / email | wattson / masterwattson1@gmail.com |
+  - **The exact payload is at `.submission-payload.json`, gitignored.** Keep it: the
+    request-changes form asks for the email, NEAR account and repo link *exactly as submitted*.
+    It holds personal data, which is why it is not committed.
+  - **`security` is the closest-fitting track, not `agents`** — its description is "Give AI money
+    without giving it the keys to everything" and its hint is FUNCTION CALL KEYS, which is Float's
+    mechanism rather than a theme. `SUBMISSION.md` had said Agent Economy alone. `swarms` is the
+    weakest of the four and was kept deliberately, defensible only on shared-pool contention
+    (`PARENT_DAILY_BUDGET` = "a sibling drained the pool"); there is no bidding or coordination
+    market, Intents is undemonstrated, and sub-accounts were explicitly rejected.
+  - **README now carries the required disclosures**: Q-002 the Solana sibling
+    `@usefloat/mcp` (published, different hackathon, **shares no code** — different chain,
+    contract and package scope); Q-005 heavy AI assistance, stated plainly; Q-001/Q-003 first
+    commit **2026-10-26**, after the 2026-10-19 announcement, so all 585 commits are in the
+    window and no baseline diff section is needed.
+  - **Keep <https://usefloat.xyz> up to 2026-11-25.** Judging starts 2026-11-16, results by
+    2026-11-18, and the description tells judges to open it.
+
 - **LIVE STATE, 2026-11-14 ~21:00 UTC — the vault is fully working and the demo is unblocked.**
   `test015-near.usefloat.near`: **4.63 USDC**, 3.107 NEAR (only ~0.06 free — the rest is storage
   stake, which is why a 5th agent could not be funded until the vault was topped up).
-  **Six nodes, five funded gas keys:** root 0 · agent 1 · news 2 (no key) · headlines 3 ·
-  digest 4 · marketing 5. From this machine **4 are usable**.
+  **SEVEN nodes, five funded gas keys:** root 0 · agent 1 · news 2 (no key) · headlines 3 ·
+  digest 4 · marketing 5 · **analysis 6 (node only, no agent key anywhere)**. From this machine
+  **4 are usable**.
   - **A REAL REFUSAL IS PROVEN ON MAINNET** — tx
     [`22NyhaHRianC8zrnNK7ujZkRLdB4kYztFfFFSSQUgba9`](https://nearblocks.io/txns/22NyhaHRianC8zrnNK7ujZkRLdB4kYztFfFFSSQUgba9),
     `reason_code: PARENT_PER_TX_LIMIT`, vault USDC **4.63 before and after**. Produced with
@@ -38,29 +67,84 @@ state changes, and re-stamp the commit line above.
   - **Circle's native USDC emits NO NEP-297 `ft_transfer` event** (its receipt carries 0 logs),
     so explorer *Token Transfer* views are empty for both sender and recipient even though the
     money moved. Payments appear under **Transactions** only. Do not promise a transfers shot.
-  - **Pending, none blocking the video:** approve digest's cap change to 0.05/payment (still
-    0.02); retire the stray root agent (`float-retire`, which withdraws BEFORE unbinding —
-    `DeleteKey` would burn the 0.12); fix `float-agent`'s key field and `--node` default.
+  - **Pending, none blocking the video:** ~~approve digest's cap change to 0.05/payment (still
+    0.02)~~ — **DONE, it is 0.05 on chain now, see the 23:00 delta below**; retire the stray root
+    agent (`float-retire`, which withdraws BEFORE unbinding — `DeleteKey` would burn the 0.12);
+    fix `float-agent`'s key field and `--node` default.
 
-- **THE MAINNET VAULT IS LIVE AGAIN — recreated by Bashir in the browser, 2026-11-14.**
-  `test015-near.usefloat.near`: owner `test015.near`, mainnet, not paused, 2 nodes, **registered
-  on USDC**. Root `root` 25/day · 10/tx, allowlist `["test015.near"]`; node 1 `agent` inherits
-  25/day · 10/tx. Agent gas key **0.12 NEAR**, `receiver_id` = the vault, `method_names`
-  `["request_payment"]` — verified at the protocol level, so it cannot withdraw, cannot call
-  `set_node_caps`, cannot reach owner functions. Owner holds **2.28 NEAR + 8.857652 USDC**.
-  - **TWO THINGS BLOCK A DEMO VIDEO.** (1) **The vault holds 0 USDC.** (2) **This machine does
-    not hold the live agent's secret** — key `ed25519:Aa8pyxNS49uJ…` was generated in the
-    browser, so `vault_pay` cannot sign at all, funded or not. `vault_roles` reports it
-    correctly: `usable: 0`, `key: "wallet-only (this machine does NOT hold the secret)"`.
-    **`STAGED-DEMO-SETUP.ps1`** (untracked, repo root) holds the two round-trip-validated
-    mainnet commands: bind a `demo` agent (5/day · 1/tx, key already generated locally at
-    `~/.float/agent-keys.json`, public half `ed25519:EJmg2Te2zLnbCZC4wGcV2LE4dkQfPD1ddiYqjSvRG1re`)
-    and send 2 USDC in. **Human-run.**
+- **LATER THE SAME EVENING — deltas on the bullet above, all re-read from the chain.** The vault
+  was topped up and has now **spent from a nested node**: **4.62 USDC** (4.63 → 4.62) and
+  **3.386818 NEAR** against **304,848 B**, so **0.338 NEAR free** (the ~0.06 above is pre-top-up).
+  Code hash **`Fqep3KLeorhvQK38gXt6A7x2PEj8nnjy6CyZeo3DHVwM`**. Caps **(superseded — see the
+  23:00 delta immediately below; `4 digest` and `5 marketing` have both moved and a 7th node
+  exists)**: `0 root` 25/10 · `1 agent` 25/10 · `2 news` 3/0.1 · `3 headlines` 0.5/0.01 ·
+  `4 digest` 1/0.02 · `5 marketing` 0.35/0.05. Allocation **overcommit**, root oversubscribed
+  28.35 against 25.
+  - **CAPS AND TREE RE-READ FROM THE CHAIN 2026-11-14 ~23:00 UTC — THREE OF THE FIGURES ABOVE
+    ARE NO LONGER TRUE, and a nested payment settled at exactly the per-tx cap.** Current caps,
+    read from `vault_tree`: `0 root` 25/10 · `1 agent` 25/10 · `2 news` 3/0.1 ·
+    `3 headlines` 0.5/0.01 · **`4 digest` 1/0.05** (was 1/0.02 — the owner approved the pending
+    cap change) · **`5 marketing` 1/0.05** (was 0.35/0.05) · **`6 analysis` 0.75/0.05, parent
+    `news`, NEW**. Root is now oversubscribed **29 against 25** (25 agent + 3 news + 1
+    marketing); `news` child-cap sum is **2.25 against its own 3**. Still **overcommit**.
+    - **`analysis` (node 6) EXISTS BUT HAS NO AGENT** — `vault_roles` lists no `analysis` entry
+      and the keyring holds none, so it is a budget with nothing able to spend from it. This is
+      the route the 2026-11-14 `DECISIONS.md` row chose (`add_node` in the wallet, then
+      `float-agent --node 6` from a terminal); **step one is done, step two is not.** Until
+      `float-agent` runs, binding alone would leave `BOUND_BUT_NO_GAS_KEY`.
+    - **A PAYMENT SETTLED AT EXACTLY THE PER-TX CAP.** 0.05 USDC from `digest` → **SETTLED**
+      (`e6711fd0-6a92-4df7-8304-47293ac2f284`), node 4, against a per-tx cap of exactly 0.05 —
+      so the comparator is `amount > cap`, and **at-cap is allowed, not refused**. Measured
+      after: `digest` **0.06 / 1**, `news` **0.08 / 3**, `root` **0.43 / 25** for 2026-11-14.
+      Vault USDC **not re-read** — 4.62 − 0.05 = **4.57 expected, derived not measured**.
+    - **THE `vault_roles` DEFECT BELOW DID NOT REPRODUCE, and the cause is NOT established.**
+      It reported **6 entries, `usable: 4`**, with `root` **present** and the working `digest`
+      **`USABLE`, `gasNear` 0.1190537760934236** — both of the specific symptoms recorded below
+      were absent, and `vault_pay role:"digest"` selected the WORKING key (the payment settled
+      from node 4). The keyring order is **unchanged** — `digest-retired-D8wSbwYx` still sits at
+      index 2 ahead of the working `digest` at index 5 — and all six entries now carry a
+      `secret` field, so the likeliest explanation is simply that the `privateKey` → `secret`
+      workaround had not yet been applied to these entries when the note below was written.
+      **That is a hypothesis, not a measurement**; no code fix landed (the uncommitted
+      `server.ts` diff is the 0.11.0 guidance change, and `roles.ts` is untouched). Do not mark
+      the defect fixed on the strength of one good read.
+    - **A DEAD KEY IS STILL BOUND TO NODE 4.** `digest-retired-D8wSbwYx` reports
+      `BOUND_BUT_NO_GAS_KEY` — bound, so it could authorise, with no gas key to submit. Worth
+      unbinding alongside the stray root agent.
+  - **A SETTLEMENT FROM A DEPTH-2 NODE IS NOW PROVEN, which the refusal above did not cover.**
+    0.01 USDC from `digest` → **SETTLED** (`55247c8b-100c-48fb-a13f-2d743fd82fd3`), charged chain
+    **`[0,2,4]`** — root, news AND digest, so the hierarchy really does charge every ancestor and
+    not just the leaf. Payee credited, vault 4.63 → 4.62.
+  - **A REFUSAL COSTS THE AGENT 0.0002551 NEAR; A SETTLEMENT COSTS 0.0009462.** Both measured here
+    today as the difference of two gas-key balance reads bracketing a single call. **The
+    `mcp 0.11.0` row in `DECISIONS.md` estimated ~0.0009 for a refusal and is 3.5x too high** —
+    the real figure makes submit-don't-pre-check *cheaper* than it was argued, so nothing in that
+    decision needs revisiting. Corrected there too rather than left to be re-derived.
+  - **⚠ `vault_roles` IS STILL WRONG AFTER THE `privateKey` → `secret` WORKAROUND — it reported
+    `usable: 2` where the bullet above says 4.** Two agents misreported, both in the direction of
+    hiding ones that work: `digest` came back **`BOUND_BUT_NO_GAS_KEY`, `gasNear: null`** — then
+    settled the payment above, burning 0.0009462 from its own balance, which is precisely what
+    that status says it cannot do — and `root` (node 0, `ed25519:AhYaJsfUxyjWnj…`, funded 0.12)
+    is **absent from all three lists**, including `unreadableKeyringEntries`, so it is a silent
+    drop of the kind the 2026-11-13 `DECISIONS.md` row claims to have ended.
+    **The mechanism is most likely the shadowing already named above, not a new bug:**
+    `~/.float/agent-keys.json` holds `digest-retired-D8wSbwYx` at index 2 and the working
+    `digest` at index 5, `selectRole` takes the FIRST match, and the tool renders the retired
+    entry under the bare role name — it reported role `news` for the entry stored as
+    `news-retired-EJmg2Te2`. So `*-retired-*` renaming did **not** stop dead keys shadowing
+    working ones; it only stopped them being *selected*. An earlier draft of this entry blamed
+    gas-key balances being "exactly 0.12" — **that hypothesis is withdrawn**, it does not survive
+    `Aa8pyx…` being exactly 0.12 and handled correctly.
+    **Until fixed, `vault_roles` cannot be used to decide what can spend**, and the only decisive
+    test of "can this key submit?" is a submission. Spawned as its own task; its fixture must be
+    captured from this live keyring, since a synthetic one is what let this through.
   - **The `float` MCP server was restored to `~/.claude.json`** pointing at this vault with
     `NEAR_VAULT_AGENT_KEYS` pinned ABSOLUTE. **Needs a client restart to appear.**
-  - **Pre-video checklist: 4 of 6 pass.** Tools list (27, incl. 14 `vault_plan_*`), reads
+  - **Pre-video checklist: 6 of 6 now pass.** Tools list (27, incl. 14 `vault_plan_*`), reads
     (`vault_config`/`vault_tree`/`vault_budget` all return real chain data), plans-don't-execute,
-    and the key restriction. Items 3 and 4 (settle + refuse) are blocked on the two above.
+    and the key restriction — plus items 3 and 4, **settle and refuse, both of which are now
+    proven on mainnet** (the refusal tx above, and `55247c8b…` settling from `digest`). The
+    "blocked on the two above" that stood here was true when written and is not now.
   - *(Historic: the previous vault at this derived id was torn down 2026-11-13; **+3.467730
     NEAR** of the **3.468390** quoted came back, the 0.000660 difference being gas, with the
     agent gas key withdrawn BEFORE the delete so nothing burned; measured against a **settled**
@@ -235,6 +319,22 @@ state changes, and re-stamp the commit line above.
     on purpose: `cd contracts/vault && cargo near build non-reproducible-wasm --no-abi`, then
     `BUNDLE_WASM_RERECORD=1 node packages/create-float/scripts/bundle-wasm.mjs` — note that
     bundler lives under the PACKAGE, not in the repo-root `scripts/`.
+  - **CONFIRMED FROM THE CHAIN 2026-11-14, and it has a SILENT failure mode worth knowing before
+    anyone tries it.** The live vault's code hash is `Fqep3KLeorhvQK38gXt6A7x2PEj8nnjy6CyZeo3DHVwM`
+    and `packages/create-float/res/vault.wasm` — last rebuilt **2026-11-10** — hashes to exactly
+    that, so the deployed `add_role` predates `69152af` and still hardcodes root.
+    **Passing `parent` to it does not fail; it is silently IGNORED.** near-sdk generates a plain
+    serde struct for a method's arguments and serde drops unknown fields by default, so the agent
+    is created under **root** with the requested caps and a real 0.12 NEAR gas key, after the
+    owner has already approved it — a wrong tree that reports success. Same shape as the
+    `#[payable]` lesson: the generated wrapper is where source and chain disagree, and no unit
+    test crosses it.
+    **So on THIS vault a nested agent is still the two-step route:** `add_node` (owner, wallet or
+    CLI) then `float-agent --node <id>` (installs AND funds the gas key, signing as the vault).
+    Two traps in that second command, both already-recorded classes: it writes
+    `.float/agent-keys.json` **relative to CWD**, so it must be run from `C:\Users\BASHIR` or the
+    key lands in a ring the MCP does not read; and it writes the entry with **no `role` field**,
+    so `vault_pay role:"<name>"` will not find it until one is added. See `DECISIONS.md`.
 - **BUDGET-TREE BARS FIXED AND DEPLOYED (2026-11-14).** The master "Used today" bar never moved.
   The numbers were right: the API rounds `dailyBudgetUsedPercent` to an integer, so a real
   **0.02 USDC against the 25 USDC master = 0.080%** arrived as `0`, and the card printed
@@ -550,6 +650,27 @@ state changes, and re-stamp the commit line above.
   BOUND_BUT_NO_GAS_KEY**, plus `onChainWithoutLocalKey` (an agent the vault has and this client
   cannot sign as), `unreadableKeyringEntries` (previously dropped in silence) and a loud warning
   when NOTHING is usable. Verified both ways against mainnet.
+  - **⚠ AND IT IS WRONG AGAIN — `vault_roles` MISREPORTS 2 OF THE 6 AGENTS ON THE LIVE MAINNET
+    VAULT (measured 2026-11-14, proven by a settled payment).** It reports **4** agents; the
+    keyring holds **6**. Two defects, both in the direction of **hiding agents that work**, which
+    is the opposite of the failure the rewrite above was for:
+    (1) **False negative on `digest`.** Reported `BOUND_BUT_NO_GAS_KEY`, `gasNear: null`. The
+    chain says `ed25519:DoZf4Gu5cJ5X81…` is bound to node 4 **and** carries a
+    `GasKeyFunctionCall` at 0.12 NEAR, `receiver_id` = the vault, `method_names`
+    `["request_payment"]`. **Settled a real 0.01 USDC payment**, burning 0.0009462 of its own
+    balance — the exact thing the status says it cannot do.
+    (2) **`root` (node 0, `ed25519:AhYaJsfUxyjWnj…`, also funded at 0.12) vanishes entirely** —
+    absent from `agents`, from `onChainWithoutLocalKey` and from `unreadableKeyringEntries`. A
+    silent drop, which is the specific behaviour the 2026-11-13 `DECISIONS.md` row says was
+    eliminated.
+    Untested hypothesis: the two mishandled keys are the two whose balance is still **exactly**
+    0.12 (never used), where `headlines` and `marketing` have partially burned balances and report
+    fine — but `Aa8pyx…` is also exactly 0.12 and IS handled right, so the discriminator is more
+    likely in the keyring-join path than the access-key parse. **A fix must build its fixture FROM
+    this live state**; a synthetic one is what let this through. Spawned as its own task.
+    **Consequence until fixed: `vault_roles` cannot be used to decide what can spend.** Two
+    working agents and ~0.24 NEAR of funded gas keys were invisible or declared dead. Verify with
+    `get_virtual_agent_node` + `view_access_key_list`, and decisively with a small payment.
 - **`vault_add_role` NO LONGER LEAVES AN ORPHAN, AND NO LONGER MOVES WITH THE WORKING
   DIRECTORY (2026-11-13).** Three defects, one symptom — a key on disk that nothing could use,
   and a retry refused because of it. (1) It generated and **wrote** the keypair, then built the
@@ -582,7 +703,7 @@ state changes, and re-stamp the commit line above.
 - **Remaining:** deploy the factory (above); publish **mcp 0.10.2** (floor term + the server
   version that had drifted to 0.10.0 after 0.10.1 shipped); `git pull` on the skill host for the
   SKILL.md cost fix; make the repo PUBLIC (git history verified clean —
-  `scripts/scan-history-secrets.mjs`); and the hackathon submission, which nobody has started and
+  `scripts/scan-history-secrets.mjs`); and the hackathon submission, **which is now DONE (see the top of this file)** and
   is the only item with a hard deadline (**2026-11-14 23:59 UTC**). Lower priority: the public
   dashboard's DEFAULT vault is still testnet (invisible in the demo, since the UI asks "Whose
   vault?"); fixing it is a staged VPS change.
