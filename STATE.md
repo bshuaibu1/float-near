@@ -70,6 +70,29 @@ state changes, and re-stamp the commit line above.
     first version counted those as "the registry does not serve this repo's code". It now
     separates **BROKEN** from **INCONCLUSIVE**. *A broken check that reports itself as a
     finding is worse than no check.*
+- **UX LOCK: every user-facing tool now returns `say` / `next_step` / `money_moved` (2026-11-14).**
+  `vault_pay` already did; every other tool returned raw technical keys, so driving agents narrated
+  public keys, gas keys and unsigned payloads at people who had asked for a budget. Now also
+  `renderPlan` (**all 13 `vault_plan_*` tools at once**), `vault_add_role`, `vault_budget` and
+  `vault_await_create`. Technical detail moved under `technical`, never deleted;
+  `unsigned_payload` stays top-level because `check-mcp-live.mjs` asserts on it.
+  - **SKILL.md's voice rules moved to the TOP, before the tool tables.** They already existed — at
+    line 308 of ~29 KB, *after* the tables an agent follows mid-task, which is indistinguishable
+    from absent. New `## How you talk to the human (non-negotiable)` section with Always/Never
+    lists, five templates and a before/after table; the old section is now a pointer so the two
+    cannot drift. Guarded by **gate check 40, `check-ux-voice.mjs`**, which asserts the section
+    exists, is positioned before the tool tables, keeps its specifics, and that every tool the
+    rules promise a `say` from actually returns one.
+  - **Two leaks found by DRIVING the tools and reading the sentences**, not by the jargon list — *a
+    forbidden-word list cannot catch a forbidden shape.* `vault_add_role` said "1 usdc.testnet a
+    day" (`label()` returns `SYMBOL (id)`, right for a field, wrong in prose; on mainnet it renders
+    USDC's **64-hex-character** id), and `vault_plan_add_node` put the full id in its sentence
+    because `payloads.ts` is pure and cannot resolve symbols. Added `displaySymbol()` (falls back
+    to "tokens", never an id) and symbol substitution in `renderPlan`'s `say` only. The smoke test
+    now uses mainnet USDC's real id, because the original used `usdc.testnet` — short enough to
+    look harmless while the tool printed a hash at users.
+  - **397 tests, 40 gated checks.** All mutation-verified: disabling the substitution, re-planting
+    the leak, or removing `say` turns the right test red.
 - **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
   Measured three times, including `--help`, and once on the real teardown — the vault was
   **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
