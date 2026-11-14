@@ -1356,3 +1356,82 @@ describe("agent keys are local only when explicitly asked for", () => {
     rmSync(dir, { recursive: true, force: true });
   }, 40_000);
 });
+
+/**
+ * THE WALLET PATH MUST COST ONE APPROVAL, NOT TWO.
+ *
+ * `add_role` creates the node, binds the key and installs the funded gas key
+ * in a SINGLE contract call. The local path got that; the wallet path did not,
+ * purely because the tool had nowhere to hand a user-generated key back in. So
+ * it degraded into `add_node` then `bind_virtual_agent` — two wallet
+ * signatures to reach a state the contract reaches in one. A user spotted it.
+ */
+describe("a user-supplied key creates the whole agent in one approval", () => {
+  const BASE = {
+    NEAR_VAULT_CONTRACT: "vault.testnet",
+    NEAR_VAULT_NETWORK: "testnet",
+    NEAR_VAULT_TOKEN: "usdc.testnet",
+  };
+  const USER_PK = `ed25519:${"1".repeat(44)}`;
+
+  it("builds ONE add_role payload and writes no key", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-wallet-pk-"));
+    const ring = join(dir, "agent-keys.json");
+
+    const out = await callTool(
+      "vault_add_role",
+      { role: "news", dailyCap: "3", perTxCap: "0.10", publicKey: USER_PK },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: ring },
+    );
+    const r = JSON.parse(out) as Record<string, unknown>;
+
+    // ONE call, and it is the one that does everything.
+    expect((r.payload as Record<string, unknown>).methodName).toBe("add_role");
+    expect(JSON.stringify(r.payload)).toContain(USER_PK);
+
+    // The whole point of the wallet path: nothing written.
+    expect(existsSync(ring), "the wallet path must not write a key").toBe(false);
+    const agent = r.agent as Record<string, unknown>;
+    expect(agent.publicKey).toBe(USER_PK);
+    expect(agent.credentialWrittenTo, "must not claim a path it did not write").toBeUndefined();
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+
+  /**
+   * The disclosure is path-specific, and getting it wrong is the most
+   * misleading thing the response could do: on this path I cannot spend.
+   */
+  it("does NOT claim this machine can spend", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-wallet-say-"));
+    const out = await callTool(
+      "vault_add_role",
+      { role: "news", dailyCap: "3", perTxCap: "0.10", publicKey: USER_PK },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "agent-keys.json") },
+    );
+    const say = (JSON.parse(out) as Record<string, unknown>).say as string;
+
+    expect(say).not.toMatch(/this machine will now hold a spending key/i);
+    expect(say).toMatch(/secret stays with you/i);
+    expect(say).toMatch(/cannot spend/i);
+    expect(say).toMatch(/One approval does all of it/i);
+    // The protocol-level bound still has to be stated.
+    expect(say).toMatch(/NEAR enforcing it/i);
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+
+  /** Without a key the refusal must point at the ONE-approval route. */
+  it("with no key, the refusal offers the one-approval route", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-wallet-none-"));
+    const out = await callTool(
+      "vault_add_role",
+      { role: "news", dailyCap: "3", perTxCap: "0.10" },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "agent-keys.json") },
+    );
+    expect(out).toMatch(/public_key/);
+    expect(out).toMatch(/ONE approval/i);
+    expect(out).toMatch(/[Nn]ever send me the private key/);
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+});

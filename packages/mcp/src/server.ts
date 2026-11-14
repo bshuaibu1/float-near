@@ -557,7 +557,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.10.5" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.10.6" }, { instructions: INSTRUCTIONS });
 
 /**
  * THE FULL OPERATING GUIDE, AS AN MCP RESOURCE.
@@ -1375,8 +1375,30 @@ server.tool(
           "it on THIS machine so this client can sign payments itself. Only pass \"local\" " +
           "if the user has agreed to that.",
       ),
+    /**
+     * A public key the USER generated, for the wallet path.
+     *
+     * WITHOUT THIS THE WALLET PATH COSTS TWO APPROVALS instead of one, for no
+     * reason. `add_role` creates the node, binds the key and installs the
+     * funded gas key in a SINGLE call — the contract has always been able to
+     * do it in one. The local path got that; the wallet path did not, purely
+     * because there was nowhere to hand the key back in. So it degraded into
+     * `add_node` first and `bind_virtual_agent` second, and the user paid for
+     * two wallet signatures to reach the same state.
+     *
+     * Only the PUBLIC half is ever accepted. Nothing in this flow needs the
+     * secret, and a tool that takes one invites it being pasted.
+     */
+    publicKey: z
+      .string()
+      .optional()
+      .describe(
+        'the PUBLIC half of a keypair you generated yourself ("ed25519:..."), for ' +
+          'key_location "wallet". Supply it and the whole agent is created in ONE approval. ' +
+          "NEVER pass a private key or seed phrase.",
+      ),
   },
-  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear, keyLocation }) => {
+  async ({ role, dailyCap, perTxCap, recipients, token, cooldownSec, fundingNear, keyLocation, publicKey }) => {
     const vault = requireVault();
 
     /**
@@ -1387,14 +1409,14 @@ server.tool(
      * one — which is exactly the silent behaviour being removed — it names the
      * two ways forward and stops. Nothing is written.
      */
-    if (keyLocation === "wallet") {
+    if (keyLocation === "wallet" && !publicKey) {
       return text(
         `I will not create a private key on this machine unless you ask me to.${LF}${LF}` +
           `Two ways to give the "${role}" agent its key:${LF}${LF}` +
-          `  1. KEEP THE KEY YOURSELF (most secure). Generate a keypair in your wallet or ` +
-          `with \`near generate-key\`, then give me the PUBLIC half and I will build the ` +
-          `payload that binds it — the secret never touches this computer. The agent then ` +
-          `signs from wherever that key lives.${LF}${LF}` +
+          `  1. KEEP THE KEY YOURSELF (most secure). Generate a keypair — in your wallet, ` +
+          `or with \`near generate-key\` — and give me the PUBLIC half ("ed25519:..."). ` +
+          `The secret never touches this computer. Pass it as public_key and the whole ` +
+          `agent is created in ONE approval. Never send me the private key.${LF}${LF}` +
           `  2. LET THIS MACHINE HOLD IT (convenient). I generate a restricted key here and ` +
           `save it, so I can make payments for you directly, up to the limits you set. The ` +
           `key can only request payments — it cannot withdraw, cannot raise its own limits ` +
@@ -1507,9 +1529,18 @@ server.tool(
       );
     }
 
-    // Only now. `nodeId: null` — NOT YET KNOWN: `add_role` creates the node
-    // inside the contract, so its id does not exist until the transaction lands.
-    const generated = generateAgentKey({
+    /**
+     * GENERATE ONLY ON THE LOCAL PATH.
+     *
+     * On the wallet path the user supplied the public half, so there is no
+     * secret to create and nothing to write — which is the entire point of
+     * that path. Generating here "just in case" would put a live spending key
+     * on disk for someone who explicitly asked to keep their own.
+     *
+     * `nodeId: null` — NOT YET KNOWN: `add_role` creates the node inside the
+     * contract, so its id does not exist until the transaction lands.
+     */
+    const generated = keyLocation === "local" ? generateAgentKey({
       vault,
       // The FULL configured path, not its directory. Passing the directory
       // discarded the filename, so a keyring pinned to anything other than
@@ -1517,7 +1548,11 @@ server.tool(
       keyringPath: cfg.agentKeysPath,
       role,
       nodeId: null,
-    });
+    }) : null;
+
+    // The wallet path reaches here only WITH a supplied key, so one of these
+    // is always defined. `generated` is null unless we made one.
+    const agentPk = generated ? generated.publicKey : (publicKey as string);
 
     const payload = planAddRole(
       vault,
@@ -1525,7 +1560,7 @@ server.tool(
       limits,
       cooldownSec ?? 0,
       recipients ?? null,
-      generated.publicKey,
+      agentPk,
       fundingYocto,
     );
 
@@ -1564,10 +1599,22 @@ server.tool(
      * on your laptop" alone is alarming without the bound; the bound alone is
      * reassurance without the disclosure. Both or neither.
      */
+    /**
+     * WHO ENDS UP ABLE TO SPEND depends on which path was taken, so the first
+     * sentence cannot be shared. On the wallet path *I* cannot pay — the
+     * secret is not here — and claiming otherwise would be the most misleading
+     * thing in the response.
+     */
+    const roleOpening = generated
+      ? `I'll set up a ${role} budget: ${dailyCap} ${displaySymbol(roleMeta)} a day, and no ` +
+        `single payment over ${perTxCap}. You approve it once in your wallet, and after that ` +
+        `I can pay within those limits — I can't raise them myself. Nothing has changed yet.`
+      : `I'll set up a ${role} budget: ${dailyCap} ${displaySymbol(roleMeta)} a day, and no ` +
+        `single payment over ${perTxCap}, bound to the key you generated. One approval does ` +
+        `all of it — the budget, the key and its gas. Nothing has changed yet.`;
+
     const roleSay =
-      `I'll set up a ${role} budget: ${dailyCap} ${displaySymbol(roleMeta)} a day, and no ` +
-      `single payment over ${perTxCap}. You approve it once in your wallet, and after that ` +
-      `I can pay within those limits — I can't raise them myself. Nothing has changed yet.` +
+      roleOpening +
       `${LF}${LF}` +
       /**
        * THE DISCLOSURE, AND IT IS DELIBERATELY BLUNT.
@@ -1593,12 +1640,19 @@ server.tool(
        * is the same fact in words a non-developer can check in their wallet,
        * where `add_role` and the public key are what they will actually see.
        */
-      `WORTH BEING CLEAR: this machine will now hold a spending key for your vault. Once you ` +
-      `approve, it can spend up to ${dailyCap} ${displaySymbol(roleMeta)} a day, ${perTxCap} ` +
-      `at a time, WITHOUT asking you again. It cannot withdraw your money. It cannot change ` +
-      `any limit, including its own. It cannot do anything else an owner can. That is NEAR ` +
-      `enforcing it, not a rule I follow — the key is locked to a single payment request on ` +
-      `this one contract, and anything else it tried would simply be refused.`;
+      (generated
+        ? `WORTH BEING CLEAR: this machine will now hold a spending key for your vault. ` +
+          `Once you approve, it can spend up to ${dailyCap} ${displaySymbol(roleMeta)} a day, ` +
+          `${perTxCap} at a time, WITHOUT asking you again. It cannot withdraw your money. ` +
+          `It cannot change any limit, including its own. It cannot do anything else an ` +
+          `owner can. That is NEAR enforcing it, not a rule I follow — the key is locked ` +
+          `to a single payment request on this one contract, and anything else it tried ` +
+          `would simply be refused.`
+        : `The secret stays with you — this machine never sees it, so I can read the vault ` +
+          `and build payloads but I cannot spend. You sign each payment from wherever that ` +
+          `key lives. The key itself is just as limited either way: it cannot withdraw, ` +
+          `cannot change any limit, and cannot reach anything an owner can. That is NEAR ` +
+          `enforcing it, not a rule I follow.`);
 
     return json({
       say: roleSay,
@@ -1609,8 +1663,13 @@ server.tool(
       money_moved: false,
       role,
       agent: {
-        publicKey: generated.publicKey,
-        credentialWrittenTo: generated.keyringPath,
+        publicKey: agentPk,
+        // Only on the local path is there a secret on disk to name. On the
+        // wallet path the key is wherever the user keeps it, which is the
+        // point, and claiming a path would be a lie.
+        ...(generated
+          ? { credentialWrittenTo: generated.keyringPath }
+          : { keyHeldBy: "you — this machine has no copy of the secret" }),
       },
       payload,
       next: [
@@ -1632,8 +1691,8 @@ server.tool(
           }
         : {}),
       warnings: [
-        `Show the owner this public key and have them confirm it before signing: ${generated.publicKey}`,
-        `The private key is at ${generated.keyringPath}. Do not print it.`,
+        `Show the owner this public key and have them confirm it before signing: ${agentPk}`,
+        ...(generated ? [`The private key is at ${generated.keyringPath}. Do not print it.`] : []),
         // A second keyring holding keys for THIS vault means roles this server
         // cannot see. Said here rather than left to surface later as "my agent
         // vanished".
