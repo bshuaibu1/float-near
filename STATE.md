@@ -123,7 +123,7 @@ state changes, and re-stamp the commit line above.
     **all 16 plan builders** (summary *and* warnings) plus a coverage test that fails when a new
     builder is added without one. No payment logic touched — `contracts/`, `sign.ts`, `amounts.ts`
     untouched.
-  - **423 tests, 41 gated checks.** All mutation-verified: disabling the substitution, re-planting
+  - **423 tests, 42 gated checks.** All mutation-verified: disabling the substitution, re-planting
     the leak, or removing `say` turns the right test red.
 - **AGENT KEYS ARE NOW SECURE BY DEFAULT — `vault_add_role` writes NOTHING unless asked
   (2026-11-14).** It used to generate a keypair on this machine **always**, writing a live
@@ -155,7 +155,7 @@ state changes, and re-stamp the commit line above.
     is exactly what SKILL.md's Never list forbids. Pinned by a test.
   - **Mutation-verified:** disabling the wallet branch turns *"the DEFAULT writes no key"* and
     *"the two paths differ ONLY by the parameter"* red. The differ-test exists because
-    otherwise both halves could pass for the wrong reason. **427 tests, 41 gated checks.**
+    otherwise both halves could pass for the wrong reason. **427 tests, 42 gated checks.**
   - **DEFERRED:** `create-float --agent-key local` and the `add-local-agent` migration command.
     They touch a separately published CLI and would add a second publish to the critical path
     with ~14h to the deadline. `DECISIONS.md` records why.
@@ -185,6 +185,26 @@ state changes, and re-stamp the commit line above.
     substring in the emitted JS even though the runtime output contains it. Grepping for it
     reports MISSING for a good build, identical to the feature being absent. Markers must be
     single identifiers, never sentences.
+- **PLAN TOOLS NOW RETURN AN APPROVAL LINK, not just a CLI command (2026-11-14).** Asked for a
+  news budget, the agent handed back a 300-character `near contract call-function as-transaction
+  … sign-with-keychain send` line. The create page has accepted owner-action links all along
+  (`?action=<base64url JSON>`, **15 methods**) and nothing built one — so the product's own pitch,
+  *the human approves in their own wallet*, was contradicted by its main output. `renderPlan` now
+  returns **`approve_here` first** and `next_step` names it; `approve_with` stays as fallback.
+  - **`withdraw` has NO link, by design.** The page's allowlist refuses it — a link is something a
+    stranger can send you — so `approveUrl` returns `null` and the note explains. A URL the page
+    rejects is worse than none: the user clicks, is turned away, and reads it as a broken product.
+  - **Encoding is UTF-8, not latin1.** `web/index.html` documents why in its own decoder: `btoa`
+    throws above U+00FF, and a node **label is user-chosen**. Getting it wrong does not throw — it
+    hands the page mojibake, so *the owner approves a transaction whose description is wrong*.
+    Tested with CJK, accents, smart quotes, emoji. Network is pinned explicitly, because the page
+    defaults to mainnet and a testnet payload would render a believable screen on the wrong chain.
+  - **Gate check 42, `check-approve-url-methods.mjs`**, compares the MCP's mirrored allowlist to
+    the page's in BOTH directions, plus a third list of what the builders actually emit, so a new
+    CLI-only method cannot appear unnoticed. Controlled both ways. Tests decode the way the PAGE
+    does, reimplemented from the page rather than from the encoder.
+  - **NOT PUBLISHED.** Ships in **mcp 0.10.6**; npm has 0.10.5. The link handed to Bashir for the
+    `news` budget was built by hand with the same encoder and is valid.
 - **THE CREATE PAGE REFUSED TO WORK FROM ITS OWN PUBLISHED LINK — fixed in the repo, NOT YET
   DEPLOYED (2026-11-14).** A bare <https://usefloat.xyz> answered *"This link has no factory, so
   there is nothing to create the vault."* That is the link in the README, on npm, and in anything
