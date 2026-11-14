@@ -1654,10 +1654,25 @@ server.tool(
           `cannot change any limit, and cannot reach anything an owner can. That is NEAR ` +
           `enforcing it, not a rule I follow.`);
 
+    /**
+     * THE LINK, on the tool people actually use to create an agent.
+     *
+     * `approve_here` was added to `renderPlan`, which covers the thirteen
+     * `vault_plan_*` tools — and `vault_add_role` has its own return block, so
+     * the ONE tool a user reaches for when adding an agent was still handing
+     * back a payload. `add_role` is on the page's allowlist, so there was
+     * never a reason for it not to have one.
+     */
+    const roleLink = approveUrl(payload, { appUrl: cfg.appUrl, network: cfg.network });
+
     return json({
       say: roleSay,
-      next_step:
-        `Approve it in your wallet, then tell me and I'll confirm the ${role} budget is live.`,
+      next_step: roleLink
+        ? `Open the approve_here link and approve it in your wallet — that one approval ` +
+          `creates the budget, binds the key and funds its gas. Then tell me and I'll ` +
+          `confirm the ${role} budget is live.`
+        : `Approve it in your wallet, then tell me and I'll confirm the ${role} budget is live.`,
+      approve_here: roleLink,
       // The approval moves 0.12 NEAR into the agent's gas key when signed, but
       // NOTHING has moved at this point — this is an unsigned proposal.
       money_moved: false,

@@ -1435,3 +1435,50 @@ describe("a user-supplied key creates the whole agent in one approval", () => {
     rmSync(dir, { recursive: true, force: true });
   }, 40_000);
 });
+
+/**
+ * `vault_add_role` must hand back a LINK too.
+ *
+ * `approve_here` was added to `renderPlan`, which covers the thirteen
+ * `vault_plan_*` tools. `vault_add_role` has its own return block, so the one
+ * tool a user reaches for when adding an agent was still returning a bare
+ * payload — the gap was invisible precisely because every OTHER plan tool had
+ * been fixed.
+ */
+describe("vault_add_role hands back an approval link", () => {
+  it("returns approve_here, and says the one approval does all three things", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-role-link-"));
+    const out = await callTool(
+      "vault_add_role",
+      {
+        role: "news",
+        dailyCap: "3",
+        perTxCap: "0.10",
+        publicKey: `ed25519:${"1".repeat(44)}`,
+      },
+      {
+        NEAR_VAULT_CONTRACT: "vault.testnet",
+        NEAR_VAULT_NETWORK: "testnet",
+        NEAR_VAULT_TOKEN: "usdc.testnet",
+        NEAR_VAULT_AGENT_KEYS: join(dir, "agent-keys.json"),
+      },
+    );
+    const r = JSON.parse(out) as Record<string, unknown>;
+
+    expect(typeof r.approve_here).toBe("string");
+    const url = new URL(r.approve_here as string);
+    expect(url.searchParams.get("network")).toBe("testnet");
+
+    // The link must carry the SAME add_role call, not a stripped-down one.
+    const raw = url.searchParams.get("action")!;
+    const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = JSON.parse(
+      Buffer.from(b64 + "=".repeat((4 - (b64.length % 4)) % 4), "base64").toString("utf8"),
+    ) as Record<string, unknown>;
+    expect(decoded.methodName).toBe("add_role");
+    expect(JSON.stringify(decoded.args)).toContain("news");
+
+    expect(r.next_step as string).toMatch(/creates the budget, binds the key and funds its gas/i);
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+});
