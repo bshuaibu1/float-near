@@ -123,7 +123,7 @@ state changes, and re-stamp the commit line above.
     **all 16 plan builders** (summary *and* warnings) plus a coverage test that fails when a new
     builder is added without one. No payment logic touched — `contracts/`, `sign.ts`, `amounts.ts`
     untouched.
-  - **423 tests, 40 gated checks.** All mutation-verified: disabling the substitution, re-planting
+  - **423 tests, 41 gated checks.** All mutation-verified: disabling the substitution, re-planting
     the leak, or removing `say` turns the right test red.
 - **AGENT KEYS ARE NOW SECURE BY DEFAULT — `vault_add_role` writes NOTHING unless asked
   (2026-11-14).** It used to generate a keypair on this machine **always**, writing a live
@@ -155,7 +155,7 @@ state changes, and re-stamp the commit line above.
     is exactly what SKILL.md's Never list forbids. Pinned by a test.
   - **Mutation-verified:** disabling the wallet branch turns *"the DEFAULT writes no key"* and
     *"the two paths differ ONLY by the parameter"* red. The differ-test exists because
-    otherwise both halves could pass for the wrong reason. **427 tests, 40 gated checks.**
+    otherwise both halves could pass for the wrong reason. **427 tests, 41 gated checks.**
   - **DEFERRED:** `create-float --agent-key local` and the `add-local-agent` migration command.
     They touch a separately published CLI and would add a second publish to the critical path
     with ~14h to the deadline. `DECISIONS.md` records why.
@@ -185,6 +185,28 @@ state changes, and re-stamp the commit line above.
     substring in the emitted JS even though the runtime output contains it. Grepping for it
     reports MISSING for a good build, identical to the feature being absent. Markers must be
     single identifiers, never sentences.
+- **THE CREATE PAGE REFUSED TO WORK FROM ITS OWN PUBLISHED LINK — fixed in the repo, NOT YET
+  DEPLOYED (2026-11-14).** A bare <https://usefloat.xyz> answered *"This link has no factory, so
+  there is nothing to create the vault."* That is the link in the README, on npm, and in anything
+  shared — so the first thing a new user or judge saw was a refusal. The page read `?factory=`
+  with **no fallback**, which was correct while no mainnet factory existed (a guessed id sends a
+  real ~3.5 NEAR deposit to an unverified account), and nobody revisited it when `usefloat.near`
+  went live. Now `DEFAULT_FACTORY` resolves per network from the same values the MCP uses;
+  an explicit `?factory=` still wins. Verified by evaluating the real constant lines out of
+  `index.html` against four query strings.
+  - **Gate check 41, `check-create-factory-default.mjs`**, compares the page's defaults to
+    `FACTORY_BY_NETWORK` in `create.ts`. They cannot share a constant — one is TypeScript in a
+    published package, the other a `<script type="module">` served statically — so the value is
+    duplicated, and it had already drifted in the worst direction. Positive-controlled both ways.
+  - **⚠ THE LIVE SITE STILL SERVES THE OLD PAGE.** Confirmed by fetching it: no `DEFAULT_FACTORY`
+    in the served bytes. **A human must deploy** — this session had no SSH access
+    (`Permission denied (publickey,password)`). Check the owner first
+    (`stat -c '%U' /srv/float-near-web`) and pull **as that user**, never as root.
+    `web/serve.mjs` reads files per request, so a pull is enough — no restart.
+  - Also corrected the deploy command `check-live-docs.mjs` prints: it said
+    `ssh root@… 'cd /srv/float-near-web && git pull'`, which runs git as **root** in a
+    service-owned tree and leaves root-owned `.git` files the service cannot write — silent
+    degradation later rather than a failure now.
 - **README REWRITTEN for the now-public repo (2026-11-14).** It leads with the PROBLEM — every
   agent wallet hands the agent the key and asks you to trust it — because the design only looks
   interesting once you see what it refuses to do. **Four mermaid diagrams** (GitHub renders
