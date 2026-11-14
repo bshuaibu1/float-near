@@ -169,14 +169,29 @@ for (const pkg of PACKAGES) {
       console.error(`  PUBLISH FAILED:${LF}${meaningful}`);
 
       if (/EOTP|one-time password/i.test(err)) {
+        /**
+         * NO PLACEHOLDER IN A COPY-PASTEABLE COMMAND.
+         *
+         * This used to print `--otp=XXXXXX`, which was pasted verbatim and
+         * rejected with a confusing E400 ("fails to match /^\d+$/"). A command
+         * that looks runnable WILL be run exactly as written, so the advice is
+         * now a command with nothing to substitute: omitting --otp makes npm
+         * fall back to browser auth in an interactive terminal, which needs no
+         * code at all.
+         */
         console.error(
-          `${LF}  This account has 2FA on publishing, so a one-time code is required and` +
-            `${LF}  no script can generate it for you. Publish this one directly:` +
+          `${LF}  This account has 2FA on publishing. A script cannot generate the code,` +
+            `${LF}  but you do not need to type one -- run this in YOUR terminal and npm will` +
+            `${LF}  open a browser to authenticate (the same flow as npm login):` +
             `${LF}` +
             `${LF}      cd ${join(ROOT, pkg.dir)}` +
-            `${LF}      npm publish --access public --otp=XXXXXX` +
+            `${LF}      npm publish --access public` +
             `${LF}` +
-            `${LF}  Codes expire in ~30s, so get a FRESH one per package. Then run:` +
+            `${LF}  (Only if that cannot open a browser: append --otp= followed by the` +
+            `${LF}   6-digit code from your authenticator app. It is digits only and` +
+            `${LF}   expires in ~30s.)` +
+            `${LF}` +
+            `${LF}  Then verify what the registry actually serves:` +
             `${LF}      node scripts/publish-and-verify.mjs --verify`,
         );
       }
