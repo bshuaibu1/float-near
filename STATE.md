@@ -1,4 +1,4 @@
-<!-- STAMP commit=d787fa6 date=2026-11-14 -->
+<!-- STAMP commit=63f7784 date=2026-11-14 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -147,7 +147,15 @@ state changes, and re-stamp the commit line above.
   - **DEFERRED:** `create-float --agent-key local` and the `add-local-agent` migration command.
     They touch a separately published CLI and would add a second publish to the critical path
     with ~14h to the deadline. `DECISIONS.md` records why.
-- **`mcp 0.10.4` IS BUILT, COMMITTED AND *NOT PUBLISHED*.** Carries the secure-key-default work.
+- **`mcp 0.10.5` IS BUILT AND *NOT PUBLISHED*. Published 0.10.4 IS BROKEN — abandon it.**
+  0.10.4 went to the registry missing the strengthened local-key disclosure: the version was
+  bumped in `39d0bab`, the disclosure changed in `d787fa6`, and the publish landed between
+  them. 125,426 published vs 127,119 bytes fresh. npm will not let the number be reused.
+  **Guards added so this cannot recur:** `publish-and-verify.mjs` now refuses a dirty or
+  unpushed tree, and compares the published `dist/server.js` byte-for-byte against a fresh
+  build instead of a hand-maintained marker list (which was stale one release after being
+  written). `tsc` output is byte-deterministic — two clean rebuilds, identical 127,119 B.
+- *(superseded)* **`mcp 0.10.4`** Carries the secure-key-default work.
   **Published 0.10.3 and the repo's 0.10.3 had DIVERGED** — the same-version-different-bytes
   defect corrected earlier in this very session, caught by checking the published tarball for
   `keyLocation` (absent). Hence 0.10.4. Both `package.json` and the server's advertised version
