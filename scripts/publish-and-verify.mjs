@@ -41,10 +41,39 @@ const PACKAGES = [
     name: "@floatonnear/mcp",
     // Built output, so it is compared by a SUBSTRING that only the fix emits
     // rather than byte-for-byte (tsc output is stable but not a contract).
+    /**
+     * MARKERS FOR EVERY SHIPPED FIX, NEWEST LAST — and this list has to GROW.
+     *
+     * It held only the 0.10.2 markers while 0.10.3 was being verified, so the
+     * check went green on a tarball it had not actually inspected for the work
+     * in question. A proof list that is never extended degrades into "the
+     * package exists", which is what `npm view` already told us.
+     *
+     * Each entry names the thing it proves, so the next person knows whether
+     * to add to it or replace it.
+     */
     builtProof: {
       file: "dist/server.js",
-      mustContain: ["resolveKeyringPath", "retireRole", "Nothing was written"],
+      mustContain: [
+        // 0.10.2 — the vault_add_role orphan / keyring-resolution fix
+        "resolveKeyringPath",
+        "retireRole",
+        "Nothing was written",
+        // 0.10.3 — the UX lock: plain-English fields on every user-facing tool
+        "planVoice",
+        "Nothing has changed yet",
+        "money_moved",
+        // 0.10.3 — token symbols in prose instead of 64-char account ids
+        "displaySymbol",
+        // 0.10.3 — node labels resolved so summaries stop saying "node N"
+        "resolveNode",
+      ],
     },
+    /**
+     * And the NEGATIVE: the tree-vocabulary templates must be gone from the
+     * shipped builders. A "must contain" list cannot prove a removal.
+     */
+    mustNotContain: [{ file: "dist/payloads.js", patterns: ["node ${nodeId}", "Node ${nodeId}"] }],
     // mcp ships SKILL.md too, copied at `prepack` from the repo root — same
     // refresh-only-on-publish trap that left create-float 0.8.1 with a guide
     // 49 lines behind.
@@ -303,6 +332,36 @@ for (const pkg of PACKAGES) {
         problems += 1;
       } else {
         console.log(`  ok  ${rel} is byte-identical`);
+      }
+    }
+
+    /**
+     * REMOVALS, which a mustContain list structurally cannot verify.
+     *
+     * "node ${nodeId}" is a template literal in the SOURCE; after tsc it is
+     * still a template literal in the emitted JS, so the published bundle is
+     * searchable for it. If one comes back, the summaries are speaking tree
+     * vocabulary at users again.
+     */
+    for (const spec of pkg.mustNotContain ?? []) {
+      const theirs = existsSync(join(got.dir, spec.file))
+        ? readFileSync(join(got.dir, spec.file), "utf8")
+        : null;
+      if (theirs === null) {
+        console.error(`  MISSING from the published tarball: ${spec.file}`);
+        problems += 1;
+        continue;
+      }
+      for (const pat of spec.patterns) {
+        if (theirs.includes(pat)) {
+          console.error(
+            `  published ${spec.file} still contains "${pat}" — tree vocabulary is back in` +
+              `${LF}      user-facing summaries.`,
+          );
+          problems += 1;
+        } else {
+          console.log(`  ok  published ${spec.file} is free of "${pat}"`);
+        }
       }
     }
 
