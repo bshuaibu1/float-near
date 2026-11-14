@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { explainOutcome } from "./explain.js";
+import { explainOutcome, planVoice } from "./explain.js";
 
 /**
  * This is product COPY, so the tests are about what a person is told.
@@ -205,5 +205,86 @@ describe("an unknown code is handled honestly", () => {
     expect(e.say).not.toMatch(LOOKS_LIKE_A_CODE);
     expect(e.say).toMatch(/nothing was sent/i);
     expect(e.next).toContain("SOME_NEW_RULE");
+  });
+});
+
+/**
+ * The sentence an unsigned owner payload gets.
+ *
+ * The thing worth pinning is not the wording but the three CLAIMS: that the
+ * human has to act, what it will do, and that nothing has happened yet. The
+ * last one is the one an agent drops, and dropping it means telling someone a
+ * limit was raised when they have not approved it.
+ */
+describe("planVoice", () => {
+  it("says the human must act, and that nothing has changed yet", () => {
+    const v = planVoice({ summary: 'Set node 1 caps to 25/day, 10/tx USDC' });
+    expect(v.say).toMatch(/needs you/i);
+    expect(v.say).toMatch(/can't make this change myself/i);
+    expect(v.say).toMatch(/Nothing has changed yet/i);
+    expect(v.say).toContain("Set node 1 caps to 25/day, 10/tx USDC");
+    expect(v.next).toMatch(/approve it in your wallet/i);
+  });
+
+  /**
+   * 1 yoctoNEAR is the NEP-141 anti-phishing deposit. Telling a person their
+   * approval "sends 0.000000000000000000000001 NEAR" is noise that makes a
+   * safe action look strange.
+   */
+  it("does NOT mention a 1-yocto deposit", () => {
+    const v = planVoice({ summary: "Do a thing", depositYocto: "1" });
+    expect(v.say).not.toMatch(/NEAR with it/);
+  });
+
+  it("states a real deposit in NEAR, and that it is not a fee", () => {
+    // 0.12 NEAR — what add_role attaches to fund an agent's gas key.
+    const v = planVoice({ summary: "Add the news agent", depositYocto: "120000000000000000000000" });
+    expect(v.say).toContain("0.12 NEAR");
+    expect(v.say).toMatch(/not a fee/i);
+  });
+
+  /** Warnings exist only for destructive actions, so they outrank brevity. */
+  it("carries the first warning through", () => {
+    const v = planVoice({
+      summary: "Send 50 USDC out of the vault",
+      warnings: ["This leaves the vault with nothing to pay from.", "second"],
+    });
+    expect(v.say).toContain("This leaves the vault with nothing to pay from.");
+    expect(v.say).not.toContain("second");
+  });
+
+  it("ignores blank warnings rather than appending whitespace", () => {
+    const v = planVoice({ summary: "Do a thing", warnings: ["   ", ""] });
+    expect(v.say.trim()).toBe(v.say);
+    expect(v.say).toMatch(/Nothing has changed yet\.$/);
+  });
+
+  /**
+   * THE JARGON GATE. Every forbidden term from SKILL.md's "Never" list, run
+   * against the sentence a user is actually shown. A `say` that leaks one of
+   * these has failed at the one job it has.
+   */
+  it("leaks no jargon into the user-facing sentence", () => {
+    const v = planVoice({
+      summary: "Set node 1 caps to 25/day",
+      depositYocto: "120000000000000000000000",
+      warnings: ["Careful."],
+    });
+    for (const banned of [
+      "yocto",
+      "RPC",
+      "keyring",
+      "nonce",
+      "wasm",
+      "NEP-611",
+      "ed25519",
+      "base units",
+      "reason_code",
+      "vault_pay",
+      "vault_plan",
+      "NEAR_VAULT",
+    ]) {
+      expect(v.say, `"${banned}" must not appear in say`).not.toContain(banned);
+    }
   });
 });

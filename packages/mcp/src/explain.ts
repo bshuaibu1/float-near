@@ -262,3 +262,69 @@ export function explainOutcome(c: OutcomeContext): Explanation {
     }
   }
 }
+
+/**
+ * The user-facing sentence for an UNSIGNED owner payload.
+ *
+ * WHY PLAN TOOLS NEEDED THIS TOO. `vault_pay` returned `say`/`next_step`/
+ * `money_moved` and the plan tools returned `{action, summary, warnings,
+ * unsigned_payload, approve_with}` — five technical keys and no sentence. So
+ * agents narrated the mechanism: "returns an unsigned payload; the server does
+ * not sign; run `near contract call-function`…". All true, and unusable by the
+ * person who asked to raise a limit.
+ *
+ * THE THREE THINGS A PERSON NEEDS HERE, in order:
+ *   1. this needs YOU — the agent cannot do it
+ *   2. what it will do, in the units they named
+ *   3. nothing has happened yet
+ *
+ * (3) matters most and is the easiest to leave out. An unsigned payload is a
+ * *proposal*; an agent that says "I've raised the limit" has lied about state
+ * the user is about to be asked to change themselves.
+ *
+ * `summary` is reused verbatim rather than rewritten. It is built where the
+ * amounts and tokens are known, in the units the caller passed, and
+ * duplicating that formatting here is how the two drift into disagreeing about
+ * a number. It does still say "node 1" — the honest fix for that is better
+ * summaries in `payloads.ts`, not a second renderer guessing at them here.
+ */
+export function planVoice(p: {
+  summary: string;
+  depositYocto?: string;
+  warnings?: string[];
+}): { say: string; next: string } {
+  const bits: string[] = [];
+
+  // (1) and (2) together, because "needs you" is meaningless without "to do
+  // what". Leading with the actor is what stops the agent claiming the credit.
+  bits.push(`This one needs you — I can't make this change myself. ${p.summary}.`);
+
+  /**
+   * A DEPOSIT IS STATED, ALWAYS, WHEN THERE IS ONE.
+   *
+   * 1 yoctoNEAR is the NEP-141 anti-phishing deposit — a rounding error that
+   * no person should ever be told about. Anything larger is real money leaving
+   * their wallet, and a wallet prompt showing an unexplained NEAR figure is
+   * the fastest way to make a safe action look like a scam.
+   */
+  const dep = BigInt(p.depositYocto ?? "0");
+  if (dep > 1n) {
+    const near = (Number(dep) / 1e24).toFixed(3).replace(/\.?0+$/, "");
+    bits.push(`It sends ${near} NEAR with it, which the vault keeps — not a fee.`);
+  }
+
+  // (3). Said last so it is the thing left ringing.
+  bits.push("Nothing has changed yet.");
+
+  // `warnings` is non-empty only for destructive or hard-to-undo actions, so
+  // when one exists it outranks brevity.
+  const firstWarning = (p.warnings ?? []).find(
+    (w): w is string => typeof w === "string" && !!w.trim(),
+  );
+  if (firstWarning) bits.push(firstWarning);
+
+  return {
+    say: bits.join(" "),
+    next: "Approve it in your wallet, then tell me and I'll confirm it went through.",
+  };
+}

@@ -82,3 +82,22 @@ export async function tokenMeta(
 export function label(token: string, meta: TokenMeta | null): string {
   return meta ? `${meta.symbol} (${token})` : token;
 }
+
+/**
+ * The symbol ALONE, for a sentence a person reads.
+ *
+ * `label()` returns `USDC (17208628f84f5d6ad33f…)`, which is right for a JSON
+ * field — the id is what a support conversation needs — and wrong inside
+ * prose. Dropped into a `say` it produced "1 usdc.testnet a day", and on
+ * mainnet it would have been "1 17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1 a day",
+ * because Circle-native USDC's account id is 64 hex characters.
+ *
+ * Falls back to "tokens" rather than the id. An unresolvable symbol is a
+ * cosmetic loss; a 64-character hex string in the middle of a sentence tells
+ * the reader the product is broken. `vault_pay` already did exactly this —
+ * `meta?.symbol ?? "tokens"` — and this just names the pattern so the next
+ * caller does not have to rediscover it.
+ */
+export function displaySymbol(meta: TokenMeta | null): string {
+  return meta?.symbol ?? "tokens";
+}

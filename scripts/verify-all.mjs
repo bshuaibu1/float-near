@@ -481,6 +481,25 @@ const steps = [
     mustMatch: /plugin: manifest declares .+ via npx, skill matches the root/,
     mustNotMatch: /BROKEN/,
   },
+  {
+    /**
+     * The product-voice contract. SKILL.md and the server's `instructions` are
+     * the ONLY mechanism making a driving agent speak like a product rather
+     * than narrating gas keys and reason codes — nothing at runtime enforces
+     * it. Load-bearing text that nothing asserts on is one refactor from being
+     * summarised away, and it already half-happened: the rules existed at line
+     * 308, after the tool tables an agent actually follows mid-task.
+     *
+     * Also asserts every tool the rules promise a `say` from returns one. A
+     * doc telling agents to "relay say" is worse than nothing when half the
+     * tools have none — the agent falls back to inventing a technical story.
+     */
+    name: "ux voice",
+    cmd: "node scripts/check-ux-voice.mjs",
+    cwd: ".",
+    mustMatch: /ux voice: SKILL\.md carries the voice contract before the tool tables/,
+    mustNotMatch: /BROKEN/,
+  },
 ];
 
 // Mutation suites are discovered, not listed, so a deleted one cannot linger

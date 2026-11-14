@@ -95,7 +95,7 @@ import { fileURLToPath } from "node:url";
 
 import { listAgents, listRoles, listUnloadable, selectRole } from "./roles.js";
 import { resolveKeyringPath } from "./keyring-path.js";
-import { label as tokenLabel, tokenMeta, type TokenMeta } from "./token-meta.js";
+import { displaySymbol, label as tokenLabel, tokenMeta, type TokenMeta } from "./token-meta.js";
 
 /**
  * A decimal NEAR string to yoctoNEAR, without floating point.
@@ -110,7 +110,7 @@ function toYoctoNear(n: string): string {
 }
 import { buildCreatePlan, FACTORY_BY_NETWORK } from "./create.js";
 import { buildRoute, sendRequestPayment, type RouteArg } from "./sign.js";
-import { explainOutcome } from "./explain.js";
+import { explainOutcome, planVoice } from "./explain.js";
 import { getQuote, signBinding, toBase64 } from "./quote.js";
 
 /** How long a quote stays valid. Long enough to sign and send, short
@@ -341,18 +341,79 @@ function tokenFor(t?: string): string {
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 const json = (v: unknown) => text(JSON.stringify(v, null, 2));
 
-/** Payload + summary + warnings + a runnable command, so approving needs no trust in this server. */
-function renderPlan(p: OwnerPayload) {
+/**
+ * Payload + summary + warnings + a runnable command, so approving needs no
+ * trust in this server — fronted by the plain-English fields.
+ *
+ * THE UX FIELDS COME FIRST, AND THEY ARE THE SAME THREE `vault_pay` RETURNS.
+ * This used to return five technical keys and no sentence, so agents described
+ * the mechanism — "returns an unsigned payload; the server does not sign; run
+ * `near contract call-function`…" — to someone who had asked to raise a limit.
+ * One shape across every tool means the instruction can be one sentence:
+ * relay `say`, add `next_step`, stop.
+ *
+ * `money_moved` is ALWAYS false here, and that is not a technicality worth
+ * hiding: a plan is a proposal. Nothing has moved, nothing has changed, and an
+ * agent that reports otherwise has lied about state the user is about to be
+ * asked to change themselves.
+ *
+ * `unsigned_payload` stays TOP-LEVEL rather than moving under `technical`:
+ * `scripts/check-mcp-live.mjs` asserts on it against the real server, and
+ * quietly renaming the key it reads would turn a live check green-by-absence.
+ */
+async function renderPlan(p: OwnerPayload) {
+  const voice = planVoice(p);
+
+  /**
+   * SWAP TOKEN IDS FOR SYMBOLS IN THE SENTENCE ONLY.
+   *
+   * `summary` is built in `payloads.ts`, which is pure and has no network — so
+   * it prints the token's ACCOUNT ID. For mainnet USDC that is 64 hex
+   * characters, and `planVoice` reuses the summary verbatim, so the sentence
+   * read: 'Create budget node "research" as the ROOT with
+   * 17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1: 5/day'.
+   *
+   * Resolving here rather than in `payloads.ts` keeps that module pure and
+   * synchronously testable, which is worth more than saving this substitution.
+   * `technical.summary` is left EXACT — the id is the useful form there.
+   *
+   * Only the `say` is rewritten, and only for ids actually present, so a
+   * payload with no tokens costs nothing.
+   */
+  let say = voice.say;
+  const ids = [
+    ...new Set(
+      (Array.isArray(p.args.limits) ? (p.args.limits as { token?: unknown }[]) : [])
+        .map((l) => l?.token)
+        .filter((t): t is string => typeof t === "string" && say.includes(t)),
+    ),
+  ];
+  if (ids.length > 0) {
+    const metas = await metaFor(ids);
+    for (const id of ids) {
+      const sym = metas.get(id)?.symbol;
+      // Substituted ONLY when a symbol actually resolved. Falling back to
+      // "tokens" here would erase which token a limit applies to, and a
+      // multi-token payload would become ambiguous.
+      if (sym) say = say.split(id).join(sym);
+    }
+  }
+
   return json({
-    action: p.methodName,
-    summary: p.summary,
-    warnings: p.warnings,
+    say,
+    next_step: voice.next,
+    money_moved: false,
     unsigned_payload: {
       receiver_id: p.receiverId,
       method_name: p.methodName,
       args: p.args,
       gas_tgas: p.gasTgas,
       deposit_yocto: p.depositYocto,
+    },
+    technical: {
+      action: p.methodName,
+      summary: p.summary,
+      warnings: p.warnings,
     },
     approve_with: toCliCommand(p, cfg.network),
     note:
@@ -694,6 +755,12 @@ server.tool(
 
     if (config.owner !== owner) {
       return json({
+        say:
+          `That vault address already belongs to someone else, so it is not yours to use. ` +
+          `Nothing was changed. I can set one up for you under a different name instead — ` +
+          `want me to?`,
+        next_step: `Say the word and I'll create a vault under a label, on a different address.`,
+        money_moved: false,
         status: "NOT_YOURS",
         vault: target,
         actualOwner: config.owner,
@@ -818,7 +885,27 @@ server.tool(
       nextSteps.push(`vault_tree shows the budget shape; vault_budget shows what is left today.`);
     }
 
+    /**
+     * "LIVE" PLUS A CONFIG DUMP IS NOT AN ANSWER TO "did it work?".
+     *
+     * `funding` and `nextSteps` already hold everything a person needs; what
+     * was missing was the one sentence that orders them. The empty-vault case
+     * is the one that matters: a vault that exists but holds nothing cannot
+     * pay, and "LIVE" on its own reads as done.
+     */
+    const liveSay = empty
+      ? `Your vault is set up and ready. It has no money in it yet, so add funds to it and ` +
+        `then I can start paying from it.`
+      : agentKeys === 0
+        ? `Your vault is set up and funded. One thing left: it needs an agent budget before ` +
+          `anything can be paid from it.`
+        : `Your vault is live, funded, and has an agent that can pay within its limits. ` +
+          `Nothing else to do.`;
+
     return json({
+      say: liveSay,
+      next_step: nextSteps[0] ?? null,
+      money_moved: false,
       status: "LIVE",
       vault: target,
       owner: config.owner,
@@ -943,7 +1030,36 @@ server.tool(
     const tok = tokenFor(token);
     const meta = (await metaFor([tok])).get(tok) ?? null;
     const d = meta?.decimals ?? cfg.decimals;
+    // The SYMBOL for the sentence; the full `SYMBOL (id)` label stays on the
+    // `token` field below, where the id is useful rather than alarming.
+    const sym = displaySymbol(meta);
+    const cap = fromBaseUnits(BigInt(b.daily_cap!), d);
+    const used = fromBaseUnits(BigInt(b.executed!), d);
+    const left = fromBaseUnits(BigInt(b.available!), d);
+    const inFlight = fromBaseUnits(BigInt(b.pending!), d);
+
+    /**
+     * A BUDGET READ IS THE COMMONEST QUESTION A PERSON ASKS, and it was
+     * answered with eight fields and no sentence — including `day: 20768`.
+     * "Today: 0.25 of 25 USDC used, 24.75 left" is the same facts in the order
+     * someone asked for them.
+     *
+     * `pending` is mentioned ONLY when it is non-zero. It is in-flight money —
+     * reserved, not yet settled — and naming it on every read invites the
+     * question "what's pending?" when the answer is almost always "nothing".
+     * But when it IS non-zero, leaving it out makes the arithmetic look wrong:
+     * cap minus used would not equal what is left.
+     */
+    const pendingNote = BigInt(b.pending!) > 0n ? ` ${inFlight} ${sym} is still in flight.` : "";
+
     return json({
+      say:
+        `Today: ${used} of ${cap} ${sym} used, ${left} ${sym} left.${pendingNote}` +
+        ` Resets at midnight UTC.`,
+      next_step: null,
+      // A read moves nothing. Stated rather than omitted so the field means the
+      // same thing on every tool that has it.
+      money_moved: false,
       node_id: nodeId,
       token: tokenLabel(tok, meta),
       /**
@@ -958,10 +1074,10 @@ server.tool(
       date: new Date(Number(b.day) * 86_400_000).toISOString().slice(0, 10),
       day: b.day,
       resets: "00:00 UTC",
-      daily_cap: fromBaseUnits(BigInt(b.daily_cap!), d),
-      executed: fromBaseUnits(BigInt(b.executed!), d),
-      pending: fromBaseUnits(BigInt(b.pending!), d),
-      available: fromBaseUnits(BigInt(b.available!), d),
+      daily_cap: cap,
+      executed: used,
+      pending: inFlight,
+      available: left,
     });
   },
 );
@@ -1331,7 +1447,44 @@ server.tool(
       fundingYocto,
     );
 
+    /**
+     * THE SENTENCE FOR THE MOMENT THIS TOOL IS USED.
+     *
+     * This returned a public key, a keyring path, a payload and two warnings —
+     * and agents duly reported "generated an ed25519 keypair, wrote it to the
+     * keyring; the 0.12 NEAR deposit funds a NEP-611 gas key" to someone who
+     * had asked for a news agent with a small budget.
+     *
+     * What the person needs is the BUDGET, in the units they named, and that
+     * one approval stands between them and it. The key, the path and the
+     * funding mechanics are real and stay in the payload for the agent.
+     *
+     * The caps are re-stated from the ARGUMENTS rather than the built payload,
+     * because the payload holds base units and the caller spoke in tokens.
+     */
+    /**
+     * RESOLVE THE SYMBOL. Passing `null` metadata here printed the token's
+     * ACCOUNT ID in the sentence — "1 usdc.testnet a day", and on mainnet a
+     * 64-character hex string. One cached view call, and it degrades to
+     * "tokens" rather than to an id when the chain cannot be reached, which
+     * keeps this tool usable offline.
+     */
+    const roleMeta = await tokenMeta(cfg.rpcUrl, tokenFor(token), (rpc, t) =>
+      viewFunction(rpc, t, "ft_metadata", {}),
+    ).catch(() => null);
+
+    const roleSay =
+      `I'll set up a ${role} budget: ${dailyCap} ${displaySymbol(roleMeta)} a day, and no ` +
+      `single payment over ${perTxCap}. You approve it once in your wallet, and after that ` +
+      `I can pay within those limits — I can't raise them myself. Nothing has changed yet.`;
+
     return json({
+      say: roleSay,
+      next_step:
+        `Approve it in your wallet, then tell me and I'll confirm the ${role} budget is live.`,
+      // The approval moves 0.12 NEAR into the agent's gas key when signed, but
+      // NOTHING has moved at this point — this is an unsigned proposal.
+      money_moved: false,
       role,
       agent: {
         publicKey: generated.publicKey,

@@ -30,8 +30,101 @@ the agent itself can change. Float gives it a **function-call key restricted to
 one method on one contract**, and puts the limits in a contract the key cannot
 reach.
 
-Read the next section before doing anything. It is the part that decides which
-of your requests can succeed.
+**Read the two sections below before doing anything.** The first decides how you
+speak to the person you are helping; the second decides which of your requests
+can succeed at all.
+
+## How you talk to the human (non-negotiable)
+
+**You are the product voice. The human is not debugging Float.** They asked for
+something to be paid, or set up, or limited. Everything below exists because
+the natural failure mode of a coding agent is to narrate the machine — rails,
+gas keys, reason codes, env vars — to someone who wanted one sentence.
+
+**Always:**
+
+- **2–4 short sentences** for a normal outcome. Not a report.
+- **Lead with the outcome**: paid / blocked / needs your approval / needs setup.
+- **Say whether money moved.** Yes or no, explicitly. It is the one fact a
+  person cannot infer and must never have to guess.
+- **One clear next step** when something is blocked — not a menu.
+- Everyday words: limit, budget, payment, wallet, *approve in your wallet*.
+
+**Never — unless they explicitly ask for technical detail, or are plainly a
+developer debugging:**
+
+- reason codes (`PARENT_PER_TX_LIMIT`, `COOLDOWN`, …)
+- tool names (`vault_pay`, `vault_add_role`, `vault_plan_set_caps`)
+- env vars, key files, keyrings, RPC urls, gas keys, nonces, wasm, yoctoNEAR,
+  base units, node ids
+- a setup essay in the middle of a task
+- several options when one sensible default exists
+
+### Use the tool's own words
+
+Tools return the user-facing sentence already built, with the real numbers in
+it:
+
+```json
+{
+  "say": "Sent 0.25 USDC to test015.near. Money moved.",
+  "next_step": null,
+  "money_moved": true,
+  "technical": { "status": "SETTLED", "reason_code": null }
+}
+```
+
+**Relay `say`. Add `next_step` if it is not null. Stop.** Do not re-derive a
+more technical story out of `technical` — those fields are for you, and for the
+moment someone asks *why*.
+
+`say` is built where the numbers live, which is why it can name the cap that
+bound and what is left today. A sentence you compose from `status` and
+`reason_code` alone cannot, because the payment response never carried them.
+
+### Templates
+
+**Paid:**
+
+> Sent **0.25 USDC** to test015.near. Money moved. About **24.75 USDC** left in
+> today's budget.
+
+**Blocked, over a limit:**
+
+> That payment was **too big** — the most this budget allows per payment is
+> **10 USDC**, and this asked for 15. **Nothing was sent.** Try 10 USDC or
+> less, or raise the limit (I'll give you something to approve in your wallet).
+
+**Needs a human signature:**
+
+> I can't change limits myself — only you can. Here's the change to **approve
+> in your wallet**. Tell me once you have and I'll confirm it's live.
+
+**No vault yet:**
+
+> You don't have a vault yet. Setting one up is **one approval in your wallet**
+> and about **3.7 NEAR** — almost all of it a refundable deposit your vault
+> holds, not a fee. Want me to start?
+
+**Not enough money:**
+
+> The vault doesn't have enough USDC for that. **Nothing was sent.** Add USDC to
+> the vault and ask me again.
+
+### Worked examples, before and after
+
+| situation | ❌ what not to say | ✅ what to say |
+| --- | --- | --- |
+| settled | `status: SETTLED, node_id: 1` | Sent 0.25 USDC to test015.near. Money moved. 24.75 USDC left today. |
+| over cap | "BLOCKED with reason_code PARENT_PER_TX_LIMIT" | That's too big for one payment — the limit is 10 USDC and this asked for 15. Nothing was sent. |
+| policy change | "Returns an unsigned payload; the server does not sign. Run `near contract call-function`…" | I can't change the limit myself — approve this in your wallet and it's done. |
+| new agent | "Generated an ed25519 keypair, wrote it to the keyring; the 0.12 NEAR deposit funds a NEP-611 gas key" | I'll set up a news budget: 1 USDC a day, 0.10 max per payment. Approve once in your wallet and I can pay within those limits. |
+| no vault | "`NEAR_VAULT_CONTRACT` is not set" | You don't have a vault yet — want me to set one up? |
+
+A person who asked to pay a vendor and got `PARENT_PER_TX_LIMIT` has been told
+nothing they can act on. The codes are precise, and that precision is a real
+asset for debugging and for explaining the design. It is just never the first
+thing a person wants.
 
 ## Setup — do this first if you arrived here cold
 
@@ -307,10 +400,13 @@ A refusal comes back as a **value**, not an error. `status: "BLOCKED"` with a
 
 ### Never show a reason code to the user
 
-`vault_pay` already returns a plain-English `say`, a `next_step`, and a
-`money_moved` flag. **Relay `say`, add `next_step` if there is one, and stop.**
-The `reason_code` lives under `technical`; quote it only if the user asks why,
-asks for detail, or is plainly a developer.
+This is governed by **How you talk to the human** near the top of this file —
+one source of truth, so the two cannot drift apart. The short form:
+
+**`vault_pay` returns `say`, `next_step` and `money_moved`. Relay `say`, add
+`next_step` if it is not null, and stop.** The `reason_code` lives under
+`technical`; quote it only if the user asks why, asks for detail, or is plainly
+a developer.
 
 > Say: *"That's too big for one payment — the most per payment is 10 USDC, and
 > this asked for 15. Nothing was sent. Send 10 USDC or less, or ask the vault
@@ -318,13 +414,9 @@ asks for detail, or is plainly a developer.
 >
 > Not: *"The payment was BLOCKED with reason_code PARENT_PER_TX_LIMIT."*
 
-The same applies when it works: *"Sent 0.25 USDC to alice.near. There's 24.75
-USDC left to spend today."* — not `status: SETTLED`.
-
-Someone who asked to pay a vendor and got `PARENT_PER_TX_LIMIT` has been told
-nothing they can act on. The codes are precise and that precision is a real
-asset for debugging and for explaining the design — it is just not what a
-person wants first.
+**A refusal is still an answer, not a failure.** Report it as the budget doing
+its job. And never imply money moved when `money_moved` is false — a blocked
+payment moved nothing, which is the whole point.
 
 ### The codes themselves
 

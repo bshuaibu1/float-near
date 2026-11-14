@@ -54,7 +54,7 @@ const TOKEN =
  * the wrong-chain bug presented while the tool itself returned HTTP 200.
  */
 /**
- * A plan tool returns `{action, summary, warnings, unsigned_payload, ...}`,
+ * A plan tool returns `{say, next_step, money_moved, unsigned_payload, technical}`,
  * and the payload inside is SNAKE_CASE: `receiver_id`, `method_name`.
  *
  * The builder in payloads.ts returns camelCase `receiverId` and the tool layer

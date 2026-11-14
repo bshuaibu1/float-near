@@ -1044,3 +1044,149 @@ describe("a vault_add_role that fails validation writes nothing", () => {
     rmSync(dir, { recursive: true, force: true });
   }, 40_000);
 });
+
+/**
+ * THE UX CONTRACT, asserted against the REAL tools over the REAL protocol.
+ *
+ * `vault_pay` returned `say`/`next_step`/`money_moved` and every other tool
+ * returned raw technical keys, so agents narrated the machine — public keys,
+ * gas keys, unsigned payloads — to people who had asked for a budget. A unit
+ * test on the formatter cannot catch that: the formatter was fine, it just was
+ * not WIRED to most of the tools.
+ *
+ * These two tools are chosen because they need no network and no live vault:
+ * `vault_plan_add_node` with `parent: null` skips the node-existence check, and
+ * `vault_add_role` builds its payload offline against an empty keyring.
+ */
+describe("user-facing tools return the plain-English UX fields", () => {
+  /** Circle-native mainnet USDC. Its account id is 64 hex characters. */
+  const MAINNET_USDC = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+
+  const BASE = {
+    NEAR_VAULT_CONTRACT: "vault.testnet",
+    NEAR_VAULT_NETWORK: "testnet",
+    NEAR_VAULT_TOKEN: "usdc.testnet",
+  };
+
+  /**
+   * A RAW TOKEN ACCOUNT ID IN PROSE.
+   *
+   * Caught by driving the tool and READING the sentence, not by the jargon
+   * list — "usdc.testnet" is not jargon, it is an address, and the list had no
+   * entry that could match it. On mainnet it would have rendered as
+   * "1 17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1 a day",
+   * because Circle-native USDC's id is 64 hex characters.
+   *
+   * The lesson is the general one: a forbidden-WORD list cannot catch a
+   * forbidden SHAPE. This matches the shape.
+   */
+  const looksLikeATokenId = (say: string) =>
+    /[0-9a-f]{40,}/.test(say) || /\w+\.(?:testnet|near)/.test(say.replace(/to \S+\.(?:testnet|near)/g, ""));
+
+  /** Every term SKILL.md forbids in user-facing text. */
+  const JARGON = [
+    "yocto",
+    "reason_code",
+    "NEP-611",
+    "ed25519",
+    "keyring",
+    "NEAR_VAULT",
+    "unsigned_payload",
+    "RPC",
+    "wasm",
+  ];
+
+  it("a plan tool leads with say / next_step / money_moved", async () => {
+    const out = await callTool(
+      "vault_plan_add_node",
+      {
+        parent: null,
+        label: "news",
+        // MAINNET USDC's real id: 64 hex characters. The original version of
+        // this test used "usdc.testnet", which is short enough to look
+        // harmless in a sentence — so it passed while the published tool was
+        // printing a 64-character hash at users. Test the shape that bites.
+        limits: [{ token: MAINNET_USDC, dailyCap: "1", perTxCap: "0.10" }],
+      },
+      { ...BASE, NEAR_VAULT_NETWORK: "mainnet", NEAR_VAULT_TOKEN: MAINNET_USDC },
+    );
+    const r = JSON.parse(out) as Record<string, unknown>;
+
+    expect(typeof r.say).toBe("string");
+    expect((r.say as string).length).toBeGreaterThan(20);
+    expect(r.money_moved).toBe(false);
+    expect(typeof r.next_step).toBe("string");
+    expect(r.next_step as string).toMatch(/wallet/i);
+
+    // A plan is a PROPOSAL. Saying otherwise is the specific lie to prevent.
+    expect(r.say as string).toMatch(/Nothing has changed yet/i);
+
+    // The technical detail still exists — moved, not deleted.
+    expect(r.technical).toBeTruthy();
+    expect(r.unsigned_payload).toBeTruthy();
+
+    for (const bad of JARGON) {
+      expect(r.say as string, `say leaked "${bad}"`).not.toContain(bad);
+    }
+    // THE GAP THAT LET A LEAK SHIP: this shape check was applied to
+    // vault_add_role and not here, so the plan tools went unchecked.
+    expect(r.say as string).not.toContain(MAINNET_USDC);
+    expect(
+      looksLikeATokenId(r.say as string),
+      `say contains a raw token id: ${r.say as string}`,
+    ).toBe(false);
+    expect(r.say as string).toMatch(/USDC/);
+
+    // The id is still exact where it is USEFUL, rather than deleted.
+    expect(JSON.stringify(r.technical)).toContain(MAINNET_USDC);
+  }, 40_000);
+
+  it("vault_add_role describes the BUDGET, not the keypair", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "float-ux-ring-"));
+    const out = await callTool(
+      "vault_add_role",
+      { role: "news", dailyCap: "1", perTxCap: "0.10" },
+      { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "agent-keys.json") },
+    );
+    const r = JSON.parse(out) as Record<string, unknown>;
+    const say = r.say as string;
+
+    // The caps the caller named, in the units they used.
+    expect(say).toContain("1");
+    expect(say).toContain("0.10");
+    expect(say).toMatch(/news/);
+    expect(say).toMatch(/approve/i);
+    expect(r.money_moved).toBe(false);
+
+    // The public key and keyring path are still returned for the agent...
+    expect((r.agent as Record<string, unknown>).publicKey).toBeTruthy();
+    // ...but must not be in what the user hears.
+    for (const bad of JARGON) {
+      expect(say, `say leaked "${bad}"`).not.toContain(bad);
+    }
+    expect(say).not.toContain("ed25519:");
+    // The SHAPE check: no contract address standing in for a token symbol.
+    expect(looksLikeATokenId(say), `say contains a raw token id: ${say}`).toBe(false);
+    // And it must name the token in words a person recognises.
+    expect(say).toMatch(/USDC|tokens/);
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 40_000);
+
+  /**
+   * THE SKILL ASSERTION the UX lock asked for: the agent-facing instructions
+   * must tell an agent to use `say` on a refusal, and must say the code is not
+   * for the user. Without this the rule lives only in a doc the client may
+   * never fetch — `instructions` is injected into the system prompt, so it is
+   * the one place guaranteed to be read.
+   */
+  it("the server instructions require say on a BLOCKED outcome", () => {
+    expect(instructions).toMatch(/say/);
+    expect(instructions).toMatch(/money_moved/);
+    expect(instructions).toMatch(/next_step/);
+    // It must name the refusal case explicitly, not just the happy path.
+    expect(instructions).toMatch(/BLOCKED|refus/i);
+    // And it must forbid showing the code.
+    expect(instructions).toMatch(/NEVER SHOW A REASON CODE|reason code/i);
+  });
+});
