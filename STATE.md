@@ -185,6 +185,14 @@ state changes, and re-stamp the commit line above.
     substring in the emitted JS even though the runtime output contains it. Grepping for it
     reports MISSING for a good build, identical to the feature being absent. Markers must be
     single identifiers, never sentences.
+- **`bind_virtual_agent` DOES NOT INSTALL A GAS KEY — `add_role` is the only contract function
+  that does.** Measured 2026-11-14 while building a bind link for the `news` node: binding only
+  inserts into `pubkey_to_node`, which grants AUTHORITY and no ability to submit. The key would
+  have shown as `BOUND_BUT_NO_GAS_KEY` and every payment would have failed. **So a two-step
+  create-then-bind leaves a non-working agent** unless `float-agent` (CLI) installs and funds the
+  gas key afterwards — which is itself a CLI job, because installing a key means signing AS THE
+  VAULT and browser wallets ignore `signerId`. This is the strongest practical argument for the
+  one-approval `add_role` path: the two-step route is not merely slower, it is **incomplete**.
 - **CREATING AN AGENT IS NOW ONE APPROVAL, EVEN WHEN YOU KEEP YOUR OWN KEY (2026-11-14).**
   `add_role` creates the node, binds the key and installs the funded gas key in a **single
   contract call** — the chain could always do it in one. The wallet path degraded into
