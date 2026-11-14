@@ -363,6 +363,38 @@ We would rather you read these here than discover them.
 
 ---
 
+## Hackathon disclosures
+
+Stated here because the rules ask for them, and because a judge finding any of
+it unstated is worse than reading it.
+
+**All of this was built in the window.** First commit **2026-10-26**, after the
+2026-10-19 announcement; 585 commits, none before. There is no pre-hackathon
+baseline to separate out, and no earlier version of this code.
+
+**There is a sibling product on another chain** *(Q-002)*. The same team ships
+[`@usefloat/mcp`](https://www.npmjs.com/package/@usefloat/mcp) — a Float for
+Solana, submitted to a different hackathon. **It shares no code with this
+repository.** Different chain, different contract, different package scope
+(`@usefloat` vs `@floatonnear`). The hierarchical budget tree, the vault
+contract, the function-call-key restriction and everything in this repo were
+written here, for NEAR. Only the brand and the general idea — give an agent a
+budget it cannot exceed — are common.
+
+**This was built with heavy AI assistance** *(Q-005)*. Most of the code,
+tests and documentation were written with Claude Code, under human direction
+and review. The commit history shows it: commits are co-authored and the
+reasoning is in the comments rather than hidden. That reasoning is deliberate —
+several comments name the exact measurement or incident that produced a line,
+because this codebase's hardest bugs were ones where the test passed and the
+behaviour was still wrong.
+
+**No other libraries or templates beyond the dependencies in
+`package.json` / `Cargo.toml`.** The contract is written from scratch on
+`near-sdk`; the MCP server on the official `@modelcontextprotocol/sdk`.
+
+---
+
 ## Docs
 
 Read them in this order. **If any two disagree, `STATE.md` wins** — it is the
