@@ -1,4 +1,4 @@
-<!-- STAMP commit=5bdfe1d date=2026-11-14 -->
+<!-- STAMP commit=308a644 date=2026-11-14 -->
 # Float on NEAR — what is true right now
 
 **One page. Hard cap.** If it grows past one screen, something belongs in `docs/` instead.
@@ -202,8 +202,8 @@ state changes, and re-stamp the commit line above.
     runs deployed code) or the demo. **Release AFTER submission**, and create a testnet vault and
     nest on it first. `create-float`'s prepack already refuses to publish until someone rebuilds
     on purpose: `cd contracts/vault && cargo near build non-reproducible-wasm --no-abi`, then
-    from `packages/create-float`, `BUNDLE_WASM_RERECORD=1 node scripts/bundle-wasm.mjs` — the
-    path is package-relative, not repo-root.
+    `BUNDLE_WASM_RERECORD=1 node packages/create-float/scripts/bundle-wasm.mjs` — note that
+    bundler lives under the PACKAGE, not in the repo-root `scripts/`.
 - **BUDGET-TREE BARS FIXED AND DEPLOYED (2026-11-14).** The master "Used today" bar never moved.
   The numbers were right: the API rounds `dailyBudgetUsedPercent` to an integer, so a real
   **0.02 USDC against the 25 USDC master = 0.080%** arrived as `0`, and the card printed
@@ -1190,6 +1190,40 @@ so drift fails two suites.
       `list_blocked` is a plain view call: no scanner, no coverage caveat, no "UNKNOWN rather
       than absent" banner, correct for every vault the instant it is created. Contract change
       + republish, so it was never a same-day option.
+12. **THE AGENT DECLINES BEFORE THE CONTRACT EVER REFUSES — so the enforcement leaves no
+    trace** (measured 2026-11-14 17:52 UTC, mainnet). Asked to pay 0.35 USDC from `marketing`
+    against caps just tightened to 0.05/tx and 0.35/day, the agent answered with a correct,
+    well-reasoned refusal naming BOTH caps — and **never called `request_payment`**. Verified
+    two ways: NearBlocks shows the vault's last transaction as `set_node_caps` at 17:16:01 with
+    nothing after it for 36 minutes, and `vault_pay` itself has **no pre-flight cap check** —
+    [`server.ts:2295`](packages/mcp/src/server.ts) goes straight to `sendRequestPayment`, so a
+    refusal that *had* reached the contract would necessarily be on chain. The agent read
+    `vault_budget`/`vault_tree` (the MCP's own "look before acting" guidance) and reasoned its
+    way out.
+    - **A nonce probe was run and DISCARDED as inconclusive**, recorded so it is not re-run as
+      if it proved anything: all three function-call keys read nonce `0` because they are
+      NEP-611 gas keys, which do not track nonces like ordinary access keys. Only the owner's
+      FullAccess key carries a real nonce. That check cannot see agent activity at all.
+    - **Why it matters beyond the demo.** An agent choosing not to overspend is *politeness*;
+      the key being unable to overspend is the *guarantee*. Those are different claims, and a
+      demo that only ever shows the agent declining demonstrates the weaker one. It also means
+      the dashboard's refusal feed will under-report in normal use: the better the agent, the
+      fewer contract refusals exist to display. **Tier 2/3 above do not fix this** — they make
+      recorded refusals visible; this is about refusals never being recorded.
+    - **THIS IS A PRODUCT BUG, NOT A DEMO INCONVENIENCE**, and `DECISIONS.md` already said so
+      hours earlier on 2026-11-14: *"if the client refuses, the user never sees the contract
+      refuse and starts believing the client is the enforcer — the soft-budget illusion
+      re-entering through the UI."* That row closed the pre-check in the MCP's **code** (and
+      `vault_pay` is correct). The agent's reasoning reopened it one layer **up**, where no
+      code change is implicated and no test can see it. A refusal costs **0.000866 NEAR for a
+      settled payment, less for a blocked one** — so "pre-checking saves gas" defends a fifth
+      of a cent against the product's central claim.
+    - **The fix is in the MCP's GUIDANCE, not its code.** "Look before acting" must read as
+      *for planning*, never as *for gatekeeping*, with the contract named as the only gate.
+      Not yet written.
+    - **To produce one on demand**, the agent must be told explicitly to submit without
+      pre-checking. `scripts/prove-refusal.mjs <amount> <recipient>` exists for exactly this
+      and refuses to sign any amount that could actually settle.
 
 ## Next 3 steps
 

@@ -50,7 +50,15 @@ const BACKSLASH = String.fromCharCode(92);
 // Built from char codes: every layer between here and the file has mangled a
 // literal backslash in a character class at least once today.
 const REF = new RegExp(
-  "scripts[/" + BACKSLASH + BACKSLASH + "]([A-Za-z0-9._/-]+" + BACKSLASH + ".(?:mjs|sh|ps1))",
+  // GROUP 1 is any path PREFIX written in front of `scripts/`, which the first
+  // version threw away. A root-level doc citing
+  // `packages/create-float/scripts/bundle-wasm.mjs` had its prefix discarded,
+  // leaving `scripts/bundle-wasm.mjs` to be resolved against the repo root --
+  // where it has never existed -- so a perfectly correct reference was
+  // reported dangling and the only way to satisfy the check was to write a
+  // WORSE instruction. The prefix is right there in the text; use it.
+  "((?:[A-Za-z0-9._-]+[/" + BACKSLASH + BACKSLASH + "])*)" +
+    "scripts[/" + BACKSLASH + BACKSLASH + "]([A-Za-z0-9._/-]+" + BACKSLASH + ".(?:mjs|sh|ps1))",
   "g",
 );
 
@@ -92,7 +100,12 @@ for (const f of files) {
   if (EXPLAINS_ABSENCE.has(f)) continue;
   if (s.includes(RECOVERY_POINTER)) continue;
   for (const m of s.matchAll(REF)) {
-    const name = m[1].split(BACKSLASH).join("/");
+    const prefix = (m[1] ?? "").split(BACKSLASH).join("/");
+    const name = m[2].split(BACKSLASH).join("/");
+
+    // The path EXACTLY as written, prefix included. Tried first, because it is
+    // the one the reader will copy.
+    if (prefix && existsSync(join(prefix, "scripts", name))) continue;
     if (existsSync(join("scripts", name))) continue;
 
     /**
