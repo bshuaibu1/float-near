@@ -131,8 +131,20 @@ state changes, and re-stamp the commit line above.
   New `key_location`, default **`wallet`**: nothing is written and the refusal *is* the
   instructions (keep the key yourself → hand over the public half → `vault_plan_bind_agent`,
   or ask again with `local`). `local` generates here and **discloses it in the same breath as
-  the bound**: "created on THIS computer… can make those payments without asking you again…
-  cannot move money out, change any limit, or reach anything the owner controls."
+  the bound**. The wording was then strengthened (`d787fa6`) to lead with the CAPABILITY rather
+  than the file, and it now reads, verbatim:
+  > *WORTH BEING CLEAR: this machine will now hold a spending key for your vault. Once you
+  > approve, it can spend up to 5 USDC a day, 1 at a time, WITHOUT asking you again. It cannot
+  > withdraw your money. It cannot change any limit, including its own. It cannot do anything
+  > else an owner can. That is **NEAR enforcing it, not a rule I follow** — the key is locked to
+  > a single payment request on this one contract, and anything else it tried would simply be
+  > refused.*
+
+  The three "cannot"s are separate sentences because each answers a different fear (empty the
+  vault / raise its own allowance / act as me), and the last clause is the load-bearing one: an
+  AI saying it has *voluntarily* limited itself is worth nothing. SKILL.md quotes the whole
+  paragraph and says **relay it whole, do not summarise it into "the key is restricted"**.
+  The method NAME is deliberately kept out of user-facing text; it stays in the payload.
   - `vault_roles` now names WHERE the secret lives — `key: "local (this machine holds the
     secret)"` vs `key: "wallet-only (this machine does NOT hold the secret)"`. It reported
     `status` alone, so "usable" and "the secret is on this disk" were one label.
@@ -147,22 +159,44 @@ state changes, and re-stamp the commit line above.
   - **DEFERRED:** `create-float --agent-key local` and the `add-local-agent` migration command.
     They touch a separately published CLI and would add a second publish to the critical path
     with ~14h to the deadline. `DECISIONS.md` records why.
-- **`mcp 0.10.5` IS BUILT AND *NOT PUBLISHED*. Published 0.10.4 IS BROKEN — abandon it.**
-  0.10.4 went to the registry missing the strengthened local-key disclosure: the version was
-  bumped in `39d0bab`, the disclosure changed in `d787fa6`, and the publish landed between
-  them. 125,426 published vs 127,119 bytes fresh. npm will not let the number be reused.
-  **Guards added so this cannot recur:** `publish-and-verify.mjs` now refuses a dirty or
-  unpushed tree, and compares the published `dist/server.js` byte-for-byte against a fresh
-  build instead of a hand-maintained marker list (which was stale one release after being
-  written). `tsc` output is byte-deterministic — two clean rebuilds, identical 127,119 B.
-- *(superseded)* **`mcp 0.10.4`** Carries the secure-key-default work.
-  **Published 0.10.3 and the repo's 0.10.3 had DIVERGED** — the same-version-different-bytes
-  defect corrected earlier in this very session, caught by checking the published tarball for
-  `keyLocation` (absent). Hence 0.10.4. Both `package.json` and the server's advertised version
-  are bumped; a smoke test guards the pair. **Blocked on a human:** 2FA. Run `npm login` then
-  `npm publish --access public` in `packages/mcp` (omit `--otp`; npm opens a browser), then
-  `node scripts/publish-and-verify.mjs --verify`. An `E404` there means *unauthorised*, not
-  *missing*.
+- **`mcp 0.10.5` IS PUBLISHED AND VERIFIED (2026-11-14). `0.10.4` IS BROKEN — nothing points
+  at it.** Verified not from a publish message but by **downloading the tarball and comparing
+  `dist/server.js` byte-for-byte against a fresh local build** — identical. Cold
+  `npx -y @floatonnear/mcp` (cache cleared) reports **0.10.5**, `vault_add_role` writes **no
+  key** by default, and `keyLocation: "local"` emits the full disclosure including *"NEAR
+  enforcing it"*. `create-float` stays at **0.8.2**, also verified byte-identical.
+  - **Why 0.10.4 is abandoned:** it reached the registry *missing* the strengthened disclosure.
+    The version was bumped in `39d0bab`, the disclosure changed in `d787fa6`, and the publish
+    landed between them — 125,426 published vs 127,119 bytes fresh. npm will not let a version
+    be reused, so the number is permanently wrong. That was the **third** same-version
+    divergence in one session (0.8.1, 0.10.3, 0.10.4).
+  - **Two guards so it cannot recur.** `publish-and-verify.mjs` now (a) **refuses to publish
+    from a dirty or unpushed tree** — the state that lets a bumped version be taken with
+    half-finished source, verified firing on the real tree; and (b) **compares the published
+    build byte-for-byte against a fresh one**, replacing the hand-maintained marker list as the
+    primary proof. `tsc` output is byte-deterministic here (two clean rebuilds, identical
+    127,119 B), positive-controlled against the stale 0.10.4.
+  - **A publish can look un-landed for minutes.** The first `--verify` after 0.10.5 shipped saw
+    nothing; the packument read directly showed it. Registry propagation, not a failed publish —
+    check `registry.npmjs.org/<pkg>` before concluding, as the memory on `npm view` staleness
+    already says.
+  - **Trap found here:** `tsc` PRESERVES source-level string concatenation, so a phrase split
+    across a `+` — `` `That is NEAR ` + `enforcing it` `` — never appears as a contiguous
+    substring in the emitted JS even though the runtime output contains it. Grepping for it
+    reports MISSING for a good build, identical to the feature being absent. Markers must be
+    single identifiers, never sentences.
+- **README REWRITTEN for the now-public repo (2026-11-14).** It leads with the PROBLEM — every
+  agent wallet hands the agent the key and asks you to trust it — because the design only looks
+  interesting once you see what it refuses to do. **Four mermaid diagrams** (GitHub renders
+  them): the trust boundary with the four refusals attributed to the protocol; the budget TREE
+  charging every level, which is why `PARENT_DAILY_BUDGET` is its own answer; a sequence diagram
+  carrying **both** outcomes with the real plain-English sentences; and the `key_location`
+  choice. New sections for the `say`/`next_step`/`money_moved` shape and the key disclosure.
+  **Every figure re-measured rather than carried over** — the old one said "37 checks" (it is
+  40) and gave no test count. Now **1,120 tests** counted per package (427 MCP + 262 CLI + 230
+  adapter + 165 vault + 36 factory), 41 live reason codes, `MAX_DEPTH 4` read from `types.rs`,
+  deposit **3.66839** with an agent / **3.54839** without. Limitations kept and made *more*
+  prominent, including that cross-chain is implemented but **NOT demonstrated on mainnet**.
 - **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
   Measured three times, including `--help`, and once on the real teardown — the vault was
   **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
@@ -222,7 +256,8 @@ state changes, and re-stamp the commit line above.
   commits, so the repo's front page had no README. Main now carries everything.
 - **Git history is CLEAN of secrets** — 3393 text blobs across all refs, verified with a
   planted-secret control (`node scripts/scan-history-secrets.mjs`). This is the pre-flight for
-  making the repo public, which is still **PRIVATE** and therefore invisible to judges.
+  making the repo public — **DONE 2026-11-14, the repo is now PUBLIC** (`isPrivate: false`), so
+  the hackathon qualification requirement is met. History was scanned clean beforehand.
 - **PUBLISHED 2026-11-12 and verified from the registry**: mcp **0.9.0**, create-float
   **0.8.0**, adapter **0.3.0** (were 0.6.5 / 0.6.1 / 0.2.1). So `npx -y @floatonnear/mcp` now
   gets mainnet by default and plain-English refusals instead of raw reason codes.
