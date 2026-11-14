@@ -95,6 +95,7 @@ import { fileURLToPath } from "node:url";
 
 import { listAgents, listRoles, listUnloadable, selectRole } from "./roles.js";
 import { resolveKeyringPath } from "./keyring-path.js";
+import { approveUrl } from "./approve-url.js";
 import { displaySymbol, label as tokenLabel, tokenMeta, type TokenMeta } from "./token-meta.js";
 
 /**
@@ -374,6 +375,7 @@ const json = (v: unknown) => text(JSON.stringify(v, null, 2));
  */
 async function renderPlan(p: OwnerPayload) {
   const voice = planVoice(p);
+  const link = approveUrl(p, { appUrl: cfg.appUrl, network: cfg.network });
 
   /**
    * SWAP TOKEN IDS FOR SYMBOLS IN THE SENTENCE ONLY.
@@ -412,7 +414,16 @@ async function renderPlan(p: OwnerPayload) {
 
   return json({
     say,
-    next_step: voice.next,
+    /**
+     * The spoken next step names the LINK when one exists. "Approve it in your
+     * wallet" is ambiguous when the only thing supplied is a terminal command;
+     * the user has to work out which of the two things in the response they
+     * are supposed to act on.
+     */
+    next_step: link
+      ? "Open the approve_here link and approve it in your wallet, then tell me and " +
+        "I'll confirm it went through."
+      : voice.next,
     money_moved: false,
     unsigned_payload: {
       receiver_id: p.receiverId,
@@ -426,10 +437,25 @@ async function renderPlan(p: OwnerPayload) {
       summary: p.summary,
       warnings: p.warnings,
     },
+    /**
+     * THE LINK COMES FIRST, because approving in your own wallet is the whole
+     * product and a CLI line asks the opposite: hold a full-access key at a
+     * keyboard. This returned only `approve_with` — a 300-character
+     * `near contract call-function` line — while the page had accepted
+     * owner-action links all along.
+     *
+     * `null` when the page cannot render this action (see `approveUrl`), which
+     * is currently only `withdraw`. The CLI stays for exactly that case, and
+     * as a fallback for anyone who prefers it.
+     */
+    approve_here: link,
     approve_with: toCliCommand(p, cfg.network),
-    note:
-      "This server did NOT sign this. Review the summary, then run the command " +
-      "or approve the payload in your wallet.",
+    note: link
+      ? "This server did NOT sign this. Open approve_here and approve it in your " +
+        "own wallet — or run approve_with if you prefer the terminal."
+      : "This server did NOT sign this, and this action has no approval link: the " +
+        "create page does not render it, so it must be run from the terminal with " +
+        "a full-access key.",
   });
 }
 

@@ -502,6 +502,20 @@ const steps = [
      * refused to create anything from a bare URL while a live mainnet factory
      * was deployed.
      */
+    /**
+     * The MCP and the page must agree on which owner actions can be approved
+     * from a LINK. Mirrored across a TypeScript/static-script boundary no
+     * import crosses, so it drifts silently in both directions: a link the
+     * page refuses reads as a broken product, and a method the page supports
+     * but the MCP will not link is a silent downgrade to the CLI.
+     */
+    name: "approve links",
+    cmd: "node scripts/check-approve-url-methods.mjs",
+    cwd: ".",
+    mustMatch: /approve links: page and MCP agree on \d+ owner method/,
+    mustNotMatch: /BROKEN/,
+  },
+  {
     name: "create factory",
     cmd: "node scripts/check-create-factory-default.mjs",
     cwd: ".",
