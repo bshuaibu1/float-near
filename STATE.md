@@ -49,27 +49,27 @@ state changes, and re-stamp the commit line above.
     including `bin/float-exit.mjs`. Only `SKILL.md` and `package.json` (the version field)
     differ. The lesson is the one this repo keeps re-learning: **an npx cache entry is not
     the published artifact** — compare against the tarball the registry serves.
-- **NOTHING IS PUBLISHED YET — both fixes are prepared, unreleased, and BLOCKED ON 2FA.**
-  Registry packument read directly 2026-11-13: `@floatonnear/mcp` latest is still **0.10.1**
-  and `@floatonnear/create-float` latest is still **0.8.1**. npm is now authenticated
-  (`masterwattson`, read-write on both), but `npm publish` returns **`EOTP`** — the account
-  requires a one-time password, which no script can generate. **A human must run, with a
-  fresh ~30s code per package:**
-  `cd packages/mcp && npm publish --access public --otp=XXXXXX`, then the same in
-  `packages/create-float`, then `node scripts/publish-and-verify.mjs --verify`.
-  - **So the `vault_add_role` orphan/keyring fix is NOT live for users.** Verified against
-    the published tarball: `mcp@0.10.1`'s `dist/server.js` contains none of
-    `resolveKeyringPath`, `retireRole`, or `Nothing was written`. Anyone installing today
-    still gets the broken `vault_add_role`.
-  - `scripts/publish-and-verify.mjs` publishes and then **proves** the registry serves this
-    repo's bytes by downloading the tarball and diffing it — never from a success message,
-    the same reason `check-live-docs.mjs` exists for the skill host. It checks `SKILL.md` for
-    both packages, because that is the file that was actually stale and a code-only verifier
-    would have called create-float clean. Positive-controlled against published 0.8.1.
-  - Its first run reported `PUBLISH FAILED` with nothing but a file listing: npm writes its
-    whole tarball listing to **stderr** as `npm notice` lines and the real error LAST, so
-    slicing the first 400 chars buried the `EOTP` entirely. Now prints the tail and names the
-    EOTP case. **A truncated error message is the same defect class as a silent exit 0.**
+- **BOTH PACKAGES ARE PUBLISHED AND VERIFIED FROM THE REGISTRY (2026-11-14).**
+  `@floatonnear/mcp` **0.10.2** and `@floatonnear/create-float` **0.8.2** are live. Verified by
+  **downloading each tarball and diffing it**, not from a publish success message:
+  mcp's published `dist/server.js` contains `resolveKeyringPath`, `retireRole` and
+  `Nothing was written`; both packages' bundled `SKILL.md` is byte-identical to the repo's, as
+  are create-float's `bin/float-exit.mjs` and `bin/create-float.mjs`.
+  (Publishing needed a human: the account has 2FA, so `npm publish` returns `EOTP`. Omitting
+  `--otp` lets npm authenticate in a browser — no code to type.)
+  - **PROVEN LIVE FROM A COLD npx INSTALL**, which is the only claim that matters to a user.
+    A fresh `npx -y @floatonnear/mcp` (cache cleared) reports version **0.10.2**, and the exact
+    failure that used to strand a key — `vault_add_role` with no token configured — returns
+    *"Nothing was written — no key was generated"* and **creates no keyring file at all**. The
+    orphan is gone from the published artifact, not just the working tree.
+  - The verifier is **positive-controlled against the known-bad 0.10.1**: all four detectors
+    fire there (three missing strings, plus a differing `SKILL.md`), so the green result is
+    meaningful rather than vacuous.
+  - It took three attempts because the verifier kept failing on its own plumbing — a
+    shell-mangled `node -e` path, then GNU tar reading `C:\...` as a remote host — and the
+    first version counted those as "the registry does not serve this repo's code". It now
+    separates **BROKEN** from **INCONCLUSIVE**. *A broken check that reports itself as a
+    finding is worse than no check.*
 - **`npx … > file 2>&1` SILENTLY RUNS NOTHING on this box** (exit 0, zero bytes, no effect).
   Measured three times, including `--help`, and once on the real teardown — the vault was
   **still fully intact** afterwards while the command reported success. Piping (`| tee`) works;
