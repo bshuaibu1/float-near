@@ -387,10 +387,18 @@ hand a judge. Specifically: the first CI this repo has ever had; a revert of an
 unreleased contract change off `main` (kept on `feature/add-role-parent`) so
 the shipped wasm again matches both its source and the deployed mainnet vault;
 re-tracking `DEMO.md`; and correcting stale figures. **No feature was added
-after the deadline**, and the contract is byte-identical to the submitted one —
-`packages/create-float/res/vault.wasm` still hashes to
-`Fqep3KLeorhvQK38gXt6A7x2PEj8nnjy6CyZeo3DHVwM`, which is what
-`test015-near.usefloat.near` runs.
+after the deadline.**
+
+Being exact about the contract, because "unchanged" would be too strong. **The
+SHIPPED artifact is byte-identical** — `packages/create-float/res/vault.wasm`
+hashes to `Fqep3KLeorhvQK38gXt6A7x2PEj8nnjy6CyZeo3DHVwM` either side of the
+tag, and that is what `test015-near.usefloat.near` runs on mainnet. **The
+SOURCE did change**: `contracts/vault/src/lib.rs` is 31 lines shorter net (1 changed, 32
+removed), because
+the revert removed an `add_role` argument that was committed on 2026-11-14 but
+never built into the wasm and never deployed. So the post-deadline direction of
+travel is *less* contract code on `main`, not more, and the code that is there
+is what was submitted and is what is live.
 
 **There is a sibling product on another chain** *(Q-002)*. The same team ships
 [`@usefloat/mcp`](https://www.npmjs.com/package/@usefloat/mcp) — a Float for
