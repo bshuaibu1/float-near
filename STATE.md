@@ -11,7 +11,22 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
-- **JUDGING-READINESS PASS — 2026-11-15, branch `fix/judging-readiness`.** An independent blind
+- **THE DEADLINE HAS PASSED AND THE BOUNDARY IS A TAG.** Development ended
+  **2026-11-14T23:59:00Z** (Q-001: the window is 2026-10-19 → 2026-11-14; Q-002: only work in
+  the window is judged). **`hackathon-submission` tags `a2a927c`**, pushed 20:46 UTC that day —
+  everything judged is at or before it. `main` is now **`5380eab`**, three commits past the tag,
+  all dated 2026-11-15, **fixes and tooling only, claiming no credit**, disclosed in README and
+  diffable against the tag. The shipped wasm is byte-identical across the boundary
+  (`Fqep3KLeorhv…`, which mainnet runs); `lib.rs` is 31 lines *shorter*, not longer.
+  **Q-011 matters and was initially misread: "Hints are hints."** The track example prompts are
+  NOT a rubric, so the security track's counterparty-check prompt being unserved is far less
+  damaging than first assessed — the track *description* is "spending limits, policy engines,
+  sandboxed wallets", which is Float exactly. **A counterparty service was considered and
+  rejected**: outside the window, so unjudgeable under Q-002, ~12h before judging. See DECISIONS.
+  **Still to do, by hand:** drop `swarms` at <https://nearhackathon.com/request-changes> —
+  track is explicitly a changeable field. Keep security, agents, business.
+
+- **JUDGING-READINESS PASS — 2026-11-15, merged as `c8bf681`, CI green on `main`.** An independent blind
   review of the public repo (same rubric applied to 7 rival submissions) scored Float **7.5/10**
   — 5th of 8 deep-reviewed, behind `agent-treasury` 9.5, `leash` 9.0, `veto` 9.0 and
   `near-spend-guard` 8.5. **Test quality was the only dimension BELOW the field median (6/10)**,
