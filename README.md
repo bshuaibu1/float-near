@@ -369,8 +369,28 @@ Stated here because the rules ask for them, and because a judge finding any of
 it unstated is worse than reading it.
 
 **All of this was built in the window.** First commit **2026-10-26**, after the
-2026-10-19 announcement; 585 commits, none before. There is no pre-hackathon
-baseline to separate out, and no earlier version of this code.
+2026-10-19 announcement; 589 commits at the submitted tip, none before. There is
+no pre-hackathon baseline to separate out, and no earlier version of this code —
+which is why there is no `pre-hackathon` tag, only the one below.
+
+**The judged boundary is a tag** *(Q-003)*. Development ended
+**2026-11-14T23:59:00Z**, and
+[`hackathon-submission`](https://github.com/bshuaibu1/float-near/tree/hackathon-submission)
+marks the exact commit submitted inside it: `a2a927c`, pushed 2026-11-14 20:46
+UTC. **Everything judged is at or before that tag.**
+
+Commits on `main` dated **2026-11-15 or later are after the deadline and claim
+no credit** — diff them yourself against the tag. They are fixes and tooling
+only, and they exist because the submitted tip had six failing tests and a
+README link to a `DEMO.md` that had been untracked, which is a poor thing to
+hand a judge. Specifically: the first CI this repo has ever had; a revert of an
+unreleased contract change off `main` (kept on `feature/add-role-parent`) so
+the shipped wasm again matches both its source and the deployed mainnet vault;
+re-tracking `DEMO.md`; and correcting stale figures. **No feature was added
+after the deadline**, and the contract is byte-identical to the submitted one —
+`packages/create-float/res/vault.wasm` still hashes to
+`Fqep3KLeorhvQK38gXt6A7x2PEj8nnjy6CyZeo3DHVwM`, which is what
+`test015-near.usefloat.near` runs.
 
 **There is a sibling product on another chain** *(Q-002)*. The same team ships
 [`@usefloat/mcp`](https://www.npmjs.com/package/@usefloat/mcp) — a Float for
