@@ -309,18 +309,6 @@ export function planAddRole(
   recipients: string[] | null,
   publicKey: string,
   fundingYocto: string,
-  /**
-   * Where the agent hangs. `null`/omitted means root — exactly what this
-   * built before, so every existing caller is unaffected.
-   *
-   * The contract treats a missing `parent` as root too, so an OLD vault that
-   * predates the argument simply ignores it and still creates a root-level
-   * agent. That is a silent downgrade rather than a failure, which is why
-   * `vault_add_role` checks the node afterwards rather than assuming.
-   */
-  parent?: number | null,
-  /** The parent's human label, so the summary can name it. */
-  parentName?: string | null,
 ): OwnerPayload {
   if (!label || label.length > MAX_LABEL_LEN) {
     throw new Error(`label must be 1..=${MAX_LABEL_LEN} characters (MAX_LABEL_LEN)`);
@@ -349,19 +337,10 @@ export function planAddRole(
       cooldown_sec: cooldownSec,
       recipients,
       public_key: publicKey,
-      // Only sent when asked for, so a root-level agent's payload is byte-for
-      // byte what it always was.
-      ...(typeof parent === "number" ? { parent } : {}),
     },
     gasTgas: DEFAULT_GAS_TGAS,
     depositYocto: fundingYocto,
-    // "under root" was hardcoded alongside the behaviour. Saying it while
-    // nesting elsewhere would describe a different transaction from the one
-    // being signed -- the worst kind of wrong summary.
-    summary:
-      typeof parent === "number" && parent !== 0
-        ? `Add the "${label}" agent with its own budget, under ${parentName ? `the "${parentName}" budget` : `budget ${parent}`}`
-        : `Add the "${label}" agent with its own budget, under root`,
+    summary: `Add the "${label}" agent with its own budget, under root`,
     warnings: [
       `The ${(Number(fundingYocto) / 1e24).toFixed(3)} NEAR deposit funds the agent's ` +
         `gas key. It is recoverable, not a fee.`,

@@ -1362,25 +1362,6 @@ impl Vault {
     /// the whole fleet's combined spend: adding a tenth agent cannot raise
     /// what the vault can lose in a day, only divide it differently.
     #[payable]
-    /// Create an agent's budget node, bind its key and install a FUNDED gas
-    /// key -- atomically, in one owner signature.
-    ///
-    /// WHY `parent` EXISTS. This hardcoded root, so the moment anyone wanted
-    /// an agent under a department they fell off this method entirely and onto
-    /// two generic primitives (`add_node`, then `bind_virtual_agent`),
-    /// NEITHER of which touches gas keys. The result was a node bound to a key
-    /// that could authorise a payment and never submit one, and the only
-    /// repair was a terminal command -- because installing a key on the vault
-    /// must be signed BY the vault, which a browser wallet cannot do.
-    ///
-    /// So a nested agent cost two approvals plus a CLI step while a flat one
-    /// cost a single approval. That was never a decision; it was this argument
-    /// being absent. Every guard already lives in `insert_node` -- the parent
-    /// must exist, MAX_DEPTH, MAX_CHILDREN, strict allocation -- so passing it
-    /// through adds no new way to get the tree wrong.
-    ///
-    /// OMITTING IT STILL MEANS ROOT, so every already-published client keeps
-    /// working against a vault carrying this change.
     pub fn add_role(
         &mut self,
         label: String,
@@ -1388,9 +1369,6 @@ impl Vault {
         cooldown_sec: u32,
         recipients: Option<Vec<AccountId>>,
         public_key: PublicKey,
-        // `parent`: where to hang the new agent. `None` means root, which is
-        // what this method did unconditionally before. See the doc comment.
-        parent: Option<NodeId>,
     ) -> NodeId {
         if env::predecessor_account_id() != self.owner {
             fail(ReasonCode::NotOwner, "owner only");
@@ -1411,16 +1389,7 @@ impl Vault {
             fail(ReasonCode::InvalidConfig, "key already bound to a node");
         }
 
-        // `Some(..)` either way: a role is never the root itself, it hangs
-        // off one. `unwrap_or(ROOT_NODE)` preserves the old behaviour exactly
-        // when the argument is absent.
-        let id = self.insert_node(
-            Some(parent.unwrap_or(ROOT_NODE)),
-            label,
-            limits,
-            cooldown_sec,
-            recipients,
-        );
+        let id = self.insert_node(Some(ROOT_NODE), label, limits, cooldown_sec, recipients);
         self.pubkey_to_node.insert(public_key.clone(), id);
 
         // THE KEY IS ADDED TO THIS ACCOUNT, BY THIS ACCOUNT. That is the only
