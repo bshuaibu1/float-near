@@ -69,7 +69,5 @@ apps/dashboard/.next-verify/
 # Copied from the root SKILL.md by packages/mcp prepack — one source of bytes.
 packages/mcp/SKILL.md
 
-# Demo script: kept locally for filming, not published.
-DEMO.md
 .submission-payload.json
 .submission-idea.txt

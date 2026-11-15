@@ -324,11 +324,11 @@ and the [raw file on GitHub](https://raw.githubusercontent.com/bshuaibu1/float-n
 | Claim | How to check |
 |---|---|
 | Factory live on mainnet | `near view usefloat.near get_config` → owner, mainnet, not paused |
-| A real vault exists | `near view test015-near.usefloat.near get_config` → `node_count: 2` |
+| A real vault exists | `near view test015-near.usefloat.near get_config` → `owner: test015.near`, `network: mainnet`, `node_count` ≥ 1 (**7** as written — it grows as agents are added, so a different number is not a mismatch) |
 | **The agent key is restricted** | its access key shows `receiver_id` = the vault and `method_names: ["request_payment"]` |
 | Vault is registered on USDC | `storage_balance_of` is non-null — the factory does this in the creation transaction |
 | Packages published | [`@floatonnear/mcp`](https://www.npmjs.com/package/@floatonnear/mcp) · [`create-float`](https://www.npmjs.com/package/@floatonnear/create-float) · [`float-adapter`](https://www.npmjs.com/package/@floatonnear/float-adapter) |
-| It is tested | **1,120 tests** — 427 MCP + 262 CLI + 230 adapter + 165 vault + 36 factory; `node scripts/verify-all.mjs` runs **41** gated checks |
+| It is tested | **1,424 tests** — 440 MCP + 262 CLI + 246 dashboard + 230 adapter + 165 vault + 45 sandbox + 36 factory; `node scripts/verify-all.mjs` runs **42** gated checks, 12 of them mutation suites. CI runs all of it: [![verify](https://github.com/bshuaibu1/float-near/actions/workflows/verify.yml/badge.svg)](https://github.com/bshuaibu1/float-near/actions/workflows/verify.yml) |
 | Teardown really refunds | `float-exit --dry-run` on any vault, then compare against the chain |
 
 A real 0.25 USDC payment has settled on mainnet and charged both the agent's node
@@ -369,8 +369,28 @@ Stated here because the rules ask for them, and because a judge finding any of
 it unstated is worse than reading it.
 
 **All of this was built in the window.** First commit **2026-10-26**, after the
-2026-10-19 announcement; 585 commits, none before. There is no pre-hackathon
-baseline to separate out, and no earlier version of this code.
+2026-10-19 announcement; 589 commits at the submitted tip, none before. There is
+no pre-hackathon baseline to separate out, and no earlier version of this code —
+which is why there is no `pre-hackathon` tag, only the one below.
+
+**The judged boundary is a tag** *(Q-003)*. Development ended
+**2026-11-14T23:59:00Z**, and
+[`hackathon-submission`](https://github.com/bshuaibu1/float-near/tree/hackathon-submission)
+marks the exact commit submitted inside it: `a2a927c`, pushed 2026-11-14 20:46
+UTC. **Everything judged is at or before that tag.**
+
+Commits on `main` dated **2026-11-15 or later are after the deadline and claim
+no credit** — diff them yourself against the tag. They are fixes and tooling
+only, and they exist because the submitted tip had six failing tests and a
+README link to a `DEMO.md` that had been untracked, which is a poor thing to
+hand a judge. Specifically: the first CI this repo has ever had; a revert of an
+unreleased contract change off `main` (kept on `feature/add-role-parent`) so
+the shipped wasm again matches both its source and the deployed mainnet vault;
+re-tracking `DEMO.md`; and correcting stale figures. **No feature was added
+after the deadline**, and the contract is byte-identical to the submitted one —
+`packages/create-float/res/vault.wasm` still hashes to
+`Fqep3KLeorhvQK38gXt6A7x2PEj8nnjy6CyZeo3DHVwM`, which is what
+`test015-near.usefloat.near` runs.
 
 **There is a sibling product on another chain** *(Q-002)*. The same team ships
 [`@usefloat/mcp`](https://www.npmjs.com/package/@usefloat/mcp) — a Float for
@@ -413,7 +433,7 @@ stale.
 ## Development
 
 ```bash
-node scripts/verify-all.mjs     # THE gate: 41 checks
+node scripts/verify-all.mjs     # THE gate: 42 checks
 ```
 
 Not `npm test`. Every check asserts an exit code **and** a must-appear pattern

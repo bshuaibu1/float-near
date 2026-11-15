@@ -11,6 +11,45 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
+- **JUDGING-READINESS PASS — 2026-11-15, branch `fix/judging-readiness`.** An independent blind
+  review of the public repo (same rubric applied to 7 rival submissions) scored Float **7.5/10**
+  — 5th of 8 deep-reviewed, behind `agent-treasury` 9.5, `leash` 9.0, `veto` 9.0 and
+  `near-spend-guard` 8.5. **Test quality was the only dimension BELOW the field median (6/10)**,
+  and every cause was process, not engineering. Fixed, in five commits:
+  - **The 6 red create-float tests were the provenance guard working.** `69152af` changed the
+    contract and deliberately did not ship the wasm. Rebuilding proved the point: post-`69152af`
+    source compiles to 299,211 B / `EtaB6cwcn9Tw…`, while `res/vault.wasm` is 298,839 B /
+    `Fqep3KLeorhv…` — **byte-for-byte what the mainnet vault RUNS**. Shipping the rebuild would
+    have traded a verified property for a green suite. **Reverted instead; preserved on
+    `feature/add-role-parent`.** A fresh `cargo near build` now reproduces `Fqep3KLeorhv…`
+    exactly, so source, artifact and chain agree again. It also killed a live hazard: the client
+    sent `parent`, the deployed contract has no such field, and near-sdk serde ignores unknown
+    keys — so a nested agent would have landed at ROOT on 25/day · 10/tx.
+  - **`0.11.0` was never committed**, only published. The reviewer grepped for
+    `ONLY THE CONTRACT MAY REFUSE A PAYMENT`, got zero hits, and correctly logged it as a docs
+    claim with no code behind it. It existed; it was uncommitted. Committed, with its pinning test.
+  - **CI now exists and is GREEN** (`.github/workflows/verify.yml`), and the `integration` job
+    **ran 45 sandbox tests across 12 suites, 0 failures — the first execution on any machine**
+    (near-workspaces ships no Windows sandbox; `res/` is untracked so the wasm must be built, and
+    cargo-near needs libudev). It stays non-blocking: one green run is not a record. Three CI
+    rounds also found three real bugs no dev machine can show — `npm run build` was not
+    cold-start safe (float-adapter compiles before mcp, whose emitted types it imports), the
+    stamp/ref checks’ `origin/<branch>` fallback was unreachable dead code, and the gate matched
+    patterns against **coloured** output so its verdict depended on the terminal. CI runs
+    `cargo test` — which **THE gate
+    never did**, leaving the enforcement logic the one ungated component. Clippy and `cargo fmt`
+    are informational *because both were run first and both are currently non-clean*.
+    `integration` is non-blocking: those ~22 sandbox tests have never run anywhere, because
+    near-workspaces ships no Windows sandbox binary.
+  - **`DEMO.md` re-tracked** — it was gitignored while README still linked it as “You want to see
+    it work”, so the only reproducible-demo pointer was a 404 at the tip.
+  - **Five stale judge-facing figures corrected**: `node_count` 2 → ≥1 (chain says 7), MCP tests
+    427/388 → 440, total 1,120 → **1,379** (the 246 dashboard tests were never counted — it was
+    *under*stated), gated checks 41/39 → 42.
+  - **Still open, named rather than hidden:** no counterparty-check service, so the `security`
+    track’s own example prompt is unserved; `swarms` is essentially unserved while being claimed;
+    the factory’s advertised `code_hash` points at an unpublished global contract, so
+    `create_vault` is dead on mainnet; npm has no git tags.
 - **✅ SUBMITTED — 2026-11-14, HTTP 201.** The hackathon API accepted it; the submission is saved.
   **Do NOT submit again** — a second POST of the same repository is rejected 409, and corrections
   go through <https://nearhackathon.com/request-changes>, reviewed by hand.

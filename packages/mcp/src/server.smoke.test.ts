@@ -1202,6 +1202,47 @@ describe("user-facing tools return the plain-English UX fields", () => {
     // And it must forbid showing the code.
     expect(instructions).toMatch(/NEVER SHOW A REASON CODE|reason code/i);
   });
+
+  /**
+   * THE CONTRACT IS THE ONLY GATE, and the instructions have to say so.
+   *
+   * Measured on mainnet 2026-11-14: asked to pay over the cap, the agent read
+   * `vault_budget`/`vault_tree`, reasoned correctly, and declined — WITHOUT
+   * ever calling `request_payment`. No transaction, no `request_blocked`
+   * event, nothing on chain. `vault_pay` is not at fault: it has no pre-flight
+   * check and submits unconditionally. The illusion re-entered one layer up,
+   * in the model's own reasoning, where no code path is implicated and no
+   * ordinary test can see it.
+   *
+   * That matters past the demo. If the client refuses first, the user never
+   * sees the CONTRACT refuse and learns to believe the client is the enforcer
+   * — the soft-budget illusion this product exists to kill, re-entering
+   * through the UI. An agent declining is politeness; a key that cannot
+   * exceed the cap is the guarantee.
+   *
+   * The cause was WORKFLOW step 2, "Look before acting", read as a licence to
+   * gatekeep. So the instructions must now distinguish PLANNING from
+   * GATEKEEPING and name the contract as the only thing that may refuse.
+   * Pinned here because `instructions` is injected into the system prompt and
+   * is the one text guaranteed to be read.
+   */
+  it("the server instructions forbid refusing a payment on the agent's own judgement", () => {
+    // It must tell the agent to submit rather than pre-judge.
+    expect(instructions).toMatch(/never refuse|do not refuse|don't refuse/i);
+    // It must name the contract as the thing that decides.
+    expect(instructions).toMatch(/only the contract|the contract (is the )?(only )?(gate|decides)/i);
+    // Reading the budget must be scoped to planning, not gatekeeping.
+    //
+    // NOT /planning|plan/i, which was the first version of this line and
+    // asserted NOTHING: "plan" already occurred 101 times in the pre-change
+    // instructions (the vault_plan_* lane), so the clause was green before the
+    // behaviour existed. "gatekeep" occurred zero times, so it carries.
+    expect(instructions).toMatch(/gatekeep/i);
+    // The decisive instruction: submit even when you expect a refusal. Without
+    // this, "never refuse" could be satisfied by text that merely discourages
+    // refusing without telling the agent what to do instead.
+    expect(instructions).toMatch(/submit it even when|send it anyway|so the vault can rule/i);
+  });
 });
 
 /**
@@ -1502,80 +1543,4 @@ describe("vault_add_role hands back an approval link", () => {
     expect(r.next_step as string).toMatch(/creates the budget, binds the key and funds its gas/i);
     rmSync(dir, { recursive: true, force: true });
   }, 40_000);
-});
-
-/**
- * A NESTED agent is ONE approval, same as a flat one.
- *
- * `add_role` composes the three things a working agent needs -- create the
- * node, bind the key, install and FUND the gas key -- atomically. It hardcoded
- * root, so wanting an agent under a department meant falling off it onto
- * `add_node` + `bind_virtual_agent`, NEITHER of which touches gas keys. The
- * result was a key that could authorise a payment and never submit one, and
- * the only repair was a terminal command. Nesting cost two approvals plus a
- * CLI step; a flat fleet cost one.
- */
-describe("vault_add_role can nest an agent under a department", () => {
-  const BASE = {
-    NEAR_VAULT_CONTRACT: "vault.testnet",
-    NEAR_VAULT_NETWORK: "testnet",
-    NEAR_VAULT_TOKEN: "usdc.testnet",
-  };
-  const PK = `ed25519:${"1".repeat(44)}`;
-
-  it("sends parent in the args and still funds the gas key", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "float-nest-"));
-    const out = await callTool(
-      "vault_add_role",
-      { role: "digest", dailyCap: "1", perTxCap: "0.02", publicKey: PK, parent: 2 },
-      { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "agent-keys.json") },
-    );
-    const r = JSON.parse(out) as Record<string, unknown>;
-    const payload = r.payload as Record<string, unknown>;
-
-    // ONE call, carrying the parent...
-    expect(payload.methodName).toBe("add_role");
-    expect((payload.args as Record<string, unknown>).parent).toBe(2);
-    // ...and still the 0.12 deposit, which is what installs and funds the gas
-    // key. Nesting without it is the exact failure this fixes.
-    expect(payload.depositYocto).toBe("120000000000000000000000");
-    expect(r.approve_here, "a nested agent must get a link too").toBeTruthy();
-
-    rmSync(dir, { recursive: true, force: true });
-  }, 40_000);
-
-  /**
-   * The summary must describe the transaction being signed. "under root" was
-   * hardcoded next to the behaviour; saying it while nesting elsewhere would
-   * be the worst kind of wrong summary -- the owner reads one thing and
-   * approves another.
-   */
-  it("does not say 'under root' when it is not", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "float-nest-sum-"));
-    const nested = JSON.parse(
-      await callTool(
-        "vault_add_role",
-        { role: "digest", dailyCap: "1", perTxCap: "0.02", publicKey: PK, parent: 2 },
-        { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "a.json") },
-      ),
-    ) as Record<string, unknown>;
-    // `vault_add_role` returns `payload`; `technical` is a renderPlan field.
-    expect((nested.payload as Record<string, unknown>).summary).not.toContain("under root");
-
-    const flat = JSON.parse(
-      await callTool(
-        "vault_add_role",
-        { role: "flat", dailyCap: "1", perTxCap: "0.02", publicKey: PK },
-        { ...BASE, NEAR_VAULT_AGENT_KEYS: join(dir, "b.json") },
-      ),
-    ) as Record<string, unknown>;
-    expect((flat.payload as Record<string, unknown>).summary).toContain("under root");
-    // And a root-level payload must carry NO parent key, so it is byte-for-byte
-    // what every previous release produced.
-    expect(
-      (((flat.payload as Record<string, unknown>).args) as Record<string, unknown>).parent,
-    ).toBeUndefined();
-
-    rmSync(dir, { recursive: true, force: true });
-  }, 60_000);
 });

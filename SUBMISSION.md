@@ -119,12 +119,12 @@ This is the section that earns the technical-implementation score, because all o
 | Claim | How they check it |
 |---|---|
 | Factory live on mainnet | `near view usefloat.near get_config` → owner, network mainnet, not paused |
-| A real vault exists | `near view test015-near.usefloat.near get_config` → `node_count: 2` |
+| A real vault exists | `near view test015-near.usefloat.near get_config` → `owner: test015.near`, `network: mainnet`, `node_count` ≥ 1 (7 as written; it grows as agents are added) |
 | The agent key is restricted | the vault's access keys show `receiver_id` = the vault, `method_names` = `["request_payment"]` |
 | Vault is registered on USDC | `storage_balance_of` is non-null — the factory does this in the creation transaction |
 | Packages published | `@floatonnear/mcp`, `@floatonnear/create-float`, `@floatonnear/float-adapter` on npm |
 | The create page works | <https://usefloat.xyz> returns the connect screen and serves the exact contract it deploys |
-| It is tested | 388 MCP + 262 CLI + 165 vault + 36 factory tests; `node scripts/verify-all.mjs` runs 39 gated checks |
+| It is tested | 1,424 tests — 440 MCP + 262 CLI + 246 dashboard + 230 adapter + 165 vault + 45 sandbox + 36 factory; `node scripts/verify-all.mjs` runs 42 gated checks, and CI runs the lot |
 
 ---
 
