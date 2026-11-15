@@ -28,7 +28,15 @@ state changes, and re-stamp the commit line above.
   - **`0.11.0` was never committed**, only published. The reviewer grepped for
     `ONLY THE CONTRACT MAY REFUSE A PAYMENT`, got zero hits, and correctly logged it as a docs
     claim with no code behind it. It existed; it was uncommitted. Committed, with its pinning test.
-  - **CI now exists** (`.github/workflows/verify.yml`) and runs `cargo test` — which **THE gate
+  - **CI now exists and is GREEN** (`.github/workflows/verify.yml`), and the `integration` job
+    **ran 45 sandbox tests across 12 suites, 0 failures — the first execution on any machine**
+    (near-workspaces ships no Windows sandbox; `res/` is untracked so the wasm must be built, and
+    cargo-near needs libudev). It stays non-blocking: one green run is not a record. Three CI
+    rounds also found three real bugs no dev machine can show — `npm run build` was not
+    cold-start safe (float-adapter compiles before mcp, whose emitted types it imports), the
+    stamp/ref checks’ `origin/<branch>` fallback was unreachable dead code, and the gate matched
+    patterns against **coloured** output so its verdict depended on the terminal. CI runs
+    `cargo test` — which **THE gate
     never did**, leaving the enforcement logic the one ungated component. Clippy and `cargo fmt`
     are informational *because both were run first and both are currently non-clean*.
     `integration` is non-blocking: those ~22 sandbox tests have never run anywhere, because

@@ -124,7 +124,7 @@ This is the section that earns the technical-implementation score, because all o
 | Vault is registered on USDC | `storage_balance_of` is non-null — the factory does this in the creation transaction |
 | Packages published | `@floatonnear/mcp`, `@floatonnear/create-float`, `@floatonnear/float-adapter` on npm |
 | The create page works | <https://usefloat.xyz> returns the connect screen and serves the exact contract it deploys |
-| It is tested | 1,379 tests — 440 MCP + 262 CLI + 246 dashboard + 230 adapter + 165 vault + 36 factory; `node scripts/verify-all.mjs` runs 42 gated checks |
+| It is tested | 1,424 tests — 440 MCP + 262 CLI + 246 dashboard + 230 adapter + 165 vault + 45 sandbox + 36 factory; `node scripts/verify-all.mjs` runs 42 gated checks, and CI runs the lot |
 
 ---
 

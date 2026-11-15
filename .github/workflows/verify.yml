@@ -14,13 +14,20 @@
 #   gate          the 42 checks, which include 12 mutation suites.
 #   integration   near-workspaces sandbox tests, NON-BLOCKING -- see below.
 #
-# `contracts` and `gate` are expected green and gate the branch. `integration`
-# is allowed to fail on purpose: those ~22 tests have NEVER RUN ANYWHERE,
-# because near-workspaces ships no Windows sandbox binary and this project is
-# developed on Windows. CI is the first machine that can execute them at all,
-# so this job exists to produce that evidence -- but a suite nobody has ever
-# seen pass must not be what turns the badge red the week of judging. Promote
-# it to blocking once it has been green for a few runs.
+# `contracts` and `gate` gate the branch. `integration` does not, yet.
+#
+# Those tests had NEVER RUN ANYWHERE: near-workspaces ships no Windows sandbox
+# binary and this project is developed on Windows, so CI is the first machine
+# that could execute them at all. As of 2026-11-15 they do, and they pass --
+# **45 tests across 12 suites, 0 failures**, which is twice what anyone thought
+# was in there. Getting there took three tries and the failures were all
+# plumbing: `res/` is untracked so the wasm had to be built
+# (scripts/build-wasm.sh), and cargo-near will not install without libudev.
+#
+# It stays non-blocking for now on purpose. One green run is not a record, and
+# this job downloads a sandbox binary over the network -- the most flake-prone
+# thing in the whole workflow. Promote it after it has been green for a few
+# runs, not because it went green once the week of judging.
 
 name: verify
 
