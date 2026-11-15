@@ -1202,6 +1202,47 @@ describe("user-facing tools return the plain-English UX fields", () => {
     // And it must forbid showing the code.
     expect(instructions).toMatch(/NEVER SHOW A REASON CODE|reason code/i);
   });
+
+  /**
+   * THE CONTRACT IS THE ONLY GATE, and the instructions have to say so.
+   *
+   * Measured on mainnet 2026-11-14: asked to pay over the cap, the agent read
+   * `vault_budget`/`vault_tree`, reasoned correctly, and declined — WITHOUT
+   * ever calling `request_payment`. No transaction, no `request_blocked`
+   * event, nothing on chain. `vault_pay` is not at fault: it has no pre-flight
+   * check and submits unconditionally. The illusion re-entered one layer up,
+   * in the model's own reasoning, where no code path is implicated and no
+   * ordinary test can see it.
+   *
+   * That matters past the demo. If the client refuses first, the user never
+   * sees the CONTRACT refuse and learns to believe the client is the enforcer
+   * — the soft-budget illusion this product exists to kill, re-entering
+   * through the UI. An agent declining is politeness; a key that cannot
+   * exceed the cap is the guarantee.
+   *
+   * The cause was WORKFLOW step 2, "Look before acting", read as a licence to
+   * gatekeep. So the instructions must now distinguish PLANNING from
+   * GATEKEEPING and name the contract as the only thing that may refuse.
+   * Pinned here because `instructions` is injected into the system prompt and
+   * is the one text guaranteed to be read.
+   */
+  it("the server instructions forbid refusing a payment on the agent's own judgement", () => {
+    // It must tell the agent to submit rather than pre-judge.
+    expect(instructions).toMatch(/never refuse|do not refuse|don't refuse/i);
+    // It must name the contract as the thing that decides.
+    expect(instructions).toMatch(/only the contract|the contract (is the )?(only )?(gate|decides)/i);
+    // Reading the budget must be scoped to planning, not gatekeeping.
+    //
+    // NOT /planning|plan/i, which was the first version of this line and
+    // asserted NOTHING: "plan" already occurred 101 times in the pre-change
+    // instructions (the vault_plan_* lane), so the clause was green before the
+    // behaviour existed. "gatekeep" occurred zero times, so it carries.
+    expect(instructions).toMatch(/gatekeep/i);
+    // The decisive instruction: submit even when you expect a refusal. Without
+    // this, "never refuse" could be satisfied by text that merely discourages
+    // refusing without telling the agent what to do instead.
+    expect(instructions).toMatch(/submit it even when|send it anyway|so the vault can rule/i);
+  });
 });
 
 /**

@@ -518,11 +518,31 @@ THE FULL GUIDE IS A RESOURCE: read "float://skill" when you need depth.
 WORKFLOW
   1. No vault yet? vault_create. It needs no key and no existing vault, and returns a URL the
      user approves in their own wallet. Never ask anyone for a private key or seed phrase.
-  2. Look before acting: vault_tree shows the budget shape, vault_budget what is left today.
+  2. Look before acting -- for PLANNING, never for GATEKEEPING. vault_tree shows the budget
+     shape, vault_budget what is left today. Use them to advise, to size a request, or to
+     answer a question. Never to decide a payment would fail and refuse it yourself.
   3. Pay with vault_pay. Check the result: a refusal is a recorded outcome, not an exception.
   4. Change policy with a vault_plan_* tool, then hand the payload to the user to sign.
   5. Winding down is a CLI job, not a tool: npx -p @floatonnear/create-float float-exit. It returns the tokens,
      the gas-key balances and the storage deposit. vault_teardown_report says what is recoverable.
+
+ONLY THE CONTRACT MAY REFUSE A PAYMENT. NEVER REFUSE ONE YOURSELF.
+  If the user asks for a payment, call vault_pay. Submit it even when you have just read the
+  caps and are confident it will be refused. Your confidence is not the answer, and it can be
+  wrong: caps change, a day rolls over, a sibling's spend is released. Let the vault decide.
+
+  This is not a formality, and it is not about gas. A refusal you computed is a refusal nobody
+  can check. When the CONTRACT refuses, it is recorded on chain, the agent's key provably could
+  not have done otherwise, and the user learns that THE LIMIT stopped the payment. When you
+  refuse first, the user learns that YOU stopped it -- and an assistant that can choose to
+  refuse is an assistant that can choose not to. That is the soft budget this product exists
+  to replace, re-entering through the conversation.
+
+  A refused payment costs about 0.0009 NEAR of gas, paid by the agent's own gas key and never
+  by the vault. That is the price of a receipt proving the contract decided. Pay it.
+
+  You may still say what you expect BEFORE submitting ("this looks over the cap -- sending it
+  so the vault can rule"). What you may not do is stop there.
 
 SPEAK LIKE A PERSON. NEVER SHOW A REASON CODE TO THE USER.
   vault_pay returns "say" -- a plain-English sentence with the real numbers in it -- plus
@@ -557,7 +577,7 @@ WORTH KNOWING
   named account rather than retrying.
   Amounts are whole tokens in these tools (1.5 means 1.5 USDC), never base units.`;
 
-const server = new McpServer({ name: "float", version: "0.10.6" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "float", version: "0.11.0" }, { instructions: INSTRUCTIONS });
 
 /**
  * THE FULL OPERATING GUIDE, AS AN MCP RESOURCE.
