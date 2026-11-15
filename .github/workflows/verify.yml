@@ -73,7 +73,16 @@ jobs:
     name: gate (verify-all, 42 checks)
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 IS LOAD-BEARING. actions/checkout defaults to a depth-1
+      # clone with no other refs, and two of the 42 checks resolve `main`:
+      # check-state-stamp.mjs asks what has LANDED (deliberately comparing
+      # against the default branch, not HEAD), and the script-reference check
+      # walks git refs. On a shallow clone both report BROKEN / "UNRESOLVABLE
+      # GIT REF main" -- a clone artifact that reads exactly like a real
+      # ledger failure. Measured on the first run of this workflow.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -81,6 +90,26 @@ jobs:
 
       - name: Install workspaces
         run: npm ci
+
+      # THE GATE DOES NOT BUILD, IT ONLY CHECKS. `dist/` is gitignored, so on a
+      # fresh clone six checks fail for one reason: there is nothing compiled to
+      # check. They do not SAY that -- they say "Cannot find module
+      # '@floatonnear/mcp/sign'", "mcp gas math missing at .../dist/gas-math.js"
+      # and "is not built; cannot check the skill against real tools". It passes
+      # on a dev machine purely because dist/ is already lying there from
+      # earlier work, which is the oldest shape of false green there is.
+      - name: Build workspaces
+        run: npm run build
+
+      # A build that silently produced nothing would cascade into the same six
+      # failures and send the next person hunting the wrong bug. Fail here, with
+      # the real reason, instead.
+      - name: Assert the build actually emitted
+        run: |
+          for f in packages/mcp/dist/server.js packages/mcp/dist/gas-math.js; do
+            test -s "$f" || { echo "build emitted no $f"; exit 1; }
+          done
+          echo "build output present"
 
       # apps/dashboard IS NOT A WORKSPACE. The root package.json lists only
       # `packages/*`, so the root install leaves the dashboard with no

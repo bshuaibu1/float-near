@@ -44,10 +44,30 @@ const fail = (...lines) => {
   process.exit(1);
 };
 
-let branchRef;
-try {
-  branchRef = git(`rev-parse --verify --quiet ${BRANCH}`) || git(`rev-parse --verify origin/${BRANCH}`);
-} catch {
+/**
+ * THE `origin/` FALLBACK WAS UNREACHABLE.
+ *
+ * `rev-parse --verify --quiet <missing>` EXITS 1, and `git()` above is a bare
+ * execSync that throws on a non-zero exit. So the first call threw, control
+ * went straight to the catch, and the `|| origin/${BRANCH}` written for
+ * exactly this case could never run. Any checkout without a LOCAL `main`
+ * reported "no branch 'main' and no origin/main" while origin/main sat right
+ * there -- which is every CI checkout and every feature-branch clone.
+ *
+ * Found 2026-11-15 by the first CI run this repo ever had: two of the 42
+ * checks failed on a clone artifact that reads exactly like a real ledger
+ * failure. A dev machine hides it, because a normal clone has local `main`.
+ */
+const tryRev = (ref) => {
+  try {
+    return execSync(`git rev-parse --verify --quiet ${ref}`, { encoding: "utf8", stdio: "pipe" }).trim();
+  } catch {
+    return "";
+  }
+};
+
+const branchRef = tryRev(BRANCH) || tryRev(`origin/${BRANCH}`);
+if (!branchRef) {
   fail(`no branch '${BRANCH}' and no origin/${BRANCH}; cannot tell what has landed.`);
 }
 

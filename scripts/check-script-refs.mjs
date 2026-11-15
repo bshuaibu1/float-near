@@ -240,12 +240,20 @@ const resolvable = new Map();
 
 const resolves = (ref) => {
   if (resolvable.has(ref)) return resolvable.get(ref);
+  // ALSO TRY `origin/<ref>`. A CI checkout fetches one branch, so `main`
+  // exists only as a remote-tracking ref -- and reporting a doc that mentions
+  // `main` as a DANGLING REFERENCE because of how the clone was made is a
+  // false positive that costs a reader the whole check's credibility. Found by
+  // this repo's first CI run, 2026-11-15.
   let ok = false;
-  try {
-    execSync(`git rev-parse --verify --quiet ${JSON.stringify(ref)}`, { stdio: "pipe" });
-    ok = true;
-  } catch {
-    ok = false;
+  for (const candidate of [ref, `origin/${ref}`]) {
+    try {
+      execSync(`git rev-parse --verify --quiet ${JSON.stringify(candidate)}`, { stdio: "pipe" });
+      ok = true;
+      break;
+    } catch {
+      /* try the next candidate */
+    }
   }
   resolvable.set(ref, ok);
   return ok;
