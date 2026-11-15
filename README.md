@@ -328,7 +328,7 @@ and the [raw file on GitHub](https://raw.githubusercontent.com/bshuaibu1/float-n
 | **The agent key is restricted** | its access key shows `receiver_id` = the vault and `method_names: ["request_payment"]` |
 | Vault is registered on USDC | `storage_balance_of` is non-null — the factory does this in the creation transaction |
 | Packages published | [`@floatonnear/mcp`](https://www.npmjs.com/package/@floatonnear/mcp) · [`create-float`](https://www.npmjs.com/package/@floatonnear/create-float) · [`float-adapter`](https://www.npmjs.com/package/@floatonnear/float-adapter) |
-| It is tested | **1,381 tests** — 442 MCP + 262 CLI + 246 dashboard + 230 adapter + 165 vault + 36 factory; `node scripts/verify-all.mjs` runs **42** gated checks, 12 of them mutation suites |
+| It is tested | **1,379 tests** — 440 MCP + 262 CLI + 246 dashboard + 230 adapter + 165 vault + 36 factory; `node scripts/verify-all.mjs` runs **42** gated checks, 12 of them mutation suites |
 | Teardown really refunds | `float-exit --dry-run` on any vault, then compare against the chain |
 
 A real 0.25 USDC payment has settled on mainnet and charged both the agent's node
