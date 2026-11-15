@@ -18,6 +18,8 @@
 import { execSync } from "node:child_process";
 
 const LF_CHAR = String.fromCharCode(10);
+const ESC_CHAR = String.fromCharCode(27);
+const ANSI_RE = new RegExp(`${ESC_CHAR}\[[0-9;]*[A-Za-z]`, "g");
 
 const steps = [
   {
@@ -564,6 +566,28 @@ for (const s of steps) {
     code = e.status ?? 1;
     out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
   }
+
+  /**
+   * STRIP ANSI BEFORE MATCHING, OR THE GATE'S VERDICT DEPENDS ON COLOUR.
+   *
+   * Measured 2026-11-15 on this repo's first CI run. Three checks failed with
+   * "missing /Testss+d+ passed/" while the captured output plainly said
+   * "440 passed" -- because vitest emits colour when it detects CI, so the
+   * real bytes were:
+   *
+   *   Tests <ESC>[22m <ESC>[1m<ESC>[32m440 passed
+   *
+   * and s+ cannot cross an escape sequence. Locally there is no TTY, colour
+   * is off, the pattern matches, and the gate is green. So this was a check
+   * that passed or failed on the terminal it ran in, which is indistinguishable
+   * from a real test failure in the one place it mattered -- and it cost two
+   * CI rounds chasing tests that had never been broken.
+   *
+   * `ESC_CHAR` rather than a literal escape, same reason as `LF_CHAR` above:
+   * a control character embedded in a regex here survives whatever edits and
+   * encodings this file passes through, right up until it does not.
+   */
+  out = out.replace(ANSI_RE, "");
 
   /**
    * STALE BUILD ARTEFACTS ARE NOT SOURCE ERRORS.
