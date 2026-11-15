@@ -131,6 +131,24 @@ jobs:
       - uses: actions/checkout@v4
       - name: Show toolchain
         run: rustc --version
-      # First execution of these tests on any machine. See the header.
+      # THE PREREQUISITE, which the first run of this job discovered.
+      #
+      # The tests COMPILED and RAN on Linux first time -- then failed on
+      # "No such file or directory (os error 2)", because they load wasm out of
+      # `res/`, and `res/` is UNTRACKED. It exists only on a machine that has
+      # run this script. contracts/integration-tests/tests/concurrency.rs says
+      # so in its own header: "Prerequisite: scripts/build-wasm.sh".
+      #
+      # cargo-near is pinned to the version that built the artifacts currently
+      # on the author's disk, so CI is not silently testing a different
+      # compiler's output. It builds WITH test-clock on purpose -- the
+      # day-boundary tests need a short budget window -- which is also why that
+      # wasm must never be deployed.
+      - name: Install cargo-near
+        run: cargo install cargo-near --locked --version 0.22.0
+
+      - name: Build the sandbox wasm
+        run: bash scripts/build-wasm.sh
+
       - name: Sandbox tests
         run: cargo test -p integration-tests
