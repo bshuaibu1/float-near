@@ -11,6 +11,31 @@ state changes, and re-stamp the commit line above.
 
 **Golden path is demo-ready on MAINNET, with two steps left for a human to run.**
 
+- **A HEADLINE CLAIM WAS FALSE AND IS NOW FIXED — 2026-11-17.** README said *"a real **0.25 USDC**
+  payment has settled on mainnet"*. It has not, on THIS vault: `list_requests` returns **five**
+  settled payments (0.05, 0.01, 0.35, 0.01, 0.01 = **0.43 USDC**) plus one `TRANSFER_FAILED`, and
+  **no 0.25**. The 0.25 was on `float.test015.near`, the PREVIOUS mainnet vault — now
+  `UNKNOWN_ACCOUNT`, torn down. So the claim was true history pointing at a deleted account, and
+  any reviewer verifying it against the chain finds nothing. Replaced with what is live and
+  stronger: the five settlements, and **`reserved_chain`** on each record — `[0,2,4]` and
+  `[0,2,3]` for agents two levels down, `[0,5]` for one directly under root. **The hierarchy
+  charging every ancestor is now readable from chain state**, which is the differentiator and was
+  never evidenced before. Found by self-testing against the judging criteria Loops House
+  published: "Claim verification against the actual code and not just ReadMe."
+  - Post-deadline and **permitted**: the rules carry no freeze or disqualification clause (grep of
+    all 247 lines, positive-controlled), **Q-003 prescribes the tag + README-diff mechanism** we
+    used, what is frozen is the SUBMISSION not the repo, Q-014 requires the repo public *through
+    judging*, and judges are given a **repository** link, not a pinned commit — so they read HEAD.
+- **NEAR Hunt scored Float 4.55/5 and made it an "NH Pick" — calibrate it before quoting it.**
+  The site says plainly it is **"Not official hackathon judging"**; it is a community aggregator
+  whose AI reviewer read the repo. Being picked is real signal (**133 of 2,438 ≈ top 5.5%**) and
+  the line *"the gold standard for function-call-key agent budgets in this batch"* is a strong
+  independent read. But **every pick scores 4.50–4.95**, so 4.55 is one notch off the floor:
+  within AI Security & Defense **12 picks score above it** and 12 tie. It also scored the STALE
+  snapshot (cites "1,120 tests, 41 gated checks"), so none of the 15 Nov work is reflected. And
+  it gave **Leash and Veto the same 4.55** — both of which an independent code review here rated
+  9.0/10 — so it is not discriminating at the depth the real competition sits at. It verified the
+  repo, **not the chain**, which is why it missed the 0.25 claim.
 - **THE DEADLINE HAS PASSED AND THE BOUNDARY IS A TAG.** Development ended
   **2026-11-14T23:59:00Z** (Q-001: the window is 2026-10-19 → 2026-11-14; Q-002: only work in
   the window is judged). **`hackathon-submission` tags `a2a927c`**, pushed 20:46 UTC that day —

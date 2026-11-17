@@ -331,9 +331,22 @@ and the [raw file on GitHub](https://raw.githubusercontent.com/bshuaibu1/float-n
 | It is tested | **1,424 tests** — 440 MCP + 262 CLI + 246 dashboard + 230 adapter + 165 vault + 45 sandbox + 36 factory; `node scripts/verify-all.mjs` runs **42** gated checks, 12 of them mutation suites. CI runs all of it: [![verify](https://github.com/bshuaibu1/float-near/actions/workflows/verify.yml/badge.svg)](https://github.com/bshuaibu1/float-near/actions/workflows/verify.yml) |
 | Teardown really refunds | `float-exit --dry-run` on any vault, then compare against the chain |
 
-A real 0.25 USDC payment has settled on mainnet and charged both the agent's node
-and the root; a 15 USDC payment was refused `PARENT_PER_TX_LIMIT` and moved
-nothing.
+**Five payments have settled on mainnet** — 0.43 USDC in total — and one
+`TRANSFER_FAILED` exercised the refund path. The vault's own log is the evidence,
+and it shows every level of the tree being charged for a single payment:
+
+```sh
+near view test015-near.usefloat.near list_requests '{"from_index":0,"limit":50}'
+```
+
+Each record carries the levels it reserved against: `[0, 2, 4]` and `[0, 2, 3]`
+for agents two levels down, `[0, 5]` for one sitting directly under root. That is
+the hierarchy doing its job, readable from chain state rather than asserted here.
+
+A 15 USDC request was refused and moved nothing — tx
+[`22NyhaHR…`](https://nearblocks.io/txns/22NyhaHRianC8zrnNK7ujZkRLdB4kYztFfFFSSQUgba9)
+returns `reason_code: PARENT_PER_TX_LIMIT`. Refused payments are not stored
+on-chain (see Known limitations), so for a refusal the transaction *is* the record.
 
 ---
 
